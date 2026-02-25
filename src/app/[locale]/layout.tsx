@@ -1,7 +1,10 @@
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages } from "next-intl/server";
 import { notFound } from "next/navigation";
+import { ThemeProvider } from "next-themes";
 import { routing } from "@/i18n/routing";
+import { Navbar } from "@/components/layout/Navbar";
+import { Footer } from "@/components/layout/Footer";
 
 type Props = {
   children: React.ReactNode;
@@ -16,7 +19,11 @@ export default async function LocaleLayout({ children, params }: Props) {
   const messages = await getMessages();
   return (
     <NextIntlClientProvider locale={locale} messages={messages}>
-      {children}
+      <ThemeProvider attribute="class" defaultTheme="dark" disableTransitionOnChange>
+        <Navbar />
+        {children}
+        <Footer />
+      </ThemeProvider>
     </NextIntlClientProvider>
   );
 }
