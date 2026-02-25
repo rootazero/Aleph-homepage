@@ -1,0 +1,74 @@
+{
+  "nav": {
+    "github": "GitHub",
+    "docs": "文档"
+  },
+  "hero": {
+    "title": "包含所有点的那个点",
+    "subtitle": "以 Rust 构建的自托管多态 AI 助手",
+    "borges": "Aleph 是空间中包含所有其他点的那个点。",
+    "cta_start": "快速开始",
+    "cta_github": "GitHub"
+  },
+  "philosophy": {
+    "title": "五层涌现",
+    "closing": "Aleph 就是第五层 — 灵魂的躯壳。",
+    "l1_name": "经验之海",
+    "l1_desc": "人类经验的海洋 — 文本、代码、历史、智慧",
+    "l2_name": "领域分类",
+    "l2_desc": "医学、法律、编程、物理 — 知识有了学科边界",
+    "l3_name": "原子技能",
+    "l3_desc": "Know-what 蜕变为 Know-how — 从拥有知识到拥有能力",
+    "l4_name": "功能模块",
+    "l4_desc": "即插即用的封装 — 技能成为可组合的构建块",
+    "l5_name": "多态智能体",
+    "l5_desc": "灵魂终于获得躯壳 — 随需变身，干涉物理与数字世界"
+  },
+  "architecture": {
+    "title": "1-2-3-4 架构模型",
+    "core_title": "核心",
+    "core_label": "大脑",
+    "core_desc": "Rust Core：推理规划、状态管理、路由分发",
+    "faces_title": "界面",
+    "faces_label": "面孔",
+    "faces_desc": "统一面板 (Leptos/WASM) + 社交 Bot 通道",
+    "limbs_title": "四肢",
+    "limbs_label": "执行",
+    "limbs_desc": "原生能力 + MCP 工具 + 技能与插件",
+    "nerves_title": "神经",
+    "nerves_label": "通信",
+    "nerves_desc": "WebSocket + IPC + gRPC + JSON-RPC 协议"
+  },
+  "features": {
+    "title": "核心特性",
+    "polymorphic_title": "多态智能",
+    "polymorphic_desc": "一个 AI 核心，通过 CLI、桌面、移动端和即时通讯无限化身",
+    "learning_title": "自学习 Agent",
+    "learning_desc": "POE 架构将成功经验结晶化为可复用的技能",
+    "memory_title": "混合记忆",
+    "memory_desc": "事实库 + 向量检索 + 全文搜索，自动压缩上下文",
+    "tools_title": "19+ 内置工具",
+    "tools_desc": "文件操作、网络搜索、代码执行，加 MCP 协议接入任意工具",
+    "provider_title": "多模型支持",
+    "provider_desc": "Claude、GPT、Gemini、DeepSeek、Moonshot、Ollama — 任选 LLM",
+    "privacy_title": "隐私优先",
+    "privacy_desc": "自托管，完全运行在你的设备上，数据绝不离开"
+  },
+  "quickstart": {
+    "title": "快速开始",
+    "tab_gateway": "网关",
+    "tab_cli": "命令行",
+    "tab_desktop": "桌面端",
+    "requires": "需要 Rust 1.92+",
+    "copied": "已复制！"
+  },
+  "footer": {
+    "description": "自托管多态 AI 助手",
+    "project": "项目",
+    "resources": "资源",
+    "architecture_link": "架构文档",
+    "roadmap": "路线图",
+    "license": "MIT 许可证",
+    "borges_closing": "Aleph 是空间中包含所有其他点的那个点。"
+  }
+}

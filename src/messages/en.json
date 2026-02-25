@@ -1,0 +1,74 @@
+{
+  "nav": {
+    "github": "GitHub",
+    "docs": "Docs"
+  },
+  "hero": {
+    "title": "The point containing all points",
+    "subtitle": "A self-hosted polymorphic AI assistant built in Rust",
+    "borges": "El Aleph es uno de los puntos del espacio que contiene todos los puntos.",
+    "cta_start": "Get Started",
+    "cta_github": "GitHub"
+  },
+  "philosophy": {
+    "title": "Five Layers of Emergence",
+    "closing": "Aleph IS Layer 5 — The shell for a ghost.",
+    "l1_name": "Sea of Knowledge",
+    "l1_desc": "The ocean of human experience — text, code, history, wisdom",
+    "l2_name": "Domain Classification",
+    "l2_desc": "Medical, Legal, Code, Physics — knowledge gains structure",
+    "l3_name": "Atomic Skills",
+    "l3_desc": "Know-what transforms into Know-how — knowledge becomes capability",
+    "l4_name": "Functional Modules",
+    "l4_desc": "Plug & Play encapsulation — skills become composable building blocks",
+    "l5_name": "Polymorphic Agents",
+    "l5_desc": "The soul finally has a shell — transform into any form to act upon the world"
+  },
+  "architecture": {
+    "title": "1-2-3-4 Architecture",
+    "core_title": "Core",
+    "core_label": "The Brain",
+    "core_desc": "Rust Core: reasoning, state management, routing",
+    "faces_title": "Faces",
+    "faces_label": "The Faces",
+    "faces_desc": "Unified Panel (Leptos/WASM) + Social Bot channels",
+    "limbs_title": "Limbs",
+    "limbs_label": "The Limbs",
+    "limbs_desc": "Native capabilities + MCP tools + Skills & Plugins",
+    "nerves_title": "Nerves",
+    "nerves_label": "The Nerves",
+    "nerves_desc": "WebSocket + IPC + gRPC + JSON-RPC protocols"
+  },
+  "features": {
+    "title": "Features",
+    "polymorphic_title": "Polymorphic Intelligence",
+    "polymorphic_desc": "One AI core, infinite manifestations across CLI, desktop, mobile, and messaging",
+    "learning_title": "Self-Learning Agent",
+    "learning_desc": "POE architecture crystallizes successful experiences into reusable skills",
+    "memory_title": "Hybrid Memory",
+    "memory_desc": "Facts DB + vector search + full-text search with automatic compression",
+    "tools_title": "19+ Built-in Tools",
+    "tools_desc": "File ops, web search, code execution, plus MCP protocol for any tool server",
+    "provider_title": "Multi-Provider",
+    "provider_desc": "Claude, GPT, Gemini, DeepSeek, Moonshot, Ollama — use any LLM",
+    "privacy_title": "Privacy-First",
+    "privacy_desc": "Self-hosted, runs entirely on your devices, your data never leaves"
+  },
+  "quickstart": {
+    "title": "Quick Start",
+    "tab_gateway": "Gateway",
+    "tab_cli": "CLI",
+    "tab_desktop": "Desktop",
+    "requires": "Requires Rust 1.92+",
+    "copied": "Copied!"
+  },
+  "footer": {
+    "description": "A self-hosted polymorphic AI assistant",
+    "project": "Project",
+    "resources": "Resources",
+    "architecture_link": "Architecture",
+    "roadmap": "Roadmap",
+    "license": "MIT License",
+    "borges_closing": "The Aleph is one of the points in space that contains all other points."
+  }
+}
