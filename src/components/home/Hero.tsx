@@ -8,70 +8,69 @@ export function Hero() {
   const t = useTranslations("hero");
 
   return (
-    <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+    <section className="relative h-screen flex flex-col items-center justify-center overflow-hidden bg-page">
       {/* Background radial gradient */}
-      <div className="absolute inset-0 bg-aleph-deep">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(10,132,255,0.08)_0%,transparent_70%)]" />
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
+        <div className="w-[800px] h-[800px] bg-accent/5 rounded-full blur-[120px] animate-pulse-soft" />
       </div>
 
-      <div className="relative z-10 mx-auto max-w-4xl px-6 text-center">
+      <div className="relative z-10 flex flex-col items-center max-w-5xl px-6">
         {/* Logo */}
-        <div className="mb-8 flex justify-center">
-          <AlephLogo size={128} />
-        </div>
+        <AlephLogo size={320} className="mb-12" />
 
         {/* Title */}
         <motion.h1
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.3, ease: [0.3, 0, 0, 1] }}
-          className="text-5xl md:text-7xl font-display font-bold tracking-tight bg-gradient-to-r from-white to-aleph-muted bg-clip-text text-transparent"
+          transition={{ duration: 1.2, delay: 0.5, ease: [0.3, 0, 0, 1] }}
+          className="text-4xl md:text-6xl font-display font-light tracking-[0.1em] text-center text-heading mb-6"
         >
           {t("title")}
         </motion.h1>
 
-        {/* Subtitle */}
-        <motion.p
-          initial={{ opacity: 0, y: 24 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.5, ease: [0.3, 0, 0, 1] }}
-          className="mt-6 text-lg md:text-xl text-aleph-muted max-w-2xl mx-auto"
-        >
-          {t("subtitle")}
-        </motion.p>
-
-        {/* Borges quote */}
+        {/* Subtitle / Quote */}
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.8, delay: 0.8 }}
-          className="mt-8 text-sm text-aleph-muted/60 italic"
+          transition={{ duration: 1.5, delay: 1 }}
+          className="text-lg md:text-xl text-muted font-light tracking-wide text-center max-w-2xl italic opacity-80"
         >
           &ldquo;{t("borges")}&rdquo;
         </motion.p>
 
+        {/* Interactive Line */}
+        <motion.div 
+          initial={{ height: 0 }}
+          animate={{ height: 48 }}
+          transition={{ duration: 1.5, delay: 1.5 }}
+          className="w-px bg-gradient-to-b from-accent to-transparent mt-12 mb-8 opacity-50"
+        />
+
         {/* CTA Buttons */}
         <motion.div
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.7, ease: [0.3, 0, 0, 1] }}
-          className="mt-10 flex items-center justify-center gap-4"
+          transition={{ duration: 0.8, delay: 2 }}
+          className="flex items-center gap-8"
         >
           <a
             href="#quickstart"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-aleph-blue to-aleph-purple text-white font-medium transition-all hover:shadow-[0_0_30px_rgba(10,132,255,0.3)] hover:-translate-y-0.5"
+            className="group relative px-8 py-3 overflow-hidden transition-all"
           >
-            {t("cta_start")}
-            <span aria-hidden>→</span>
+            <span className="relative z-10 text-sm tracking-[0.3em] font-mono text-heading group-hover:text-accent transition-colors">
+              {t("cta_start")}
+            </span>
+            <div className="absolute bottom-0 left-0 w-full h-px bg-edge group-hover:bg-accent transition-colors" />
           </a>
           <a
             href="https://github.com/rootazero/Aleph"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl border border-aleph-border text-aleph-muted hover:text-white hover:border-aleph-blue/50 transition-all"
+            className="group relative px-8 py-3 overflow-hidden transition-all"
           >
-            {t("cta_github")}
-            <span aria-hidden>↗</span>
+            <span className="relative z-10 text-sm tracking-[0.3em] font-mono text-faint group-hover:text-heading transition-colors">
+              GITHUB
+            </span>
           </a>
         </motion.div>
       </div>

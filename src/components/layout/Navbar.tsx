@@ -20,7 +20,7 @@ export function Navbar() {
     <header
       className={`fixed top-0 left-0 right-0 z-50 h-16 flex items-center transition-all duration-300 ${
         scrolled
-          ? "bg-aleph-deep/80 backdrop-blur-xl border-b border-aleph-border"
+          ? "bg-page/80 backdrop-blur-xl border-b border-edge"
           : "bg-transparent"
       }`}
     >
@@ -29,13 +29,13 @@ export function Navbar() {
           <svg viewBox="0 0 100 100" fill="none" className="w-7 h-7">
             <defs>
               <linearGradient id="navGrad" x1="10" y1="10" x2="90" y2="90" gradientUnits="userSpaceOnUse">
-                <stop stopColor="#0A84FF" />
-                <stop offset="1" stopColor="#5E5CE6" />
+                <stop style={{ stopColor: "var(--accent)" }} />
+                <stop offset="1" style={{ stopColor: "var(--accent-purple)" }} />
               </linearGradient>
             </defs>
             <path d="M55 15 C59 40 70 51 95 55 C70 59 59 70 55 95 C51 70 40 59 15 55 C40 51 51 40 55 15Z" fill="url(#navGrad)" />
           </svg>
-          <span className="font-display font-semibold text-lg text-white">Aleph</span>
+          <span className="font-display font-semibold text-lg text-heading">Aleph</span>
         </Link>
         <div className="flex items-center gap-4">
           <LanguageSwitcher />
@@ -44,7 +44,7 @@ export function Navbar() {
             href="https://github.com/rootazero/Aleph"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-aleph-muted hover:text-white transition-colors"
+            className="text-muted hover:text-heading transition-colors"
             aria-label={t("github")}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">

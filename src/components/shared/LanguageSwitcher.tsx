@@ -17,16 +17,16 @@ export function LanguageSwitcher() {
       <button
         onClick={() => switchLocale("en")}
         className={`px-2 py-1 rounded transition-colors ${
-          locale === "en" ? "text-white" : "text-aleph-muted hover:text-white"
+          locale === "en" ? "text-heading" : "text-muted hover:text-heading"
         }`}
       >
         EN
       </button>
-      <span className="text-aleph-border">/</span>
+      <span className="text-edge">/</span>
       <button
         onClick={() => switchLocale("zh")}
         className={`px-2 py-1 rounded transition-colors ${
-          locale === "zh" ? "text-white" : "text-aleph-muted hover:text-white"
+          locale === "zh" ? "text-heading" : "text-muted hover:text-heading"
         }`}
       >
         中

@@ -19,11 +19,9 @@ export default async function LocaleLayout({ children, params }: Props) {
   const messages = await getMessages();
   return (
     <NextIntlClientProvider locale={locale} messages={messages}>
-      <ThemeProvider attribute="class" defaultTheme="dark" disableTransitionOnChange>
-        <Navbar />
+      <div className="dark contents">
         {children}
-        <Footer />
-      </ThemeProvider>
+      </div>
     </NextIntlClientProvider>
   );
 }
