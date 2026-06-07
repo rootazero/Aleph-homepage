@@ -12,7 +12,7 @@ The site combines **two surfaces in a single Next.js app**:
 
 | Surface | URL | Engine |
 |---------|-----|--------|
-| **Homepage** | `https://heyaleph.com` (`/`) | Custom React sections (Hero, Philosophy, Architecture, Features, QuickStart) |
+| **Homepage** | `https://heyaleph.com` (`/`) | Custom React sections (Topbar, Hero, Marquee, Manifesto, Capabilities, Archive, Process, AgentsShowcase, Testimonial, Models, Faq, Footer) |
 | **Documentation** | `https://heyaleph.com/docs` (`/docs`) | Fumadocs (MDX) |
 
 Both share one domain, one theme, and one i18n scheme:
@@ -39,7 +39,7 @@ Documentation content is sourced from the main Aleph repository's `/docs` direct
 | **i18n** | next-intl (site) + Fumadocs i18n (docs content) | 4+ / 16+ |
 | **Language** | TypeScript | 5+ |
 | **Package Manager** | pnpm | 9+ |
-| **Animations** | Motion (Framer Motion) | 12+ |
+| **Animations** | CSS `animation-timeline: view()` + IntersectionObserver fallback | — |
 | **Testing** | Playwright | Latest |
 | **Deployment** | Vercel | — |
 
@@ -62,8 +62,8 @@ Both must agree: `en` unprefixed, `zh` prefixed.
 ```
 src/
 ├── app/
-│   ├── layout.tsx                       # Root layout (fonts, globals.css, <html class="dark">)
-│   ├── globals.css                      # Tailwind v4 entry + Fumadocs CSS + dark-only tokens
+│   ├── layout.tsx                       # Root layout (four editorial fonts via next/font, globals.css)
+│   ├── globals.css                      # Tailwind v4 entry + Fumadocs CSS + light editorial tokens
 │   ├── api/
 │   │   └── search/route.ts              # Fumadocs Orama search endpoint
 │   └── [locale]/
@@ -73,9 +73,9 @@ src/
 │           ├── layout.tsx               # Fumadocs RootProvider + DocsLayout (theme disabled)
 │           └── [[...slug]]/page.tsx     # Fumadocs MDX page renderer
 ├── components/
-│   ├── home/                            # Hero, Philosophy, Architecture, Features, QuickStart
-│   ├── layout/                          # Navbar, Footer
-│   └── shared/                          # AlephLogo, CodeBlock, GlassCard, ThemeToggle, LanguageSwitcher
+│   └── home/                            # Topbar, Hero, Marquee, Manifesto, Capabilities, Archive, Process,
+│                                        # AgentsShowcase, Testimonial, Models, Faq, Footer, RevealRunner,
+│                                        # RichText, figures.tsx, hooks.ts, data.ts
 ├── i18n/                                # next-intl config: routing.ts, request.ts, navigation.ts
 ├── lib/
 │   ├── utils.ts                         # cn helper (clsx + tailwind-merge)
@@ -96,10 +96,8 @@ source.config.ts                         # Fumadocs MDX config (defineDocs dir: 
 - **One middleware**: next-intl owns routing; Fumadocs only resolves content for the given locale.
 - **Tailwind CSS v4 CSS-first config**: no `tailwind.config.js`. Tokens + Fumadocs `--color-fd-*`
   mapping live in `globals.css`. Includes `@source` so Tailwind scans `fumadocs-ui` classes.
-- **Dark-only design**: background `#050508`, accent `#22d3ee` (cyan). `<html class="dark">` is
-  forced; the Fumadocs theme toggle is disabled (`RootProvider theme={{ enabled: false }}` +
-  `baseOptions.themeSwitch.enabled = false`).
-- **Glass-morphism + Motion**: `GlassCard` and the `motion` package power the marketing sections.
+- **Light editorial design**: paper background `#f0ead9`, ink text `#1b1712`, coral accent `#df4f26` (with mustard/sage/stone supporting tones and dark `#15120d` showcase sections). No light/dark toggle; Fumadocs theme is disabled (`RootProvider theme={{ enabled: false }}` + `baseOptions.themeSwitch.enabled = false`).
+- **Editorial collage + CSS scroll animations**: paper-grain overlay, halftone, classical figure SVGs; scroll-driven entrances via `animation-timeline: view()` with an IntersectionObserver fallback.
 
 ---
 
@@ -121,25 +119,30 @@ If `@/.source/server` imports fail, run `pnpm install` (or `npx fumadocs-mdx`) t
 
 ## Tailwind CSS v4.2 Conventions
 
-`src/app/globals.css` imports Tailwind + Fumadocs presets, then defines a dark-only palette and
-maps the Aleph tokens onto Fumadocs' `--color-fd-*` variables:
+`src/app/globals.css` imports Tailwind + Fumadocs presets + `home.css` + `docs.css`, then defines
+a light editorial palette and maps the Aleph tokens onto Fumadocs' `--color-fd-*` variables.
+Fonts (Instrument Serif, Space Grotesk, Archivo, Space Mono) are loaded via `next/font/google`
+in `layout.tsx` and bridged into CSS via `--serif / --display / --sans / --mono` aliases:
 
 ```css
 @import "tailwindcss";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
+@import "./home.css";
+@import "./docs.css";
 @source "../../node_modules/fumadocs-ui/dist/**/*.js";
 
 @theme {
-  --color-page: var(--page);
-  --color-accent: var(--accent);     /* #22d3ee */
-  /* ...heading / muted / faint / edge / surface / panel / codeblock... */
+  --color-paper: var(--paper);
+  --color-coral: var(--coral);     /* #df4f26 */
+  /* ...ink / ink-2 / ink-3 / mustard / sage / stone / line... */
 }
 
-:root, .dark {
-  --page: #050508;
-  --accent: #22d3ee;
-  /* ...palette + --color-fd-* mapping for Fumadocs UI... */
+:root {
+  --paper: #f0ead9;
+  --ink: #1b1712;
+  --coral: #df4f26;
+  /* ...palette + --color-fd-* mapping for Fumadocs UI (light)... */
 }
 ```
 
