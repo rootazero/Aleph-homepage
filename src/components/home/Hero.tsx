@@ -1,78 +1,88 @@
 "use client";
 
-import { motion } from "motion/react";
 import { useTranslations } from "next-intl";
-import { AlephLogo } from "@/components/shared/AlephLogo";
+import { useOS, useParallax } from "./hooks";
+import { RichText } from "./RichText";
+import { BustFigure, PlantFigure, WingFigure } from "./figures";
+import { OS_ICON } from "./data";
+
+const OS_NAME = { mac: "macOS", windows: "Windows", linux: "Linux" } as const;
 
 export function Hero() {
   const t = useTranslations("hero");
+  const os = useOS();
+  const leftRef = useParallax(0.18);
+  const rightRef = useParallax(-0.18);
 
   return (
-    <section className="relative h-screen flex flex-col items-center justify-center overflow-hidden bg-page">
-      {/* Background radial gradient */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
-        <div className="w-[800px] h-[800px] bg-accent/5 rounded-full blur-[120px] animate-pulse-soft" />
-      </div>
+    <section className="hero section ruled" id="top">
+      <div className="wrap">
+        <div className="hero-spec">
+          <div className="col">
+            <span className="label">{t("index_label")}</span>
+            <span className="label">{t("tag_label")}</span>
+          </div>
+          <div className="col r">
+            <span className="label">{t("est_label")}</span>
+            <span className="label">{t("geo_label")}</span>
+          </div>
+        </div>
 
-      <div className="relative z-10 flex flex-col items-center max-w-5xl px-6">
-        {/* Logo */}
-        <AlephLogo size={320} className="mb-12" />
+        <div className="hero-stage">
+          <div className="hero-fig left" ref={leftRef}>
+            <div style={{ position: "relative" }}>
+              <span className="coral-disc" style={{ width: "62%", aspectRatio: 1, left: "18%", top: "6%" }} />
+              <BustFigure className="grain-fig" style={{ position: "relative", width: "100%", color: "var(--stone)" }} />
+              <PlantFigure style={{ position: "absolute", width: "34%", right: "-6%", top: "-12%", color: "var(--sage)" }} />
+            </div>
+          </div>
+          <div className="hero-fig right" ref={rightRef}>
+            <div style={{ position: "relative", transform: "scaleX(-1)" }}>
+              <span className="coral-disc" style={{ width: "58%", aspectRatio: 1, left: "22%", top: "10%", background: "var(--ink)" }} />
+              <WingFigure className="grain-fig" style={{ position: "relative", width: "100%", color: "var(--stone-deep)" }} />
+            </div>
+          </div>
 
-        {/* Title */}
-        <motion.h1
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 1.2, delay: 0.5, ease: [0.3, 0, 0, 1] }}
-          className="text-4xl md:text-6xl font-display font-light tracking-[0.1em] text-center text-heading mb-6"
-        >
-          {t("title")}
-        </motion.h1>
+          <div className="hero-title-wrap">
+            <div className="hero-eyebrow"><span className="eyebrow"><span className="dot" />{t("eyebrow")}</span></div>
+            <h1 className="display-xl">{t("title")}</h1>
+            <RichText as="div" className="hero-sub" html={t.raw("sub_html") as string} />
+            <p className="hero-desc">{t("desc")}</p>
+            <div className="hero-cta">
+              <a className="btn btn-ghost btn-star" href="https://github.com/rootazero/Aleph" target="_blank" rel="noopener">
+                <svg className="ic" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  {/* GitHub icon: copied from Aleph.html line 119 */}
+                  <path d="M12 1.5A10.5 10.5 0 0 0 8.7 22c.5.1.72-.22.72-.49v-1.9c-2.92.64-3.54-1.25-3.54-1.25-.48-1.21-1.17-1.53-1.17-1.53-.95-.65.07-.64.07-.64 1.06.07 1.61 1.09 1.61 1.09.94 1.6 2.46 1.14 3.06.87.1-.68.37-1.14.66-1.4-2.33-.27-4.78-1.17-4.78-5.2 0-1.15.41-2.09 1.08-2.83-.11-.27-.47-1.34.1-2.79 0 0 .88-.28 2.88 1.08a9.9 9.9 0 0 1 5.24 0c2-1.36 2.88-1.08 2.88-1.08.57 1.45.21 2.52.1 2.79.67.74 1.08 1.68 1.08 2.83 0 4.04-2.46 4.93-4.8 5.19.38.33.71.97.71 1.96v2.9c0 .27.19.6.72.49A10.5 10.5 0 0 0 12 1.5Z" />
+                </svg>
+                <span>{t("star")}</span>
+                {/* TODO(placeholder): real star count */}
+                <span className="star-count">{t("star_count")}</span>
+              </a>
+              <a className="btn btn-dl" href="https://github.com/rootazero/Aleph/releases">
+                <span className="os-ico lg" aria-hidden="true" suppressHydrationWarning dangerouslySetInnerHTML={{ __html: OS_ICON[os] }} />
+                <span className="dl-stack">
+                  <b>{t("dl_for", { os: OS_NAME[os] })}</b>
+                  <small>{t(`dl_sub_${os}`)}</small>
+                </span>
+              </a>
+            </div>
+            <div className="dl-alts">
+              <span>{t("dl_also")}</span>{" "}
+              <a href="https://github.com/rootazero/Aleph/releases" style={os === "mac" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>macOS</a> {"·"}{" "}
+              <a href="https://github.com/rootazero/Aleph/releases" style={os === "windows" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>Windows</a> {"·"}{" "}
+              <a href="https://github.com/rootazero/Aleph/releases" style={os === "linux" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>Linux</a>
+            </div>
+          </div>
+        </div>
 
-        {/* Subtitle / Quote */}
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 1.5, delay: 1 }}
-          className="text-lg md:text-xl text-muted font-light tracking-wide text-center max-w-2xl italic opacity-80"
-        >
-          &ldquo;{t("borges")}&rdquo;
-        </motion.p>
-
-        {/* Interactive Line */}
-        <motion.div 
-          initial={{ height: 0 }}
-          animate={{ height: 48 }}
-          transition={{ duration: 1.5, delay: 1.5 }}
-          className="w-px bg-gradient-to-b from-accent to-transparent mt-12 mb-8 opacity-50"
-        />
-
-        {/* CTA Buttons */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 2 }}
-          className="flex items-center gap-8"
-        >
-          <a
-            href="#quickstart"
-            className="group relative px-8 py-3 overflow-hidden transition-all"
-          >
-            <span className="relative z-10 text-sm tracking-[0.3em] font-mono text-heading group-hover:text-accent transition-colors">
-              {t("cta_start")}
-            </span>
-            <div className="absolute bottom-0 left-0 w-full h-px bg-edge group-hover:bg-accent transition-colors" />
-          </a>
-          <a
-            href="https://github.com/rootazero/Aleph"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="group relative px-8 py-3 overflow-hidden transition-all"
-          >
-            <span className="relative z-10 text-sm tracking-[0.3em] font-mono text-faint group-hover:text-heading transition-colors">
-              GITHUB
-            </span>
-          </a>
-        </motion.div>
+        <div className="hero-foot">
+          <div className="spec-row">
+            <span className="spec"><span className="n">01</span> <b>{t("spec1_b")}</b> {t("spec1")}</span>
+            <span className="spec"><span className="n">02</span> <b>{t("spec2_b")}</b> {t("spec2")}</span>
+            <span className="spec"><span className="n">03</span> <b>{t("spec3_b")}</b> {t("spec3")}</span>
+          </div>
+          <span className="label">{t("scroll")}</span>
+        </div>
       </div>
     </section>
   );

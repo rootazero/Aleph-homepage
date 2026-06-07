@@ -1,74 +1,196 @@
 {
-  "nav": {
-    "github": "GitHub",
-    "docs": "Docs"
+  "topbar": {
+    "philosophy": "Philosophy",
+    "capabilities": "Capabilities",
+    "skills": "Skills",
+    "how": "How it works",
+    "models": "Models",
+    "docs": "Docs",
+    "faq": "FAQ",
+    "signin": "Sign in",
+    "github_count": "3.4k"
   },
   "hero": {
-    "title": "The point containing all points",
-    "subtitle": "A self-hosted polymorphic AI assistant built in Rust",
-    "borges": "El Aleph es uno de los puntos del espacio que contiene todos los puntos.",
-    "cta_start": "Get Started",
-    "cta_github": "GitHub"
+    "index_label": "[ Index — 00 ]",
+    "tag_label": "Personal · Local · Multi-agent",
+    "est_label": "Est. 2026 — Aleph Labs",
+    "geo_label": "N 37.77° · W 122.41°",
+    "eyebrow": "Universal Personal AI",
+    "title": "Aleph",
+    "sub_html": "Your <span class=\"serif-it coral\">agent</span> intelligence — <span class=\"serif-it\">not</span> a black box.",
+    "desc": "One personal agent that remembers you, runs on your terms, and quietly orchestrates a team of specialists across research, writing, code, scheduling, and the small logistics of a life.",
+    "star": "Star on GitHub",
+    "star_count": "★ 3.4k",
+    "dl_for": "Download for {os}",
+    "dl_also": "Also for",
+    "dl_sub_mac": "Free · Apple silicon & Intel",
+    "dl_sub_windows": "Free · Windows 10 & 11 · 64-bit",
+    "dl_sub_linux": "Free · .deb · .rpm · AppImage",
+    "spec1_b": "Runs locally",
+    "spec1": "by default",
+    "spec2_b": "Remembers",
+    "spec2": "across sessions",
+    "spec3_b": "Orchestrates",
+    "spec3": "sub-agents",
+    "scroll": "Scroll to explore ↓"
   },
-  "philosophy": {
-    "title": "Five Layers of Emergence",
-    "closing": "Aleph IS Layer 5 — The shell for a ghost.",
-    "l1_name": "Sea of Knowledge",
-    "l1_desc": "The ocean of human experience — text, code, history, wisdom",
-    "l2_name": "Domain Classification",
-    "l2_desc": "Medical, Legal, Code, Physics — knowledge gains structure",
-    "l3_name": "Atomic Skills",
-    "l3_desc": "Know-what transforms into Know-how — knowledge becomes capability",
-    "l4_name": "Functional Modules",
-    "l4_desc": "Plug & Play encapsulation — skills become composable building blocks",
-    "l5_name": "Polymorphic Agents",
-    "l5_desc": "The soul finally has a shell — transform into any form to act upon the world"
+  "marquee": {
+    "items": ["Research", "Inbox triage", "Calendar", "Writing", "Code", "Data analysis", "Bookings", "Memory", "Local-first", "Multi-agent"]
   },
-  "architecture": {
-    "title": "1-2-3-4 Architecture",
-    "core_title": "Core",
-    "core_label": "The Brain",
-    "core_desc": "Rust Core: reasoning, state management, routing",
-    "faces_title": "Faces",
-    "faces_label": "The Faces",
-    "faces_desc": "Unified Panel (Leptos/WASM) + Social Bot channels",
-    "limbs_title": "Limbs",
-    "limbs_label": "The Limbs",
-    "limbs_desc": "Native capabilities + MCP tools + Skills & Plugins",
-    "nerves_title": "Nerves",
-    "nerves_label": "The Nerves",
-    "nerves_desc": "WebSocket + IPC + gRPC + JSON-RPC protocols"
+  "manifesto": {
+    "eyebrow_label": "[ Philosophy — 01 ]",
+    "sub_label": "Aleph / ℵ — the first letter",
+    "statement_html": "We treat your <span class=\"serif-it coral\">assistant</span> as a partner you can <span class=\"serif-it\">read</span>, not a box you have to <span class=\"serif-it\">trust</span>.",
+    "body": "Most AI hides its reasoning and hopes you don't ask. Aleph does the opposite — every plan it forms, every sub-agent it dispatches, every memory it keeps about you is legible, editable, and yours. It works on your device, with your data, under your rules. Intelligence that earns trust by showing its work.",
+    "s1_b": "Legible",
+    "s1": "see every step",
+    "s2_b": "Local",
+    "s2": "your data stays put",
+    "s3_b": "Yours",
+    "s3": "export anything, anytime",
+    "fig_caption": "Fig. 1 — the legible mind"
   },
-  "features": {
-    "title": "Features",
-    "polymorphic_title": "Polymorphic Intelligence",
-    "polymorphic_desc": "One AI core, infinite manifestations across CLI, desktop, mobile, and messaging",
-    "learning_title": "Self-Learning Agent",
-    "learning_desc": "POE architecture crystallizes successful experiences into reusable skills",
-    "memory_title": "Hybrid Memory",
-    "memory_desc": "Facts DB + vector search + full-text search with automatic compression",
-    "tools_title": "19+ Built-in Tools",
-    "tools_desc": "File ops, web search, code execution, plus MCP protocol for any tool server",
-    "provider_title": "Multi-Provider",
-    "provider_desc": "Claude, GPT, Gemini, DeepSeek, Moonshot, Ollama — use any LLM",
-    "privacy_title": "Privacy-First",
-    "privacy_desc": "Self-hosted, runs entirely on your devices, your data never leaves"
+  "capabilities": {
+    "eyebrow": "Capabilities — 02",
+    "heading_html": "Skills, systems & an interface — <span class=\"serif-it coral\">all in service of one</span> agent.",
+    "lede": "Pick a capability to preview how Aleph actually handles it — live, step by step. Ten specialists, one conversation, zero context-switching.",
+    "items": {
+      "research": {
+        "title": "Deep research",
+        "desc": "Multi-source synthesis with citations you can trace.",
+        "ix": "A1",
+        "label": "aleph · deep research",
+        "user": "Compare the three leading approaches to local-first agent memory. Cite sources.",
+        "steps": ["Searched 11 sources", "Cross-checked 3 with citations", "Drafting comparison table…"],
+        "reply_html": "Three approaches: <b>vector recall</b>, <b>event-sourced logs</b>, and <b>hybrid graphs</b>. Hybrid wins on traceability — full reasoning + 6 citations attached. Open the trace?"
+      },
+      "inbox": {
+        "title": "Inbox & messages",
+        "desc": "Triage, draft, and follow up across every thread.",
+        "ix": "A2",
+        "label": "aleph · inbox & messages",
+        "head": "Triaging 34 unread",
+        "steps": ["Sorted 34 messages into 5 lanes", "Drafted 6 replies in your voice", "Flagged 2 needing your call", "Scheduled 3 follow-ups for Thu"],
+        "footer": "You review the drafts. Aleph never sends without a nod."
+      },
+      "schedule": {
+        "title": "Schedule & tasks",
+        "desc": "Plans your day, defends your focus, never drops a thread.",
+        "ix": "A3",
+        "label": "aleph · schedule & tasks",
+        "head": "Plan Thursday around 3h of deep work",
+        "footer": "3 hours of focus carved out, meetings batched, lunch defended."
+      },
+      "life": {
+        "title": "Life logistics",
+        "desc": "Books travel, orders, and errands end to end.",
+        "ix": "A4",
+        "label": "aleph · life logistics",
+        "head": "Booking: Lisbon, Fri–Mon",
+        "steps": ["Found 3 flights under your budget", "Matched hotel to past preferences", "Held the aisle seat you like", "Built a 1-tap confirm cart"],
+        "footer": "Everything assembled. One confirmation, zero tabs."
+      },
+      "write": {
+        "title": "Writing & docs",
+        "desc": "Long-form in your voice, from notes to finished draft.",
+        "ix": "A5",
+        "label": "aleph · writing & docs",
+        "user": "Turn these 9 voice notes into a tight 600-word essay in my voice.",
+        "steps": ["Transcribed & clustered 9 notes", "Matched your cadence from past writing", "Drafting 600 words…"],
+        "reply_html": "Draft ready — 612 words, your rhythm, three clean section breaks. Tracked every claim back to a note. Want it tighter or warmer?"
+      },
+      "code": {
+        "title": "Code & analysis",
+        "desc": "Writes, runs, and explains code on real data.",
+        "ix": "A6",
+        "label": "aleph · code & analysis",
+        "head": "Analyzing sales.csv · 48k rows",
+        "steps": ["Loaded & profiled the dataset", "Wrote + ran the query locally", "Built 2 charts, flagged 1 anomaly", "Explaining the dip in March…"],
+        "footer": "Code, output, and reasoning all visible — nothing runs off-device."
+      }
+    },
+    "cal_slots": [
+      { "t": "09:00", "label": "Deep work — Q3 memo", "kind": "block" },
+      { "t": "12:00", "label": "Lunch (protected)", "kind": "soft" },
+      { "t": "13:00", "label": "Deep work — research", "kind": "block" },
+      { "t": "15:30", "label": "2 meetings, batched", "kind": "soft" },
+      { "t": "17:00", "label": "Inbox sweep — 12 min", "kind": "soft" }
+    ]
   },
-  "quickstart": {
-    "title": "Quick Start",
-    "tab_gateway": "Gateway",
-    "tab_cli": "CLI",
-    "tab_desktop": "Desktop",
-    "requires": "Requires Rust 1.92+",
-    "copied": "Copied!"
+  "archive": {
+    "eyebrow": "Skills archive — 03",
+    "heading_html": "A living archive of skills your <span class=\"serif-it coral\">agent</span> keeps learning.",
+    "browse": "Browse all skills",
+    "items": [
+      { "t": "guzang-ppt", "n": "A·01", "d": "Decks that argue, not just list." },
+      { "t": "kami-notes", "n": "A·02", "d": "Voice memos → structured docs." },
+      { "t": "atlas-research", "n": "A·03", "d": "Sourced briefs with live citations." },
+      { "t": "ledger", "n": "A·04", "d": "Reads your data, explains the why." },
+      { "t": "concierge", "n": "A·05", "d": "Bookings & errands, start to finish." }
+    ]
+  },
+  "process": {
+    "eyebrow": "How it works — 04",
+    "heading_html": "From a <span class=\"serif-it coral\">signal</span> to a finished <span class=\"serif-it\">system</span>.",
+    "lede": "You give Aleph an intention. It handles the rest as a transparent, four-beat loop you can pause and steer at any point.",
+    "steps": [
+      { "t": "Capture", "d": "You hand over an intention — a sentence, a file, a voice note." },
+      { "t": "Understand", "d": "Aleph reads context from memory and forms a legible plan." },
+      { "t": "Orchestrate", "d": "Sub-agents run in parallel; you can pause and steer any one." },
+      { "t": "Deliver", "d": "A finished artifact, plus the full trace of how it got there." }
+    ]
+  },
+  "agents": {
+    "eyebrow": "Agents — 05",
+    "statement_html": "Turn a vague <span class=\"serif-it coral\">brief</span> into a memorable, deliverable <span class=\"serif-it\">artifact</span>.",
+    "body": "Aleph spins up purpose-built sub-agents on demand. Each one is a named, inspectable specialist you can reuse, share, or retire.",
+    "stat1_b": "12+",
+    "stat1": "built-in agents",
+    "stat2_b": "∞",
+    "stat2": "custom skills",
+    "items": [
+      { "name": "guzang", "tag": "decks", "d": "Builds argued, on-brand presentations from a one-line brief." },
+      { "name": "kami", "tag": "docs", "d": "Captures messy thinking and returns a structured, sourced doc." },
+      { "name": "atlas", "tag": "research", "d": "Runs deep, multi-source research with a traceable reasoning log." },
+      { "name": "concierge", "tag": "logistics", "d": "Handles travel, orders, and errands end to end — you just confirm." }
+    ]
+  },
+  "testimonial": {
+    "notes_label": "[ Field notes — 06 ]",
+    "access_label": "From early access",
+    "quote_html": "“Aleph turned my fuzzy AI wishlist into a system that’s <span class=\"serif-it coral\">sharp</span>, trustworthy, and genuinely <span class=\"serif-it\">mine</span>.”",
+    "name": "Mira Adelstein",
+    "role": "Independent researcher",
+    "logos": ["Helix", "Northbeam", "Kerná", "BYVÖK", "Atlas&Co"],
+    "fig_caption": "Fig. 6 — partner, not tool"
+  },
+  "models": {
+    "eyebrow": "Engine room — 07",
+    "heading_html": "Powered by the world’s <span class=\"serif-it coral\">best</span> agents & models — pick yours.",
+    "lede": "Aleph is model-agnostic. Route any task to the engine you trust, or let it choose. Swap providers without losing your memory or your skills.",
+    "chips": ["Claude", "GPT", "Gemini", "Llama (local)", "Mistral", "Qwen", "DeepSeek", "Your own"]
+  },
+  "faq": {
+    "eyebrow": "Questions — 08",
+    "title_html": "On <span class=\"coral\">Aleph</span>, agents, memory & the local-first question.",
+    "talk": "Talk to us",
+    "items": [
+      { "q": "What makes Aleph \"local-first\"?", "a": "By default, Aleph runs on your device with your data. Memory, files, and reasoning stay local unless you explicitly route a task to a cloud model — and even then, you see exactly what leaves your machine." },
+      { "q": "How is this different from a single chatbot?", "a": "A chatbot answers. Aleph orchestrates. It dispatches named sub-agents for research, writing, code, and logistics, runs them in parallel, and stitches the results into one finished artifact — all in a single conversation." },
+      { "q": "What does \"legible\" actually mean here?", "a": "Every plan, every sub-agent call, and every memory Aleph keeps about you is visible and editable. You can open the trace on any task, see the reasoning, and correct it. Nothing happens in a black box." },
+      { "q": "Can I choose which AI model powers it?", "a": "Yes. Aleph is model-agnostic. Route any task to Claude, GPT, Gemini, a local Llama, or your own fine-tune — and switch providers anytime without losing your memory or your skills." },
+      { "q": "How does memory and personalization work?", "a": "Aleph builds a private, structured memory of your preferences, projects, and people. It is yours: inspectable, exportable, and deletable at the level of a single fact." }
+    ]
   },
   "footer": {
-    "description": "A self-hosted polymorphic AI assistant",
-    "project": "Project",
-    "resources": "Resources",
-    "architecture_link": "Architecture",
-    "roadmap": "Roadmap",
-    "license": "MIT License",
-    "borges_closing": "The Aleph is one of the points in space that contains all other points."
+    "tagline": "Universal personal AI agent intelligence. Local-first. Legible by design.",
+    "h_product": "Product",
+    "h_company": "Company",
+    "h_start": "Get started",
+    "product": ["Capabilities", "Skills", "How it works", "Models"],
+    "company": ["About", "Manifesto", "Careers", "Press"],
+    "start": ["Download", "Docs", "Changelog", "Status"],
+    "copyright": "© 2026 Aleph Labs · ℵ · Local-first AI",
+    "motto": "Built for people who read the footnotes."
   }
 }

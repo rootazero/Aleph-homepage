@@ -14,7 +14,7 @@ export default async function DocsRootLayout({
   const { locale } = await params;
 
   return (
-    // theme is disabled (dark-only site); the .dark class is set on <html>.
+    // theme is disabled (light-only site); no .dark class on <html>.
     <RootProvider
       theme={{ enabled: false }}
       i18n={translations.provider(locale)}
