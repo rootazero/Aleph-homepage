@@ -59,7 +59,7 @@ export function Hero() {
                 <span className="star-count">{t("star_count")}</span>
               </a>
               <a className="btn btn-dl" href="https://github.com/rootazero/Aleph/releases">
-                <span className="os-ico lg" aria-hidden="true" dangerouslySetInnerHTML={{ __html: OS_ICON[os] }} />
+                <span className="os-ico lg" aria-hidden="true" suppressHydrationWarning dangerouslySetInnerHTML={{ __html: OS_ICON[os] }} />
                 <span className="dl-stack">
                   <b>{t("dl_for", { os: OS_NAME[os] })}</b>
                   <small>{t(`dl_sub_${os}`)}</small>
