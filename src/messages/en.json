@@ -8,8 +8,7 @@
     "docs": "Docs",
     "faq": "FAQ",
     "signin": "Sign in",
-    "menu": "Menu",
-    "github_count": "3.4k"
+    "menu": "Menu"
   },
   "hero": {
     "index_label": "[ Index — 00 ]",
@@ -21,7 +20,6 @@
     "sub_html": "Your <span class=\"serif-it coral\">agent</span> intelligence — <span class=\"serif-it\">not</span> a black box.",
     "desc": "One personal agent that remembers you, runs on your terms, and quietly orchestrates a team of specialists across research, writing, code, scheduling, and the small logistics of a life.",
     "star": "Star on GitHub",
-    "star_count": "★ 3.4k",
     "dl_for": "Download for {os}",
     "dl_also": "Also for",
     "dl_sub_mac": "Free · Apple silicon & Intel",

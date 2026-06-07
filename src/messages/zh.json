@@ -8,8 +8,7 @@
     "docs": "文档",
     "faq": "常见问题",
     "signin": "登录",
-    "menu": "菜单",
-    "github_count": "3.4k"
+    "menu": "菜单"
   },
   "hero": {
     "index_label": "[ 索引 — 00 ]",
@@ -21,7 +20,6 @@
     "sub_html": "你的 <span class=\"serif-it coral\">Agent</span> 智能 —— <span class=\"serif-it\">不是</span>黑盒。",
     "desc": "一个记得你、按你的方式运行的个人 Agent，在后台默默协调一支专家团队——覆盖研究、写作、代码、日程，以及生活里的琐碎事务。",
     "star": "在 GitHub 点 Star",
-    "star_count": "★ 3.4k",
     "dl_for": "下载 {os} 版",
     "dl_also": "也支持",
     "dl_sub_mac": "免费 · 支持 Apple 芯片与 Intel",

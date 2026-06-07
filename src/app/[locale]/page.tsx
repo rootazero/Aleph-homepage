@@ -11,13 +11,15 @@ import { Models } from "@/components/home/Models";
 import { Faq } from "@/components/home/Faq";
 import { Footer } from "@/components/home/Footer";
 import { RevealRunner } from "@/components/home/RevealRunner";
+import { getStars } from "@/lib/github";
 
-export default function HomePage() {
+export default async function HomePage() {
+  const stars = await getStars();
   return (
     <>
-      <Topbar />
+      <Topbar stars={stars} />
       <main>
-        <Hero />
+        <Hero stars={stars} />
         <Marquee />
         <Manifesto />
         <div className="wrap"><hr className="hr-soft" /></div>

@@ -1,17 +1,20 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useGitHubStars, useLatestRelease, useOS, useParallax } from "./hooks";
+import { useLatestRelease, useOS, useParallax } from "./hooks";
 import { RichText } from "./RichText";
 import { BustFigure, PlantFigure, WingFigure } from "./figures";
 import { OS_ICON } from "./data";
 
 const OS_NAME = { mac: "macOS", windows: "Windows", linux: "Linux" } as const;
 
-export function Hero() {
+interface HeroProps {
+  stars: string | null;
+}
+
+export function Hero({ stars }: HeroProps) {
   const t = useTranslations("hero");
   const os = useOS();
-  const stars = useGitHubStars("rootazero/Aleph");
   const downloads = useLatestRelease("rootazero/Aleph");
   const leftRef = useParallax(0.18);
   const rightRef = useParallax(-0.18);
@@ -57,7 +60,7 @@ export function Hero() {
                   <path d="M12 1.5A10.5 10.5 0 0 0 8.7 22c.5.1.72-.22.72-.49v-1.9c-2.92.64-3.54-1.25-3.54-1.25-.48-1.21-1.17-1.53-1.17-1.53-.95-.65.07-.64.07-.64 1.06.07 1.61 1.09 1.61 1.09.94 1.6 2.46 1.14 3.06.87.1-.68.37-1.14.66-1.4-2.33-.27-4.78-1.17-4.78-5.2 0-1.15.41-2.09 1.08-2.83-.11-.27-.47-1.34.1-2.79 0 0 .88-.28 2.88 1.08a9.9 9.9 0 0 1 5.24 0c2-1.36 2.88-1.08 2.88-1.08.57 1.45.21 2.52.1 2.79.67.74 1.08 1.68 1.08 2.83 0 4.04-2.46 4.93-4.8 5.19.38.33.71.97.71 1.96v2.9c0 .27.19.6.72.49A10.5 10.5 0 0 0 12 1.5Z" />
                 </svg>
                 <span>{t("star")}</span>
-                <span className="star-count">{stars ? `★ ${stars}` : t("star_count")}</span>
+                {stars && <span className="star-count">{`★ ${stars}`}</span>}
               </a>
               <a className="btn btn-dl" href={downloads[os]}>
                 <span className="os-ico lg" aria-hidden="true" suppressHydrationWarning dangerouslySetInnerHTML={{ __html: OS_ICON[os] }} />
