@@ -1,21 +1,22 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useLatestRelease, useOS, useParallax } from "./hooks";
+import { useOS, useParallax } from "./hooks";
 import { RichText } from "./RichText";
 import { BustFigure, PlantFigure, WingFigure } from "./figures";
 import { OS_ICON } from "./data";
+import type { DownloadUrls } from "@/lib/github";
 
 const OS_NAME = { mac: "macOS", windows: "Windows", linux: "Linux" } as const;
 
 interface HeroProps {
   stars: string | null;
+  downloads: DownloadUrls;
 }
 
-export function Hero({ stars }: HeroProps) {
+export function Hero({ stars, downloads }: HeroProps) {
   const t = useTranslations("hero");
   const os = useOS();
-  const downloads = useLatestRelease("rootazero/Aleph");
   const leftRef = useParallax(0.18);
   const rightRef = useParallax(-0.18);
 

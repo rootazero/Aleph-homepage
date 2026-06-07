@@ -11,15 +11,15 @@ import { Models } from "@/components/home/Models";
 import { Faq } from "@/components/home/Faq";
 import { Footer } from "@/components/home/Footer";
 import { RevealRunner } from "@/components/home/RevealRunner";
-import { getStars } from "@/lib/github";
+import { getStars, getDownloadUrls } from "@/lib/github";
 
 export default async function HomePage() {
-  const stars = await getStars();
+  const [stars, downloads] = await Promise.all([getStars(), getDownloadUrls()]);
   return (
     <>
       <Topbar stars={stars} />
       <main>
-        <Hero stars={stars} />
+        <Hero stars={stars} downloads={downloads} />
         <Marquee />
         <Manifesto />
         <div className="wrap"><hr className="hr-soft" /></div>
