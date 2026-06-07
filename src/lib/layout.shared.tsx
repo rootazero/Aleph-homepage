@@ -32,7 +32,26 @@ export function baseOptions(lang: string): BaseLayoutProps {
 
   return {
     nav: {
-      title: <>ℵ&nbsp;Aleph</>,
+      title: (
+        <>
+          <span
+            aria-hidden="true"
+            style={{
+              display: "inline-block",
+              width: "1.3em",
+              height: "1.3em",
+              borderRadius: "50%",
+              backgroundImage: "url('/aleph-glyph.svg')",
+              backgroundSize: "cover",
+              backgroundRepeat: "no-repeat",
+              backgroundPosition: "center",
+              verticalAlign: "-0.32em",
+              marginInlineEnd: "0.5rem",
+            }}
+          />
+          Aleph
+        </>
+      ),
       url: home,
     },
     // Light-only site: hide the theme toggle.
