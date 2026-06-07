@@ -1,0 +1,318 @@
+---
+title: "Telegram"
+description: "Telegram Bot interface for Aleph -- setup, configuration, and media handling"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+The Telegram interface connects Aleph to the Telegram Bot API using the [teloxide](https://github.com/teloxide/teloxide) framework. It supports direct messages, group chats, file attachments, inline keyboards, and Markdown formatting.
+
+## Capabilities
+
+| Feature | Status |
+|---------|--------|
+| Text messages | Supported |
+| Markdown (MarkdownV2) | Supported |
+| Photos | Supported (send and receive) |
+| Documents | Supported (send and receive) |
+| Audio | Supported (send and receive) |
+| Video | Supported (send and receive) |
+| Voice messages | Supported (receive) |
+| Inline keyboards | Supported |
+| Reply threading | Supported |
+| Message editing | Supported (with chat context) |
+| Message deletion | Supported (with chat context) |
+| Typing indicator | Supported |
+| Max message length | 4,096 characters |
+| Max attachment size | 50 MB |
+| Reactions | Limited (Telegram Premium only) |
+
+## Prerequisites
+
+<Steps>
+<Step>
+
+### Create a Bot with BotFather
+
+1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` and follow the prompts to name your bot
+3. BotFather will reply with your **bot token** (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+4. Save this token securely -- it is your bot's authentication credential
+
+</Step>
+<Step>
+
+### Configure Bot Settings (Optional)
+
+While still in BotFather, you can customize your bot:
+
+- `/setdescription` -- Set the bot's description shown in the profile
+- `/setabouttext` -- Set the "About" text
+- `/setuserpic` -- Upload a profile picture
+- `/setcommands` -- Define the command menu (e.g., `/start`, `/help`)
+- `/setprivacy` -- Disable "Privacy Mode" if you want the bot to see all group messages (not just commands and mentions)
+
+</Step>
+<Step>
+
+### Enable the Telegram Feature
+
+Build Aleph with the `telegram` feature flag:
+
+```bash
+cargo build --release --features telegram
+# or for all interfaces:
+cargo build --release --features all-interfaces
+```
+
+</Step>
+</Steps>
+
+## Configuration
+
+### Minimal Configuration
+
+```toml
+[[channels]]
+id = "telegram"
+channel_type = "telegram"
+enabled = true
+
+[channels.config]
+bot_token = "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+```
+
+### Full Configuration Reference
+
+```toml
+[[channels]]
+id = "telegram"
+channel_type = "telegram"
+enabled = true
+
+[channels.config]
+# Bot token from @BotFather (required)
+# Supports ${ENV_VAR} expansion
+bot_token = "${TELEGRAM_BOT_TOKEN}"
+
+# Bot username without @ (auto-detected on connect)
+bot_username = "my_aleph_bot"
+
+# User allowlist -- empty means allow all users
+# Use Telegram user IDs (not usernames)
+allowed_users = [123456789, 987654321]
+
+# Group/chat allowlist -- empty means allow all groups
+allowed_groups = [-1001234567890]
+
+# Allow direct messages (default: true)
+dm_allowed = true
+
+# Allow group messages (default: true)
+groups_allowed = true
+
+# Polling interval in seconds for long-polling mode (default: 1)
+polling_interval_secs = 1
+
+# Send typing indicator while processing (default: true)
+send_typing = true
+
+# Maximum retries for failed messages (default: 3)
+max_retries = 3
+
+# Webhook configuration (optional -- defaults to long-polling)
+# [channels.config.webhook]
+# url = "https://your-domain.com/telegram/webhook"
+# port = 8443
+# path = "/telegram/webhook"
+# certificate = "/path/to/cert.pem"    # For self-signed certificates
+# secret_token = "your-webhook-secret"  # Verification token
+```
+
+<Callout type="warn">
+Never commit bot tokens to version control. Use environment variables (`${TELEGRAM_BOT_TOKEN}`) or a secrets manager.
+</Callout>
+
+### Environment Variable Mode
+
+The simplest setup uses a single environment variable:
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+```
+
+Aleph will pick it up automatically via `TelegramConfig::from_env()`.
+
+## Long-Polling vs Webhook
+
+Aleph supports two modes for receiving updates from Telegram:
+
+### Long-Polling (Default)
+
+The bot periodically asks Telegram's servers for new updates. This is the default and works out of the box with no additional infrastructure.
+
+**Pros:**
+- No public URL or SSL certificate required
+- Works behind NATs and firewalls
+- Simple setup
+
+**Cons:**
+- Slightly higher latency (configurable via `polling_interval_secs`)
+- Keeps a persistent connection to Telegram servers
+
+### Webhook Mode
+
+Telegram pushes updates to your server via HTTPS POST requests. Enable by adding a `webhook` section:
+
+```toml
+[channels.config.webhook]
+url = "https://aleph.example.com/telegram/webhook"
+port = 8443
+secret_token = "a-random-secret-string"
+```
+
+**Pros:**
+- Lower latency (instant delivery)
+- More efficient for high-traffic bots
+
+**Cons:**
+- Requires a public HTTPS endpoint
+- Needs a valid SSL certificate (or self-signed with `certificate` field)
+
+## User and Group Allowlists
+
+### Finding User IDs
+
+Telegram user IDs are numeric. To find a user's ID:
+
+1. Have the user send a message to [@userinfobot](https://t.me/userinfobot)
+2. Or use the `getUpdates` API to see raw message data
+
+### Allowlist Behavior
+
+```toml
+# Empty list = allow everyone
+allowed_users = []
+
+# Specific users only
+allowed_users = [123456789, 987654321]
+```
+
+When `allowed_users` is non-empty, messages from unlisted users are silently dropped. The same logic applies to `allowed_groups` for group chats.
+
+### Group Chat Behavior
+
+When Aleph receives a message in a group:
+
+1. Check if the group ID is in `allowed_groups` (or if the list is empty)
+2. Check if the sender is in `allowed_users` (or if the list is empty)
+3. If both pass, route the message to the agent
+
+<Callout type="info">
+By default, Telegram bots in "Privacy Mode" only see messages that mention the bot or start with `/`. Disable privacy mode via BotFather (`/setprivacy`) if you want Aleph to see all messages in a group.
+</Callout>
+
+## Media Handling
+
+### Receiving Media
+
+Aleph extracts attachments from all supported Telegram media types:
+
+| Media Type | MIME Type | Notes |
+|-----------|-----------|-------|
+| Photo | `image/jpeg` | Largest available resolution is selected |
+| Document | From metadata | Generic files up to 50 MB |
+| Audio | From metadata or `audio/mpeg` | Music files with metadata |
+| Video | From metadata or `video/mp4` | Video files with thumbnail |
+| Voice | From metadata or `audio/ogg` | Opus-encoded voice messages |
+
+Captions on media messages are extracted as the message text. If a message has both a caption and media, the caption becomes the `text` field.
+
+### Sending Media
+
+Outbound attachments are dispatched based on MIME type:
+
+- `image/*` -- Sent as a photo (`sendPhoto`)
+- `audio/*` -- Sent as audio (`sendAudio`)
+- `video/*` -- Sent as video (`sendVideo`)
+- Everything else -- Sent as a document (`sendDocument`)
+
+Attachments can be provided as:
+- **In-memory bytes** (`data` field)
+- **Local file path** (`path` field)
+- **Remote URL** (`url` field)
+
+## Inline Keyboards
+
+The Telegram interface supports inline keyboard buttons for interactive prompts. This is primarily used by the tool approval system to let users approve or deny tool executions directly from the chat:
+
+```
+Aleph wants to execute: shell_exec("ls -la")
+
+[Allow Once] [Allow Always] [Deny]
+```
+
+When a user clicks a button, a callback query is routed back through the Gateway and processed by the approval bridge. The loading indicator on the button is automatically dismissed via `answerCallbackQuery`.
+
+Keyboards can also be used for custom multi-choice responses built by the agent itself.
+
+## Session Routing
+
+Each Telegram conversation gets a unique session key:
+
+| Context | Session Key |
+|---------|------------|
+| DM with user 12345 | `agent:main:dm:12345` or `agent:main:telegram:dm:12345` |
+| Group chat -100123 | `agent:main:telegram:group:-100123` |
+
+The exact format depends on your `dm_scope` setting (see [Interfaces Overview](/docs/interfaces/overview)).
+
+## Message Formatting
+
+Aleph sends messages using Telegram's **MarkdownV2** parse mode. The following formatting is supported:
+
+| Syntax | Result |
+|--------|--------|
+| `*bold*` | **bold** |
+| `_italic_` | *italic* |
+| `` `code` `` | `code` |
+| ```` ```language\ncode``` ```` | Code block with syntax highlighting |
+| `[text](url)` | Hyperlink |
+
+<Callout type="warn">
+MarkdownV2 requires escaping special characters (`_`, `*`, `[`, `]`, `(`, `)`, `~`, `` ` ``, `>`, `#`, `+`, `-`, `=`, `|`, `{`, `}`, `.`, `!`). Aleph handles this escaping automatically when formatting outbound messages.
+</Callout>
+
+## Error Handling
+
+The Telegram interface handles common failure scenarios:
+
+| Error | Behavior |
+|-------|----------|
+| **Invalid bot token** | Detected at startup via `getMe` API call; channel enters `Error` state |
+| **Rate limiting** | Telegram rate limits are respected; retries up to `max_retries` times |
+| **Network failure** | Long-polling reconnects automatically; webhook mode relies on Telegram's retry |
+| **User not in allowlist** | Message is silently dropped with a debug-level log |
+| **Empty message** | Skipped (no text and no attachments) |
+| **Service messages** | Ignored (join/leave notifications, pinned messages, etc.) |
+
+## Validation
+
+The bot token is validated at two stages:
+
+1. **Format check** (config load) -- Token must be non-empty and contain a colon (format: `<bot_id>:<hash>`)
+2. **API check** (channel start) -- `getMe` is called to verify the token and retrieve the bot's username and ID
+
+If either check fails, the channel reports a `ConfigError` or `AuthFailed` error and does not start polling.
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Bot does not respond | Check that the `telegram` feature flag is enabled in your build |
+| Bot ignores group messages | Disable Privacy Mode via BotFather (`/setprivacy`) or ensure the bot is mentioned |
+| "User not in allowlist" in logs | Add the user's numeric Telegram ID to `allowed_users` |
+| "Failed to verify bot token" | Verify your token with `curl https://api.telegram.org/bot<TOKEN>/getMe` |
+| Messages are delayed | Decrease `polling_interval_secs` or switch to webhook mode |
+| Formatting looks broken | Aleph uses MarkdownV2; check that special characters are not double-escaped |

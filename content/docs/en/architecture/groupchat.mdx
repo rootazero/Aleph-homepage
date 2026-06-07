@@ -1,0 +1,145 @@
+---
+title: "Group Chat"
+description: "Multi-agent group chat with channel-agnostic orchestration for collaborative discussions."
+---
+
+The `group_chat` module provides multi-agent group chat functionality, enabling collaborative discussions between multiple personas in a shared conversation.
+
+## Overview
+
+Group Chat enables:
+- **Multi-persona conversations** — Multiple agent personas participate in a single chat
+- **Channel-agnostic** — Works across Telegram, Discord, Slack, and other channels
+- **Collaborative decision-making** — Agents can discuss and reach consensus
+- **Role-based participation** — Each persona has specific expertise and behavior
+
+## Architecture
+
+```
+GroupChatOrchestrator
+  ├── Coordinator — Manages turn-taking and flow
+  ├── Session — Group chat state and history
+  ├── PersonaRegistry — Available personas
+  ├── Protocol — Message protocol
+  ├── Executor — Runs persona responses
+  └── Channel — Channel-specific adapters
+```
+
+## Core Components
+
+### GroupChatOrchestrator
+
+Central coordinator for group chats:
+
+```rust
+// src/group_chat/orchestrator.rs
+pub struct GroupChatOrchestrator {
+    session: GroupChatSession,
+    personas: PersonaRegistry,
+    coordinator: TurnCoordinator,
+}
+
+impl GroupChatOrchestrator {
+    pub async fn add_persona(
+        &mut self,
+        persona: PersonaId,
+    ) -> Result<()>;
+    
+    pub async fn process_message(
+        &mut self,
+        msg: UserMessage,
+    ) -> Result<Vec<PersonaResponse>>;
+    
+    pub async fn run_round(
+        &mut self,
+    ) -> Result<RoundSummary>;
+}
+```
+
+### PersonaRegistry
+
+Manages available personas:
+
+```rust
+// src/group_chat/persona.rs
+pub struct PersonaRegistry {
+    personas: HashMap<PersonaId, Persona>,
+}
+
+pub struct Persona {
+    pub id: PersonaId,
+    pub name: String,
+    pub identity: String,
+    pub expertise: Vec<String>,
+    pub voice: VoiceStyle,
+}
+```
+
+### GroupChatSession
+
+Maintains shared state:
+
+```rust
+// src/group_chat/session.rs
+pub struct GroupChatSession {
+    id: SessionId,
+    messages: Vec<ChatMessage>,
+    participants: Vec<PersonaId>,
+}
+```
+
+### SharedSession
+
+Shared state across multiple group chats:
+
+```rust
+pub struct SharedSession {
+    context: Arc<RwLock<SessionContext>>,
+}
+```
+
+## Message Flow
+
+```
+User Message
+     │
+     ▼
+GroupChatOrchestrator
+     │
+     ├──▶ Coordinator (determine turn order)
+     │
+     ├──▶ Persona A Response
+     │
+     ├──▶ Persona B Response
+     │
+     └──▶ Persona C Response
+              │
+              ▼
+         Merged Response to User
+```
+
+## Configuration
+
+```toml
+[group_chat]
+enabled = true
+max_personas = 5
+default_personas = ["analyst", "creative", "critic"]
+```
+
+## Code Location
+
+- `src/group_chat/mod.rs` — Module entry point
+- `src/group_chat/orchestrator.rs` — Main coordinator
+- `src/group_chat/coordinator.rs` — Turn management
+- `src/group_chat/session.rs` — Session state
+- `src/group_chat/persona.rs` — Persona definitions
+- `src/group_chat/executor.rs` — Response execution
+- `src/group_chat/protocol.rs` — Message protocol
+- `src/group_chat/channel.rs` — Channel adapters
+
+## See Also
+
+- [Teams](./teams) — Team management for multi-agent collaboration
+- [A2A](./a2a) — Agent-to-Agent protocol
+- [Gateway](../gateway/protocol) — Channel interfaces

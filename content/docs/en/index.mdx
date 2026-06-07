@@ -1,0 +1,154 @@
+---
+title: "Aleph Documentation"
+description: "Technical documentation for Aleph — a self-hosted polymorphic AI assistant built in Rust"
+---
+
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+> *"This is the first time in human history that a machine's soul has been given a body."*
+> — Ghost in the Shell
+
+**Aleph** is a powerful personal AI assistant built in Rust, designed to give AI the ability to interact with the world. It combines a high-performance Gateway control plane with multi-channel messaging support, enabling AI agents to work across various platforms seamlessly.
+
+## Key Features
+
+- **Multi-Provider AI** - Claude, GPT, Gemini, Ollama with automatic failover
+- **Multi-Channel** - Telegram, Discord, iMessage, Slack, WebChat
+- **Native Performance** - 100% Rust core, no interpreted languages
+- **Secure Execution** - Three-tier security model for command execution
+- **Extensible** - MCP integration, plugin system, custom tools
+- **Self-Hosted** - Run on your own hardware, full control
+
+## Architecture
+
+```
+                     Channels
+         ┌─────────────────────────────┐
+         │ Telegram │ Discord │ iMessage│
+         └──────────────┬──────────────┘
+                        │
+              ┌─────────▼─────────┐
+              │      Gateway      │
+              │  ws://127.0.0.1   │
+              │    JSON-RPC 2.0   │
+              └─────────┬─────────┘
+                        │
+         ┌──────────────┼──────────────┐
+         │              │              │
+    ┌────▼────┐   ┌─────▼─────┐  ┌────▼────┐
+    │  Agent  │   │  Session  │  │  Tools  │
+    │  Loop   │   │  Manager  │  │ Registry│
+    └─────────┘   └───────────┘  └─────────┘
+```
+
+## Quick Start
+
+```bash
+# Install via cargo
+cargo install aleph-cli
+
+# Run the setup wizard
+aleph wizard
+
+# Start chatting
+aleph chat "Hello, Aleph!"
+```
+
+## Documentation Sections
+
+<Cards>
+  <Card
+    icon="🚀"
+    title="Getting Started"
+    description="Installation, setup wizard, and initial configuration"
+    href="./getting-started/installation"
+  />
+  <Card
+    icon="🧭"
+    title="Philosophy"
+    description="Design philosophy, five layers of emergence, and agent thinking model"
+    href="./philosophy/overview"
+  />
+  <Card
+    icon="💡"
+    title="Concepts"
+    description="Agent runtime, messages, model providers, skills, workspaces, extensions"
+    href="./concepts/agent-runtime"
+  />
+  <Card
+    icon="🏗️"
+    title="Architecture"
+    description="System design, gateway, agent loop, session management"
+    href="./architecture/overview"
+  />
+  <Card
+    icon="🔌"
+    title="Gateway RPC"
+    description="WebSocket protocol, authentication, JSON-RPC methods"
+    href="./gateway/protocol"
+  />
+  <Card
+    icon="💬"
+    title="Interfaces"
+    description="Telegram, Discord, iMessage, WebChat integrations"
+    href="./interfaces/overview"
+  />
+  <Card
+    icon="🔧"
+    title="Tools & Extensions"
+    description="Built-in tools, MCP integration, creating custom tools"
+    href="./tools/overview"
+  />
+  <Card
+    icon="🔒"
+    title="Security"
+    description="Execution approval, IPC protocol, device pairing"
+    href="./security/exec-approval"
+  />
+  <Card
+    icon="⚡"
+    title="Automation"
+    description="Cron jobs, hooks, and event-driven workflows"
+    href="./automation/cron-jobs"
+  />
+  <Card
+    icon="⌨️"
+    title="CLI Reference"
+    description="Commands, gateway management, agent interaction"
+    href="./cli/commands"
+  />
+  <Card
+    icon="🛠️"
+    title="Development"
+    description="Building from source, testing, and contributing"
+    href="./development/building"
+  />
+  <Card
+    icon="📡"
+    title="API Reference"
+    description="Rust API and JSON-RPC API documentation"
+    href="./api/rust"
+  />
+  <Card
+    icon="📋"
+    title="Changelog"
+    description="Release history, milestones, and notable changes"
+    href="./changelog"
+  />
+</Cards>
+
+## Philosophy
+
+Aleph is built on a five-layer emergence architecture:
+
+1. **Sea of Knowledge** - AI's pre-training foundation
+2. **Domain Classification** - Organized expertise
+3. **Atomic Skills** - Know-what to Know-how
+4. **Functional Modules** - Composable capabilities
+5. **Polymorphic Agents** - Soul gains body
+
+The goal is not just to build a tool, but to explore a path toward AGI - when intelligence gains the ability to act.
+
+## License
+
+Apache 2.0

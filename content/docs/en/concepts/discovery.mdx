@@ -1,0 +1,166 @@
+---
+title: "Discovery"
+description: "Unified component discovery system for finding configuration files, skills, commands, agents, and plugins across multiple directories."
+---
+
+The `discovery` module provides a unified discovery system for finding configuration files, skills, commands, agents, and plugins across multiple directories. It supports both global (user home) and project-level discovery with upward directory traversal.
+
+## Design Philosophy
+
+The discovery system follows three principles:
+
+1. **Multi-source resolution** — Components can live in multiple locations; later entries override earlier ones
+2. **Upward traversal** — Configuration files are found by searching from the working directory up to the git root
+3. **Claude Code compatibility** — Reads `.claude/` directories for seamless integration with Claude Code workflows
+
+---
+
+## Directory Strategy
+
+### Read Paths (by priority)
+
+Later entries override earlier ones:
+
+| Priority | Path | Notes |
+|---|---|---|
+| 1 | `~/.claude/skills/` | Claude Code compatible (read-only) |
+| 2 | `~/.claude/commands/` | Claude Code compatible (read-only) |
+| 3 | `~/.aleph/skills/` | Aleph native |
+| 4 | `~/.aleph/commands/` | Aleph native |
+| 5 | `~/.aleph/plugins/` | Aleph native |
+| 6 | `./.claude/skills/` | Project-level Claude Code (read-only) |
+| 7 | `./.claude/commands/` | Project-level Claude Code (read-only) |
+
+### Write Paths
+
+- Always use `~/.aleph/` for writing
+
+---
+
+## Core Components
+
+### DiscoveryManager
+
+Main entry point for the discovery system:
+
+```rust
+pub struct DiscoveryManager {
+    config: DiscoveryConfig,
+    scanner: DirectoryScanner,
+}
+
+impl DiscoveryManager {
+    pub fn new(config: DiscoveryConfig) -> DiscoveryResult<Self> { /* ... */ }
+    pub fn with_defaults() -> DiscoveryResult<Self> { /* ... */ }
+    
+    pub fn discover_skill_dirs(&self,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn discover_plugins(&self,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn find_config_files(
+        &self,
+        filename: &str,
+    ) -> DiscoveryResult<Vec<PathBuf>> { /* ... */ }
+}
+```
+
+### DiscoveryConfig
+
+```rust
+pub struct DiscoveryConfig {
+    pub working_dir: PathBuf,
+    pub scan_claude_dirs: bool,
+    pub scan_project_dirs: bool,
+    pub max_upward_depth: usize,
+}
+```
+
+**Defaults:**
+- `working_dir`: current directory
+- `scan_claude_dirs`: true
+- `scan_project_dirs`: true
+- `max_upward_depth`: 10
+
+### DirectoryScanner
+
+Handles the actual filesystem scanning:
+
+```rust
+pub struct DirectoryScanner { /* ... */ }
+
+impl DirectoryScanner {
+    pub fn discover_component(
+        &self,
+        name: &str,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn discover_plugins(&self,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn find_upward(
+        &self,
+        filename: &str,
+    ) -> DiscoveryResult<Vec<PathBuf>> { /* ... */ }
+}
+```
+
+**Plugin discovery** includes monorepo support — scans one level deep in `~/.aleph/plugins/` for cloned plugin repositories.
+
+---
+
+## Discovery Result
+
+```rust
+pub struct DiscoveredPath {
+    pub path: PathBuf,
+    pub source: DiscoverySource,
+    pub priority: usize,
+}
+
+pub enum DiscoverySource {
+    Global,
+    Project,
+}
+```
+
+Results are returned in priority order (global first, project last).
+
+---
+
+## Upward Traversal
+
+Finds configuration files by walking up the directory tree:
+
+```rust
+let manager = DiscoveryManager::with_defaults()?;
+let configs = manager.find_config_files("aleph.jsonc")?;
+// Searches from working_dir up to git root or filesystem root
+```
+
+**Edge case:** `canonicalize()` may succeed for the stop directory but fail for the current directory (or vice versa), causing the stop comparison to never match. This is safely guarded by `max_depth`.
+
+---
+
+## Safety Properties
+
+- **No SQL injection** — No database queries (filesystem only)
+- **No lock issues** — No Mutex/RwLock usage
+- **No UTF-8 slicing** — No byte-level string operations
+- **Path traversal safety** — Hidden directory checks (`is_hidden()`) prevent scanning `.git`, `.node_modules`, etc.
+
+---
+
+## Code Location
+
+- `src/discovery/mod.rs` — Module entry point and `DiscoveryManager`
+- `src/discovery/paths.rs` — Path constants and utilities
+- `src/discovery/scanner.rs` — Directory scanning implementation
+- `src/discovery/types.rs` — Core types
+
+## See Also
+
+- [Skills](./skills) — How discovered skills are used
+- [Extensions](./extensions) — Plugin architecture
+- [Configuration](./configuration) — Configuration file formats

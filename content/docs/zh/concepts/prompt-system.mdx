@@ -1,0 +1,191 @@
+---
+title: 提示词系统
+description: 29 层 PromptBuilder、节缓存、装配路径和思考模式。
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## 概述
+
+提示词系统是 Aleph 为 LLM 调用组装上下文的标准方式。它位于 `src/thinker/`，围绕 `PromptPipeline` 构建，共 29 层，将内容注入最终的系统提示词字符串。
+
+唯一的公开入口点是 `thinker::PromptBuilder`，它包装了一个 `PromptPipeline`。旧的 `agent_loop::PromptBuilder` 在 Harness 迁移期间已被移除。
+
+## 架构
+
+```
+FlowRequest
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│           PromptBuilder                  │
+│  ┌───────────────────────────────────┐  │
+│  │        PromptPipeline              │  │
+│  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ │  │
+│  │  │Layer│→│Layer│→│Layer│→│ ...│ │  │
+│  │  │  1  │ │  2  │ │  3  │ │ 29 │ │  │
+│  │  └─────┘ └─────┘ └─────┘ └─────┘ │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+    │
+    ▼
+System Prompt String
+```
+
+## 层级系统
+
+每一层都实现了 `PromptLayer` trait：
+
+```rust
+pub trait PromptLayer: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn priority(&self) -> u32;
+    fn paths(&self) -> &'static [AssemblyPath];
+    fn inject(&self, output: &mut String, input: &LayerInput);
+}
+```
+
+`PromptPipeline` 按优先级升序执行各层（数字小的优先）。每一层检查 `LayerInput` 上下文并将其内容追加到输出字符串。
+
+### 29 层（按优先级排序）
+
+**稳定区** — 内容很少变化，支持节级缓存（优先级 50–1600）：
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 50 | `SoulLayer` | Identity / personality |
+| 55 | `AgentRoleLayer` | Sub-agent role header + protocol blocks |
+| 75 | `ProfileLayer` | Workspace profile overlay |
+| 100 | `RoleLayer` | Base assistant role |
+| 300 | `EnvironmentLayer` | OS, date, working directory |
+| 400 | `RuntimeCapabilitiesLayer` | Python, Node.js, FFmpeg, etc. |
+| 500 | `ToolsLayer` | Tool definitions (text schema) |
+| 501 | `HydratedToolsLayer` | Semantic-retrieval tool definitions |
+| 550 | `ToolUsageGrammarLayer` | Data-driven tool usage conventions |
+| 600 | `SecurityLayer` | Safety / security guidelines |
+| 700 | `ProtocolTokensLayer` | JSON-RPC protocol tokens |
+| 710 | `HeartbeatLayer` | Session keep-alive instructions |
+| 800 | `OperationalGuidelinesLayer` | Operational rules |
+| 900 | `CitationStandardsLayer` | Citation formatting |
+| 1000 | `GenerationModelsLayer` | Available image/video/audio models |
+| 1050 | `SkillInstructionsLayer` | Active skill instructions |
+| 1100 | `SpecialActionsLayer` | Special action syntax |
+| 1200 | `ResponseFormatLayer` | Response structure |
+| 1300 | `GuidelinesLayer` | General guidelines |
+| 1350 | `ThinkingGuidanceLayer` | Structured reasoning guidance |
+| 1400 | `SkillModeLayer` | Strict skill workflow enforcement |
+| 1500 | `CustomInstructionsLayer` | User custom instructions |
+| 1600 | `LanguageLayer` | Response language |
+
+**动态区** — 每请求重新计算，从不缓存（优先级 1700–1750）：
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 1700 | `InboundContextLayer` | Sender, channel, session metadata |
+| 1710 | `VoiceModeLayer` | Voice-specific response instructions |
+| 1720 | `RuntimeContextLayer` | Current time, session info |
+| 1730 | `IdentityFilesLayer` | SOUL.md, IDENTITY.md workspace files |
+| 1740 | `MemoryAugmentationLayer` | Dual-path memory injection |
+| 1750 | `SessionContextGuideLayer` | Compressed session context guidance |
+
+## 装配路径
+
+每一层声明其参与的 `AssemblyPath` 值。管道在装配时根据所选路径过滤层：
+
+| Path | Description |
+|------|-------------|
+| `Basic` | Minimal system prompt — config + tool list only |
+| `Hydration` | Tools come from semantic retrieval (`HydrationResult`) |
+| `Soul` | Soul-enriched — includes identity / personality layers |
+| `Context` | Context-aware — uses `ResolvedContext` |
+| `Cached` | Pre-cached stable prefix |
+
+<Callout type="info">
+大多数调用的默认路径是 `Soul`，它会包含身份、个性和完整的工具套件。
+</Callout>
+
+## 节缓存
+
+`PromptPipeline` 在首次调用后缓存 `LayerStability::Stable` 层的输出。动态层始终重新计算。29 层中约有 23 层是稳定的。
+
+```rust
+pipeline.invalidate("soul");    // 按名称使某一层失效
+pipeline.invalidate_all();      // 清除所有缓存的节
+pipeline.cache_stats();         // CacheStats { hits, misses, entries }
+```
+
+**缓存失效触发器：**
+- 工具列表变更 → 使 `"tools"` 和 `"hydrated_tools"` 失效
+- Soul 变更 → 使 `"soul"` 失效
+- 会话重置 → `invalidate_all()`
+
+### 稳定区与动态区
+
+| Zone | Layers | Behavior |
+|------|--------|----------|
+| **Stable** | Priorities 50–1600 | Cached across turns; recomputed only on invalidation |
+| **Dynamic** | Priorities 1700–1750 | Recomputed every request; never cached |
+
+## 思考模式
+
+`PromptMode` 控制在装配期间哪些层参与：
+
+| Mode | Behavior |
+|------|----------|
+| `Full` (default) | All 29 layers participate |
+| `Compact` | Excludes 14 heavy layers (runtime context, environment, runtime capabilities, protocol tokens, heartbeat, operational guidelines, citation standards, generation models, skill instructions, special actions, guidelines, thinking guidance, skill mode, custom instructions) |
+| `Minimal` | Only 5 core layers: soul, tools, hydrated tools, response format, language |
+
+在延迟敏感的高吞吐场景中使用 `Compact`。在纯工具调用或 token 预算极度受限时使用 `Minimal`。
+
+## 配置
+
+提示词系统通过 `aleph.toml` 配置：
+
+```toml
+[thinker]
+# Default mode for system prompt assembly
+# Options: "full", "compact", "minimal"
+default_mode = "full"
+
+# Maximum total characters in assembled prompt
+max_total_chars = 80000
+
+# Protected priorities that survive budget enforcement
+protected_priorities = [50, 55, 75, 100, 500, 501, 1200]
+
+[thinker.caching]
+# Enable section-level caching for stable layers
+enabled = true
+
+[thinker.memory]
+# Path to workspace MEMORY.md (relative to workspace root)
+memory_file = ".aleph/MEMORY.md"
+# Maximum lines to read from MEMORY.md
+max_memory_lines = 200
+# Maximum characters for memory injection
+max_memory_chars = 20000
+```
+
+## 关键层
+
+### AgentRoleLayer
+
+替代了旧的 `prompt_sections::resolve()` 函数。当设置了 `LayerInput.agent_def` 时，从 `AgentDef.prompt_sections` 注入角色头部和协议块（例如 `explore_constraints`、`coder_guidelines`、`researcher_protocol`）。
+
+### ToolUsageGrammarLayer
+
+读取 `ToolInfo.usage_hint` 字段（`prefer_for`、`prefer_over`）并生成数据驱动的指导规则，例如 "use `file_read` instead of shell `cat`"。所有约定均来自工具定义 —— 没有硬编码规则。
+
+### MemoryAugmentationLayer
+
+双路径记忆注入：
+1. **结构化索引** —— 读取 `.aleph/MEMORY.md`，截断至 200 行
+2. **向量检索** —— 来自 sqlite-vec 的 top-K 语义搜索结果
+3. **Wikilink 图谱** —— 兼容 Obsidian 的 `[[note]]` 链接构成可遍历的知识图谱
+
+## 相关页面
+
+- [Thinker](./thinker) —— LLM 交互与流式传输
+- [Harness](./harness) —— Think→Act 循环执行
+- [Memory](./memory) —— RAG、事实与检索

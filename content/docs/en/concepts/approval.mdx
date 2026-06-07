@@ -1,0 +1,175 @@
+---
+title: "Approval"
+description: "Policy-driven approval system for agent-initiated actions including browser navigation, desktop clicks, and shell commands."
+---
+
+The `approval` module provides a policy-driven approval system that decides whether agent-initiated actions should be allowed, denied, or escalated for user confirmation. This applies to browser navigation, desktop UI interactions, shell commands, and other potentially sensitive operations.
+
+## Design Philosophy
+
+The approval system follows three principles:
+
+1. **Default deny** — Actions are blocked unless explicitly permitted by policy
+2. **Tiered decision** — Blocklist → Allowlist → Defaults → Ask, in order of priority
+3. **Configuration-driven** — Policies are defined in config files, not hardcoded
+
+---
+
+## Architecture
+
+```
+ActionRequest ──▶ ApprovalPolicy::check() ──▶ ApprovalDecision
+                       │
+                  ┌────┴────┐
+                  │ Config  │  (blocklist → allowlist → defaults → ask)
+                  └─────────┘
+```
+
+---
+
+## Core Types
+
+### ActionRequest
+
+Represents an action the agent wants to perform:
+
+```rust
+pub struct ActionRequest {
+    pub action_type: ActionType,
+    pub target: String,
+    pub agent_id: String,
+    pub context: String,
+    pub timestamp: DateTime<Utc>,
+}
+```
+
+### ActionType
+
+Categories of actions that can be requested:
+
+```rust
+pub enum ActionType {
+    BrowserNavigate,
+    DesktopClick,
+    ShellCommand,
+    FileOperation,
+    // ... etc
+}
+```
+
+### ApprovalDecision
+
+The outcome of a policy check:
+
+```rust
+pub enum ApprovalDecision {
+    Allow,
+    Deny { reason: String },
+    Ask { prompt: String },
+}
+```
+
+---
+
+## Policy Types
+
+### ConfigApprovalPolicy
+
+The main policy implementation that loads rules from configuration:
+
+```rust
+pub struct ConfigApprovalPolicy {
+    config: PolicyConfig,
+}
+
+impl ConfigApprovalPolicy {
+    pub fn load() -> Self { /* ... */ }
+    
+    pub async fn check(
+        &self,
+        request: &ActionRequest,
+    ) -> ApprovalDecision { /* ... */ }
+}
+```
+
+**Decision flow:**
+1. Check blocklist — if target matches, `Deny`
+2. Check allowlist — if target matches, `Allow`
+3. Check default rules by action type
+4. If no rule matches, `Ask` the user
+
+### PolicyRule
+
+Individual rule definition:
+
+```rust
+pub struct PolicyRule {
+    pub pattern: String,        // Glob pattern
+    pub decision: DefaultDecision,
+    pub description: String,
+}
+```
+
+---
+
+## Glob Matching
+
+Patterns use glob syntax with path-safe semantics:
+
+```rust
+pub fn matches_glob(pattern: &str, target: &str) -> bool
+```
+
+- `*` matches any characters except `/`
+- `?` matches any single character except `/`
+- `**` matches any path segment
+
+The `?` pattern uses `[^/]` regex internally for consistent path-safe matching.
+
+---
+
+## Configuration Format
+
+Policies are defined in the main configuration file:
+
+```toml
+[approval]
+
+[[approval.blocklist]]
+pattern = "**/secrets/*"
+decision = "deny"
+description = "Never access secret files"
+
+[[approval.allowlist]]
+pattern = "https://github.com/**"
+decision = "allow"
+description = "Allow GitHub navigation"
+
+[approval.defaults]
+browser_navigate = "ask"
+shell_command = "deny"
+```
+
+---
+
+## Safety Properties
+
+- **No SQL injection** — All queries use parameterized bindings
+- **No lock poisoning** — Uses `tokio::sync` locks (no poisoning)
+- **Safe arithmetic** — Risk scores use `saturating_add`/`saturating_mul`
+- **No UTF-8 slicing** — No `&s[..n]` patterns
+
+---
+
+## Code Location
+
+- `src/approval/mod.rs` — Module entry point and public API
+- `src/approval/config.rs` — Configuration loading and glob matching
+- `src/approval/policy.rs` — Policy evaluation logic
+- `src/approval/types.rs` — Core types
+- `src/approval/adapters.rs` — Integration adapters
+
+## See Also
+
+- [Configuration](./configuration) — How approval policies are configured
+- [Security: Overview](../security/overview) — Security architecture

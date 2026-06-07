@@ -1,0 +1,198 @@
+---
+title: "Logging"
+description: "Logging infrastructure with PII scrubbing, structured output, and tracing integration."
+---
+
+The `logging` module provides Aleph's logging infrastructure. It is intentionally thin — most heavy lifting is delegated to the dedicated `aleph-logging` crate, while the core module focuses on PII (Personally Identifiable Information) scrubbing and context-aware formatting.
+
+## Design Philosophy
+
+Logging in Aleph follows two principles:
+
+1. **PII safety by default** — Logs must never contain API keys, tokens, personal messages, or identifying information unless explicitly configured
+2. **Structured output** — All logs are structured (JSON) for machine parsing, not just human reading
+
+The core `logging` module is a thin wrapper that configures the `aleph-logging` crate with Aleph-specific settings.
+
+---
+
+## Architecture
+
+```
+Application Code
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│         tracing::info!(...)              │
+└─────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│      PiiScrubbingLayer (core)            │
+│  ┌─────────────────────────────────────┐│
+│  │ PiiScrubbingFormat                   ││
+│  │ • Regex-based PII detection          ││
+│  │ • Redaction: "[REDACTED-EMAIL]"      ││
+│  └─────────────────────────────────────┘│
+└─────────────────────────────────────────┘
+     │
+     ▼
+┌─────────────────────────────────────────┐
+│         aleph-logging crate              │
+│  ┌─────────────┐  ┌──────────────────┐ │
+│  │ File Appender│  │ JSON Formatter   │ │
+│  └─────────────┘  └──────────────────┘ │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## PII Scrubbing
+
+### What Gets Scrubbed
+
+| Pattern | Example Input | Scrubbed Output |
+|---|---|---|
+| Email addresses | `user@example.com` | `[REDACTED-EMAIL]` |
+| API keys | `sk-abc123...` | `[REDACTED-API-KEY]` |
+| Phone numbers | `+1-555-123-4567` | `[REDACTED-PHONE]` |
+| IP addresses | `192.168.1.1` | `[REDACTED-IP]` |
+| Session IDs | `sess-abc123` | `[REDACTED-SESSION]` |
+
+### Scrubbing Behavior
+
+PII scrubbing operates at the formatting layer, not the event layer:
+
+```rust
+// This log call is unchanged
+tracing::info!("User {} logged in", email);
+
+// The PiiScrubbingFormat intercepts the output:
+// BEFORE: "User user@example.com logged in"
+// AFTER:  "User [REDACTED-EMAIL] logged in"
+```
+
+This design means:
+- Developers don't need to remember to scrub every log call
+- Scrubbing can be disabled for debugging (with explicit opt-in)
+- Performance impact is minimal (regex matching only on formatted output)
+
+### Configuration
+
+```toml
+[logging]
+level = "info"                    # trace, debug, info, warn, error
+format = "json"                   # json or pretty
+pii_scrubbing = true              # Enable PII redaction
+scrub_patterns = ["custom-regex"] # Additional patterns
+output = "~/.aleph/logs/"         # Log directory
+max_files = 7                     # Rotation: keep 7 days
+```
+
+---
+
+## Structured Logging
+
+All logs are output as JSON with standard fields:
+
+```json
+{
+  "timestamp": "2026-04-25T14:32:01Z",
+  "level": "INFO",
+  "target": "aleph::gateway",
+  "message": "Session created",
+  "fields": {
+    "session_id": "[REDACTED-SESSION]",
+    "channel": "telegram"
+  },
+  "span": {
+    "name": "handle_message",
+    "trace_id": "abc123"
+  }
+}
+```
+
+**Benefits:**
+- Easily parsed by log aggregation systems (Loki, Elasticsearch, Datadog)
+- Correlation via `trace_id` spans
+- Field-based filtering without regex
+
+---
+
+## Context-Aware Logging
+
+The logging system captures request context automatically:
+
+```rust
+use tracing::{info, instrument};
+
+#[instrument(skip(self), fields(session_id = %session.id))]
+async fn handle_message(&self,
+    session: &Session,
+    message: Message,
+) -> Result<(), Error> {
+    info!("Processing message"); // Automatically includes session_id
+
+    // Nested spans create hierarchical trace trees
+    process_message(message).await?;
+
+    Ok(())
+}
+```
+
+The `#[instrument]` macro automatically:
+- Creates a tracing span for the function
+- Captures function arguments as structured fields
+- Measures execution time
+- Links child spans to parent spans
+
+---
+
+## Log Levels
+
+| Level | Used For | Example |
+|---|---|---|
+| `TRACE` | Detailed execution flow | "Entering function X", "Loop iteration 5" |
+| `DEBUG` | Development diagnostics | "Cache hit", "SQL query: ..." |
+| `INFO` | Normal operations | "Session created", "Tool executed" |
+| `WARN` | Recoverable issues | "Config reload failed, using cached" |
+| `ERROR` | Failures requiring attention | "Database connection lost" |
+
+**Production default:** `INFO` — Production deployments should not emit `DEBUG` or `TRACE` logs due to volume.
+
+---
+
+## Implementation Notes
+
+The `PiiScrubbingLayer` struct in `src/logging/` is a public API surface and documentation placeholder. The actual scrubbing is performed by `PiiScrubbingFormat`:
+
+```rust
+pub struct PiiScrubbingLayer;
+
+// Layer::on_event is a no-op — scrubbing happens at the Format layer
+impl<S> Layer<S> for PiiScrubbingLayer {
+    fn on_event(&self, _event: &Event<'_>, _ctx: Context<'_>, S) {
+        // No-op: actual scrubbing is in PiiScrubbingFormat
+    }
+}
+```
+
+This split design allows:
+- The Layer to be registered/unregistered independently
+- The Format to be swapped for testing (no-op scrubber)
+- Future extensions (e.g., async scrubbing, ML-based detection)
+
+---
+
+## Code Location
+
+- `src/logging/mod.rs` — Module entry, layer setup
+- `src/logging/pii_filter.rs` — PII detection and redaction
+- `src/logging/format.rs` — JSON and pretty formatters
+- `aleph-logging/` — Dedicated logging crate (separate workspace member)
+
+## See Also
+
+- [Error Handling](./error-handling) — How errors are logged and propagated
+- [Security: Overview](../security/overview) — PII and data protection policies
+- [Getting Started: Configuration](../getting-started/configuration) — Logging configuration options

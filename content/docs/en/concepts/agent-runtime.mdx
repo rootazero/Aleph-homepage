@@ -1,0 +1,213 @@
+---
+title: "Agent Runtime"
+description: "Agent runtime system with subagent spawning, state machines, and team coordination."
+---
+
+The `agents` module implements Aleph's agent runtime system. It manages the lifecycle of individual agents, supports spawning subagents for parallel tasks, and coordinates multi-agent teams.
+
+## Design Philosophy
+
+The agent runtime follows three principles:
+
+1. **State machine lifecycle** — Every agent transitions through well-defined states (Pending → Running → Completed/Failed)
+2. **Deterministic execution** — Agent behavior is reproducible given the same inputs and state
+3. **Graceful degradation** — Failed subagents don't crash the parent; errors are collected and reported
+
+---
+
+## Core Components
+
+### Agent State Machine
+
+Agents follow a strict state machine with validation at each transition:
+
+```
+┌─────────┐    start()    ┌─────────┐   complete()  ┌──────────┐
+│ Pending │ ─────────────→│ Running │ ────────────→│ Completed│
+└─────────┘               └────┬────┘              └──────────┘
+                               │
+                               │ fail()
+                               ▼
+                          ┌─────────┐
+                          │ Failed  │
+                          └─────────┘
+```
+
+Each transition is validated via `can_transition_to()`:
+
+```rust
+impl Agent {
+    pub fn can_transition_to(&self, target: AgentState) -> bool {
+        match (self.state, target) {
+            (Pending, Running) => true,
+            (Running, Completed) => true,
+            (Running, Failed) => true,
+            _ => false,
+        }
+    }
+}
+```
+
+This prevents illegal transitions like moving from Failed back to Running.
+
+### Subagent Spawning
+
+Agents can spawn child agents for parallel task execution:
+
+```rust
+pub struct Agent {
+    id: AgentId,
+    parent: Option<AgentId>,
+    children: Vec<AgentId>,
+    state: AgentState,
+}
+
+impl Agent {
+    pub async fn spawn_subagent(
+        &mut self,
+        task: Task,
+    ) -> Result<AgentId, AgentError> {
+        let child = Agent::new(task);
+        let id = child.id.clone();
+        self.children.push(id.clone());
+        registry.register(child).await?;
+        Ok(id)
+    }
+}
+```
+
+**Key behaviors:**
+- Parent agents wait for all children to complete before completing themselves
+- Child failures bubble up to the parent via `ResultCollector`
+- Subagents inherit the parent's `IdentityContext` but can have restricted scopes
+
+### Registry
+
+The `AgentRegistry` maintains all active agents and provides lookup by ID:
+
+```rust
+pub struct AgentRegistry {
+    agents: RwLock<HashMap<AgentId, Agent>>,
+}
+```
+
+**Features:**
+- Sorted iteration for deterministic behavior (`registry.iter().sorted_by_key(|(id, _)| id)`)
+- Lock poisoning safety via `unwrap_or_else(|e| e.into_inner())`
+- Cleanup of completed agents after TTL expires
+
+### Result Collector
+
+Aggregates results from subagents:
+
+```rust
+pub struct ResultCollector {
+    results: Vec<AgentResult>,
+    max_preview_len: usize,
+}
+
+impl ResultCollector {
+    pub fn add_result(&mut self,
+        result: AgentResult,
+    ) {
+        // Truncate previews using Unicode-safe truncation
+        let preview = safe_truncate(&result.output, self.max_preview_len);
+        self.results.push(AgentResult {
+            output: preview,
+            ..result
+        });
+    }
+}
+```
+
+---
+
+## Team Coordination
+
+Multiple agents can form a team for collaborative tasks:
+
+```rust
+pub struct AgentTeam {
+    leader: AgentId,
+    members: Vec<AgentId>,
+    shared_context: SharedContext,
+}
+
+impl AgentTeam {
+    pub async fn broadcast(
+        &self,
+        message: TeamMessage,
+    ) -> Result<(), TeamError> {
+        for member in &self.members {
+            send_message(member, message.clone()).await?;
+        }
+        Ok(())
+    }
+}
+```
+
+**Patterns:**
+- **Leader election** — One agent acts as coordinator
+- **Shared context** — All team members access a shared knowledge base
+- **Broadcast/Multicast** — Messages can go to all members or specific subsets
+
+---
+
+## Context Provider
+
+Agents receive context from multiple sources:
+
+```rust
+pub trait ContextProvider: Send + Sync {
+    fn get_context(
+        &self,
+        agent_id: &AgentId,
+    ) -> Context;
+}
+```
+
+**Providers:**
+- `MemoryContextProvider` — Relevant memories from the knowledge base
+- `SessionContextProvider` — Current session history
+- `ToolContextProvider` — Available tools and their schemas
+
+**Note:** The `get_context` method is synchronous (returns `Context`, not `Future<Context>`). For async context sources, use `block_in_place` — but note this requires a multi-thread Tokio runtime.
+
+---
+
+## Agent Rules
+
+Behavior rules constrain what an agent can do:
+
+```rust
+pub struct AgentRules {
+    max_iterations: u32,
+    allowed_tools: Vec<String>,
+    forbidden_patterns: Vec<Regex>,
+}
+```
+
+Rules are enforced at the Harness layer and can be:
+- **Inherited** from the parent agent
+- **Overridden** per subagent
+- **Updated** at runtime via the Gateway API
+
+---
+
+## Code Location
+
+- `src/agents/mod.rs` — Module entry point
+- `src/agents/run.rs` — State machine and transitions
+- `src/agents/registry.rs` — Agent registry
+- `src/agents/dispatcher.rs` — Subagent dispatch
+- `src/agents/result_collector.rs` — Result aggregation
+- `src/agents/context_provider.rs` — Context injection
+- `src/agents/rules.rs` — Rule enforcement
+- `src/agents/thinking.rs` — Agent reasoning
+
+## See Also
+
+- [Harness](./harness) — The Think→Act loop that drives agents
+- [Session Management](./session-service) — Session lifecycle and persistence
+- [Tools](./tools) — Tools available to agents
+- [Orchestrator](./orchestrator) — How agents are dispatched and coordinated

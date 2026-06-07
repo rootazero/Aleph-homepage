@@ -1,0 +1,300 @@
+---
+title: "Cron Jobs"
+description: "Schedule recurring tasks with cron expressions, intervals, and one-time triggers"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Cron jobs let Aleph execute agent prompts on a schedule — daily summaries, periodic health checks, recurring reminders, and any other task that should happen automatically without human intervention. Jobs are persisted in SQLite, survive restarts, and support standard cron expressions as well as interval and one-shot schedules.
+
+## Why Scheduled Tasks?
+
+A personal AI assistant that only responds when you talk to it misses the point. Some of the most valuable workflows are the ones that happen in the background:
+
+- **Daily digests** — Summarize emails, calendar events, and tasks each evening
+- **System health checks** — Monitor disk usage, memory, and service uptime every 15 minutes
+- **Periodic cleanup** — Archive old sessions, compress memories, prune logs weekly
+- **Reminders and follow-ups** — "Remind me to check on the deployment in 2 hours"
+- **Data collection** — Pull metrics from APIs, aggregate, and store on a schedule
+- **Backup verification** — Confirm backups completed successfully each night
+
+## Schedule Types
+
+Aleph supports three kinds of schedules:
+
+| Kind | Description | Use Case |
+|------|-------------|----------|
+| `cron` | Standard 5-field cron expression | Recurring schedules tied to wall-clock time |
+| `every` | Fixed interval in milliseconds | Heartbeats, polling, periodic checks |
+| `once` | One-time execution at a specific timestamp | Reminders, deferred actions |
+
+### Cron Expression Format
+
+Standard 5-field format, evaluated in the configured timezone (defaults to UTC):
+
+```
++-------------- minute (0 - 59)
+| +------------ hour (0 - 23)
+| | +---------- day of month (1 - 31)
+| | | +-------- month (1 - 12)
+| | | | +------ day of week (0 - 6, Sunday = 0)
+| | | | |
+* * * * *
+```
+
+**Common patterns:**
+
+| Expression | Meaning |
+|------------|---------|
+| `0 9 * * *` | Every day at 9:00 AM |
+| `*/15 * * * *` | Every 15 minutes |
+| `0 0 * * 0` | Every Sunday at midnight |
+| `0 9 1 * *` | First day of every month at 9:00 AM |
+| `30 18 * * 1-5` | Weekdays at 6:30 PM |
+| `0 */6 * * *` | Every 6 hours |
+| `0 8,12,18 * * *` | At 8 AM, noon, and 6 PM |
+
+<Callout type="info">
+Cron expressions are parsed by the `cron` Rust crate, which supports all standard syntax including ranges (`1-5`), lists (`1,3,5`), and step values (`*/10`).
+</Callout>
+
+## Creating a Cron Job
+
+### Via the CLI
+
+The simplest way to create a job:
+
+```bash
+# Create a daily summary job
+aleph cron create \
+  --name "Daily Summary" \
+  --schedule "0 18 * * *" \
+  --prompt "Summarize today's activities and upcoming tasks" \
+  --timezone "America/New_York"
+
+# Create a health check that runs every 15 minutes
+aleph cron create \
+  --name "Health Check" \
+  --schedule "*/15 * * * *" \
+  --prompt "Check system health: disk, memory, CPU. Alert if anything is concerning."
+
+# Create an interval-based job (every 5 minutes)
+aleph cron create \
+  --name "Heartbeat" \
+  --schedule-kind every \
+  --every-ms 300000 \
+  --prompt "Verify all services are responding"
+```
+
+### Via the Gateway RPC
+
+For programmatic control, use the `cron.create` method over the WebSocket gateway:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "cron.create",
+  "params": {
+    "name": "Weekly Report",
+    "schedule": "0 9 * * 1",
+    "agent_id": "main",
+    "prompt": "Generate a weekly summary of completed tasks and key metrics",
+    "enabled": true,
+    "timezone": "UTC",
+    "tags": ["reports", "weekly"],
+    "max_retries": 3,
+    "priority": 7
+  }
+}
+```
+
+See [cron.* RPC methods](/docs/en/gateway/methods/cron) for the full API specification.
+
+### Via Configuration
+
+Jobs can also be defined in `aleph.toml` for declarative management:
+
+```toml
+[[cron.jobs]]
+name = "Morning Briefing"
+schedule = "0 8 * * 1-5"
+agent_id = "main"
+prompt = "Good morning. Give me a briefing: weather, calendar, priority tasks."
+timezone = "America/New_York"
+tags = ["daily", "briefing"]
+
+[[cron.jobs]]
+name = "Backup Verification"
+schedule = "0 3 * * *"
+agent_id = "main"
+prompt = "Check that last night's backup completed. Report any failures."
+tags = ["maintenance"]
+```
+
+<Callout type="warn">
+Jobs defined in `aleph.toml` are synced on startup. If a job with the same name already exists in the database, the config version takes precedence and overwrites it.
+</Callout>
+
+## Managing Jobs
+
+### List Jobs
+
+```bash
+# List all jobs
+aleph cron list
+
+# Output as JSON
+aleph cron list --json
+```
+
+### Check Job Status
+
+```bash
+# View detailed status of all jobs
+aleph cron status
+
+# JSON output for scripting
+aleph cron status --json
+```
+
+### Pause and Resume
+
+Jobs can be paused without deleting them. A paused job retains its configuration and history but will not execute on its next scheduled time.
+
+```json
+// Pause
+{ "method": "cron.pause", "params": { "job_id": "job-uuid-123" } }
+
+// Resume — next_run_at is recalculated from now
+{ "method": "cron.resume", "params": { "job_id": "job-uuid-123" } }
+```
+
+### Manual Trigger
+
+Force an immediate execution of any job, regardless of its schedule:
+
+```bash
+aleph cron run <job-id>
+```
+
+Or via RPC:
+
+```json
+{ "method": "cron.trigger", "params": { "job_id": "job-uuid-123" } }
+```
+
+The manual run is tracked separately with `trigger_source: "manual"` so you can distinguish it from scheduled runs in the history.
+
+### Delete
+
+```json
+{ "method": "cron.delete", "params": { "job_id": "job-uuid-123" } }
+```
+
+Deleting a job removes it and all its run history permanently.
+
+## Job Execution Context
+
+When a cron job fires, Aleph creates a new agent session with the job's prompt. The execution environment includes:
+
+- **Agent selection** — The `agent_id` field determines which agent profile handles the prompt. Use `"main"` for the default agent or specify a specialized sub-agent.
+- **Fresh session** — Each run starts a clean session. The agent has access to its long-term memory but no leftover context from previous runs.
+- **Template variables** — Use `prompt_template` with `{{variable}}` placeholders for dynamic prompts. Variables are resolved from `context_vars` at execution time.
+- **Delivery targets** — Optionally route the agent's response to a specific channel (Telegram, Discord, email) instead of just logging it.
+
+### Prompt Templates
+
+For dynamic prompts that change based on context:
+
+```json
+{
+  "name": "Project Status",
+  "schedule": "0 17 * * 1-5",
+  "prompt_template": "Give me a status update on the {{project}} project. Focus on {{focus_area}}.",
+  "context_vars": {
+    "project": "Aleph",
+    "focus_area": "open issues and blockers"
+  }
+}
+```
+
+## Job Chaining
+
+Jobs can be chained so that completion of one triggers another. This enables multi-stage workflows:
+
+```json
+{
+  "name": "Backup Database",
+  "schedule": "0 2 * * *",
+  "prompt": "Run database backup to /backups/",
+  "next_job_id_on_success": "job-uuid-verify",
+  "next_job_id_on_failure": "job-uuid-alert"
+}
+```
+
+The chain follows simple rules:
+- On success, trigger `next_job_id_on_success` (if set)
+- On failure after all retries, trigger `next_job_id_on_failure` (if set)
+- Chained jobs run immediately as manual triggers
+
+## Error Handling and Retries
+
+Failed jobs are retried automatically based on their configuration:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_retries` | 3 | Maximum retry attempts before marking as failed |
+| `priority` | 5 | Execution priority (1-10). Higher priority jobs execute first when multiple are queued |
+
+The retry strategy uses exponential backoff: each retry waits longer than the previous one to avoid hammering a failing service. After all retries are exhausted, the job's `consecutive_failures` counter increments. The job remains enabled and will attempt again at the next scheduled time.
+
+### Run Status Values
+
+| Status | Description |
+|--------|-------------|
+| `queued` | Job is queued for execution |
+| `running` | Currently executing |
+| `completed` | Finished successfully |
+| `failed` | Execution failed after all retries |
+| `retrying` | Failed, waiting for next retry attempt |
+
+## Monitoring
+
+### Events
+
+Cron job execution emits events that you can subscribe to via the gateway:
+
+```json
+{ "method": "events.subscribe", "params": { "patterns": ["cron.*"] } }
+```
+
+Events emitted:
+
+| Topic | When |
+|-------|------|
+| `cron.triggered` | Job execution starts |
+| `cron.completed` | Job finished successfully |
+| `cron.failed` | Job failed after all retries |
+
+See [Events](/docs/en/automation/events) for details on subscribing.
+
+### CLI Status
+
+The `aleph cron status` command shows a dashboard view of all jobs including last run time, next run time, consecutive failures, and enabled state. Use `--json` for machine-readable output suitable for external monitoring systems.
+
+## Best Practices
+
+1. **Use descriptive names** — Job names appear in logs, events, and the CLI. Make them self-documenting.
+2. **Set appropriate timezones** — Cron expressions are evaluated in the job's timezone. A daily summary at "6 PM" should use your local timezone, not UTC.
+3. **Tag for organization** — Use tags like `"daily"`, `"maintenance"`, `"reports"` to filter and manage jobs at scale.
+4. **Chain for workflows** — Instead of one complex prompt, break multi-stage processes into chained jobs with success/failure branches.
+5. **Monitor failures** — Subscribe to `cron.failed` events and set up alerts. A silently failing cron job is worse than no cron job.
+6. **Use templates for flexibility** — Prompt templates let you change parameters without recreating the job.
+
+## See Also
+
+- [cron.* RPC Methods](/docs/en/gateway/methods/cron) — Full RPC API specification
+- [Events](/docs/en/automation/events) — Subscribe to cron lifecycle events
+- [Hooks](/docs/en/automation/hooks) — Trigger actions on agent lifecycle events
+- [CLI Reference](/docs/en/cli/commands) — `aleph cron` command details

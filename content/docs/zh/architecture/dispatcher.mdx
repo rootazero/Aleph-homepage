@@ -1,0 +1,109 @@
+---
+title: "调度器"
+description: "基于 DAG 的任务编排、工具过滤与多模式执行。"
+---
+
+# 调度器
+
+调度器使用 **基于 DAG 的调度** 来编排复杂的多步任务。它分析工具请求，规划执行顺序，并管理并行或串行执行。
+
+**位置**：`src/dispatcher/`
+
+---
+
+## 架构图
+
+```
+┌──────────────────────────────────────────────────────┐
+│                      Dispatcher                      │
+├──────────────────────────────────────────────────────┤
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐│
+│  │ Analyzer     │─▶│ Planner      │─▶│ Scheduler    ││
+│  │• Intent      │  │• TaskGraph   │  │• DAG         ││
+│  │• Risk        │  │• Dependencies│  │• Parallel    ││
+│  │• Category    │  │• Priority    │  │• Monitor     ││
+│  └──────────────┘  └──────────────┘  └──────────────┘│
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐│
+│  │ ToolFilter   │  │ Confirmation │  │ Executor     ││
+│  │• Whitelist   │  │• User ask    │  │• Run         ││
+│  │• Blacklist   │  │• Auto-approve│  │• Capture     ││
+│  │• Smart       │  │• Deny        │  │• Timeout     ││
+│  └──────────────┘  └──────────────┘  └──────────────┘│
+└──────────────────────────────────────────────────────┘
+```
+
+---
+
+## 任务图
+
+调度的核心数据结构：
+
+```rust
+pub struct TaskGraph {
+    pub nodes: HashMap<TaskId, TaskNode>,
+    pub edges: Vec<(TaskId, TaskId)>,  // dependency edges
+}
+
+pub struct TaskNode {
+    pub id: TaskId,
+    pub tool: String,
+    pub args: Value,
+    pub status: TaskStatus,
+    pub dependencies: Vec<TaskId>,
+}
+```
+
+---
+
+## 执行模式
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **Single-Step** | One tool call, immediate result | Simple queries |
+| **Multi-Step** | Sequential tool chain | Complex tasks |
+| **Parallel** | DAG with concurrent execution | Independent subtasks |
+| **Sub-Agent** | Delegate to specialized agent | Domain expertise |
+
+---
+
+## 智能过滤
+
+```rust
+pub struct SmartFilter {
+    /// Tools always available
+    pub always_allow: Vec<String>,
+
+    /// Tools requiring confirmation
+    pub require_confirmation: Vec<String>,
+
+    /// Tools never available
+    pub never_allow: Vec<String>,
+
+    /// Context-based filtering
+    pub context_rules: Vec<ContextRule>,
+}
+```
+
+`SmartFilter` 和 `ContextRule` 是 trait 接口 —— 生产策略通过 `PermissionLayer::set_smart_filter` 和 `ContextRuleLayer::set_rules` 向这些 trait 注册。
+
+---
+
+## 任务状态
+
+```rust
+pub enum TaskStatus {
+    Pending,
+    Running,
+    Completed(Value),
+    Failed(String),
+    Cancelled,
+}
+```
+
+---
+
+## 另请参阅
+
+- [Executor](./executor) — 工具执行引擎
+- [Harness](./harness) — Think→Act 循环
+- [Tool Architecture](./tools) — 工具开发

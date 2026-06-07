@@ -1,0 +1,558 @@
+---
+title: "架构概览"
+description: "五层系统架构、模块依赖关系，以及从用户消息到 AI 响应的完整数据流。"
+---
+
+Aleph 采用五层横向架构，构成一条清晰的处理流水线：**接口层**、**网关层**、**编排层**、**执行层**和**存储层**。每条用户消息自上而下贯穿这些层；每个响应自下而上返回。本页将展示完整的系统架构，说明模块之间的依赖关系，并追踪请求在整个生命周期中的流转。
+
+如需深入了解各子系统，请参阅 [Gateway 架构](./gateway)、[Harness](./harness)、[会话管理](./sessions)、[工具架构](./tools) 和 [记忆系统](./memory)。
+
+## 系统分层
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           INTERFACE LAYER (I/O)                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ macOS    │  │  Tauri   │  │   CLI    │  │ Telegram │  │ Discord  │      │
+│  │  App     │  │   App    │  │          │  │Interface │  │Interface │      │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘      │
+│       │             │             │             │             │             │
+│       └─────────────┴─────────────┴─────────────┴─────────────┘             │
+│                                   │                                          │
+│                          WebSocket (JSON-RPC 2.0)                           │
+│                          ws://127.0.0.1:18790/ws                             │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                     │
+┌───────────────────────────────────┴─────────────────────────────────────────┐
+│                              GATEWAY LAYER                                   │
+│                         (Control Plane + Routing)                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │   Router    │  │  Session    │  │   Event     │  │  Security   │        │
+│  │  (JSON-RPC) │  │  Manager    │  │    Bus      │  │  (Auth)     │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
+│  │ Interface   │  │   Config    │  │  Webhooks   │  │    Cron     │        │
+│  │  Registry   │  │ Hot Reload  │  │             │  │  Scheduler  │        │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                     │
+┌───────────────────────────────────┴─────────────────────────────────────────┐
+│                           ORCHESTRATOR LAYER                                 │
+│                  (AgentDef + FlowSpec Resolution + Dispatch)                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        Orchestrator                                  │   │
+│  │  Resolves AgentDef + FlowSpec, builds HarnessDeps, dispatches       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                     │
+┌───────────────────────────────────┴─────────────────────────────────────────┐
+│                              HARNESS LAYER                                   │
+│                        (Think→Act Loop + Stop-Hooks)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                         AgentHarness                                 │   │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │   │
+│  │  │ Context │→ │  Think  │→ │   Act   │→ │Stop-Hook│→ │ Compact │   │   │
+│  │  │ (Budget)│  │(Thinker)│  │ (Tools) │  │  Check  │  │ (Budget)│   │   │
+│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘  └─────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                      │
+│  │  ToolService │  │    Guards    │  │   Overflow   │                      │
+│  │  (Tool Exec) │  │  (Safety)    │  │  Detector    │                      │
+│  └──────────────┘  └──────────────┘  └──────────────┘                      │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                     │
+┌───────────────────────────────────┴─────────────────────────────────────────┐
+│                            STORAGE LAYER                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌────────────────────────────┐  ┌────────────────┐  ┌─────────────────┐    │
+│  │  Memory (SQLite+sqlite-vec)│  │ Resilience     │  │  Config Store   │    │
+│  │  ┌──────┐ ┌───────┐        │  │   (SQLite)     │  │  ┌─────┐┌────┐ │    │
+│  │  │Facts │ │ Graph │        │  │  ┌──────────┐  │  │  │TOML ││Keys│ │    │
+│  │  │+Vec  │ │ Nodes │        │  │  │  State   │  │  │  │File ││    │ │    │
+│  │  │+FTS  │ │ Edges │        │  │  │ Database │  │  │  └─────┘└────┘ │    │
+│  │  └──────┘ └───────┘        │  │  └──────────┘  │  └─────────────────┘    │
+│  └────────────────────────────┘  └────────────────┘                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 第一层：接口层
+
+最上层包含所有客户端应用。每个客户端——无论是原生 macOS 应用、Tauri 桌面应用、终端 CLI，还是 Telegram/Discord 机器人——都通过同一个 WebSocket 端点 `ws://127.0.0.1:18790/ws` 连接到 Gateway。通信采用 JSON-RPC 2.0 协议，这意味着所有客户端无论平台如何都使用相同的协议。
+
+### 第二层：网关层
+
+Gateway 是控制平面。它接受 WebSocket 连接，解析 JSON-RPC 消息，将其路由到正确的处理程序，并管理会话、事件和认证。它还承载接口注册表（跟踪活跃聊天集成）、配置热重载监视器，以及用于后台任务的定时调度器。详情请参阅 [Gateway 架构](./gateway)。
+
+### 第三层：编排层
+
+编排层为每个传入请求解析 `AgentDef` 和 `FlowSpec`，组装 `HarnessDeps`（注入 `SessionService`、`ToolService`、`Sandbox` 和 `AiProvider`），并分派给 `HarnessRunner::run`。该层将路由关注点与执行逻辑分离，使 Gateway 保持轻量的控制平面。编排层与 Harness 的交互请参阅 [Harness](./harness)。
+
+### 第四层：执行层
+
+Harness 层运行核心智能循环。当消息到达时，`AgentHarness` 执行 **Think→Act** 周期，包括上下文预算管控、停止钩子（stop-hook）评估和可选的压缩：它在预算限制下收集上下文，调用大语言模型（LLM）做决策，按需执行工具，评估停止钩子和安全守卫，并在需要时压缩历史记录。`ToolService` 处理工具执行，而守卫则强制执行迭代上限和令牌预算等安全限制。完整周期请参阅 [Harness](./harness)。
+
+### 第五层：存储层
+
+底层提供持久化存储和状态管理。**Memory** 使用 SQLite 配合 `sqlite-vec` 扩展进行向量搜索，同时支持 Markdown 笔记和 WikiLink 图。**Resilience** 在 SQLite 中存储任务恢复和状态。**Config** 通过 TOML 文件和密钥管理持久化设置。详情请参阅 [记忆系统](./memory)。
+
+---
+
+## 模块依赖
+
+下图展示了 Rust 模块在编译时的依赖关系。`gateway` crate 是入口点，分发给接口、路由和编排器。编排器分派给 Harness，Harness 驱动记忆和执行子系统。
+
+```
+                    ┌─────────────┐
+                    │   gateway   │ ← Entry point (chat ingress, protocol adapters)
+                    └──────┬──────┘
+                           │ FlowRequest
+           ┌────────────────┼────────────────┐
+           │                │                │
+           ▼                ▼                ▼
+     ┌───────────┐    ┌───────────┐    ┌───────────┐
+     │interfaces │    │  routing  │    │orchestrator│
+     └───────────┘    └───────────┘    └─────┬─────┘
+                                             │ HarnessRunner::run
+                            ┌────────────────┼────────────────┐
+                            │                │                │
+                             ▼                ▼                ▼
+                       ┌───────────┐    ┌───────────┐    ┌───────────┐
+                       │  harness  │    │  memory   │    │   exec    │
+                       └─────┬─────┘    └───────────┘    └───────────┘
+                             │
+             ┌────────────────┼────────────────┐
+             │                │                │
+             ▼                ▼                ▼
+       ┌───────────┐    ┌───────────┐    ┌───────────┐
+       │  thinker  │    │tool_service│   │  engine   │
+       └─────┬─────┘    └───────────┘    └─────┬─────┘
+             │                                  │
+             ▼                                  ▼
+       ┌───────────┐                      ┌───────────┐
+       │ providers │                      │   tools   │
+       └───────────┘                      └─────┬─────┘
+                                                │
+                             ┌─────────────────┼─────────────────┐
+                             │                 │                 │
+                             ▼                 ▼                 ▼
+                       ┌───────────┐     ┌───────────┐     ┌───────────┐
+                       │  builtin  │     │    mcp    │     │ extension │
+                       │   tools   │     │  client   │     │ (plugins) │
+                       └───────────┘     └───────────┘     └───────────┘
+```
+
+---
+
+## 核心模块
+
+| 模块 | 路径 | 用途 |
+|--------|------|---------|
+| **gateway** | `src/gateway/` | WebSocket 服务器、JSON-RPC 路由、接口 |
+| **orchestrator** | `src/orchestrator/` | 解析 FlowSpec、构建 HarnessDeps、分派 |
+| **harness** | `src/harness/` | Think→Act 循环、停止钩子、上下文预算、压缩 |
+| **agents** | `src/agents/` | Agent 运行时、子代理生成、团队协调 |
+| **thinker** | `src/thinker/` | 大语言模型交互、提示构建、流式传输 |
+| **dispatcher** | `src/dispatcher/` | 任务编排、工具过滤 |
+| **engine** | `src/engine/` | 工具执行引擎 |
+| **providers** | `src/providers/` | AI 提供商实现 |
+| **tools** | `src/tools/` | AlephTool trait、工具服务器 |
+| **builtin_tools** | `src/builtin_tools/` | 内置工具实现 |
+| **memory** | `src/memory/` | 事实数据库、混合检索（SQLite + sqlite-vec + markdown 笔记 + wikilink 图） |
+| **extension** | `src/extension/` | 插件系统（WASM、Node.js） |
+| **exec** | `src/exec/` | Shell 执行、审批系统、操作系统级沙箱 |
+| **sandbox** | `src/sandbox/` | Sandbox trait + WorkspaceSandbox — 每会话工作区、能力账簿 |
+| **mcp** | `src/mcp/` | MCP 客户端实现 |
+| **routing** | `src/routing/` | 会话密钥解析 |
+| **config** | `src/config/` | 配置管理 |
+| **runtimes** | `src/runtimes/` | 能力账簿 — 探测、引导、持久化外部工具状态 |
+| **session** | `src/session/` | 仅追加会话事件日志 + 进程内 Actor |
+| **a2a** | `src/a2a/` | A2A 协议适配器 |
+| **acp** | `src/acp/` | ACP 协议实现 |
+| **approval** | `src/approval/` | 审批系统 |
+| **arena** | `src/arena/` | Arena 功能 |
+| **browser** | `src/browser/` | 浏览器自动化 |
+| **capability** | `src/capability/` | 能力系统 |
+| **clawhub** | `src/clawhub/` | ClawHub 集成 |
+| **components** | `src/components/` | 共享组件 |
+| **compressor** | `src/compressor/` | 上下文压缩 |
+| **core** | `src/core/` | 核心类型和原语 |
+| **daemon** | `src/daemon/` | 后台守护进程 |
+| **discovery** | `src/discovery/` | 服务发现 |
+| **event** | `src/event/` | 事件系统 |
+| **generation** | `src/generation/` | 媒体生成 |
+| **group_chat** | `src/group_chat/` | 群聊管理 |
+| **intent** | `src/intent/` | 意图识别 |
+| **logging** | `src/logging/` | 日志基础设施 |
+| **markdown** | `src/markdown/` | Markdown 处理 |
+| **media** | `src/media/` | 媒体处理 |
+| **metrics** | `src/metrics/` | 指标收集 |
+| **permission** | `src/permission/` | 权限系统 |
+| **pii** | `src/pii/` | 个人身份信息检测与处理 |
+| **prompt** | `src/prompt/` | 提示管理 |
+| **resilience** | `src/resilience/` | 状态管理（SQLite） |
+| **resilient** | `src/resilient/` | 弹性工具 |
+| **scheduler** | `src/scheduler/` | 作业调度 |
+| **search** | `src/search/` | 搜索提供商 |
+| **secrets** | `src/secrets/` | 密钥管理 |
+| **security** | `src/security/` | 安全工具 |
+| **skill** | `src/skill/` | 技能系统 |
+| **supervisor** | `src/supervisor/` | 执行监督 |
+| **tasks** | `src/tasks/` | 任务管理 |
+| **teams** | `src/teams/` | 团队协调 |
+| **tool_output** | `src/tool_output/` | 工具输出处理 |
+| **utils** | `src/utils/` | 工具函数 |
+| **vision** | `src/vision/` | 视觉处理 |
+| **wizard** | `src/wizard/` | 向导流程 |
+
+---
+
+## 数据流：请求生命周期
+
+当用户发送消息时，会触发以下序列：
+
+```
+Client Request (JSON-RPC over WebSocket)
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ Gateway: InboundRouter                              │
+│   • Parse JSON-RPC message                          │
+│   • Route to appropriate handler                    │
+│   • Authentication check (if enabled)              │
+│   • Construct FlowRequest { agent_id, input, ... }  │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ Orchestrator                                        │
+│   • Resolve AgentDef + FlowSpec                     │
+│   • Build HarnessDeps (SessionService, ToolService, │
+│     Sandbox, AiProvider)                            │
+│   • Dispatch to HarnessRunner::run                  │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ AgentHarness: Think → Act loop                      │
+│   1. Context: Apply budget, preflight prep          │
+│   2. Think: Call Thinker (LLM) for decision         │
+│   3. Act: Execute tools via ToolService             │
+│   4. Stop-hook: Evaluate completion / guards        │
+│   5. Compact: If overflow, compact history          │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ FlowOutcome → Gateway renders response              │
+│   • Stream events via TraceSink / EventBus          │
+│   • Final response as JSON-RPC result               │
+│   • Session history persisted to SQLite             │
+└─────────────────────────────────────────────────────┘
+```
+
+### 工具执行子流程
+
+当 Thinker 决定调用工具时，执行分支会经过 Dispatcher 和 Engine：
+
+```
+Thinker Decision (tool_use)
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ Dispatcher                                          │
+│   • Analyze tool request                            │
+│   • Check permissions (ToolFilter)                  │
+│   • Risk evaluation                                 │
+│   • Confirmation flow (if needed)                   │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ Engine                                              │
+│   • Lookup tool (Builtin / MCP / Extension)         │
+│   • Deserialize arguments                           │
+│   • Execute with timeout                            │
+│   • Capture output                                  │
+└─────────────────────────────────────────────────────┘
+    │
+    ├─── Builtin Tool (AlephTool trait)
+    │       • Direct Rust execution
+    │
+    ├─── MCP Tool (Model Context Protocol)
+    │       • JSON-RPC to external process
+    │
+    └─── Extension Tool (WASM / Node.js)
+            • Plugin runtime execution
+```
+
+Exec 类工具（`code_exec`、`bash_exec`）在工具与进程执行之间还会经过额外的**沙箱层**（`src/sandbox/`）。沙箱负责每会话工作区配置（`~/.aleph/workspaces/{session_id}/`）、能力强制执行，以及通过 `OsSandboxDriver` 实现操作系统级别的 seatbelt 隔离。
+
+---
+
+## 设计模式
+
+Aleph 在代码库中采用了多种 Rust 惯用设计模式。
+
+### 上下文模式
+
+将相关函数参数分组到专用结构体中，减少参数膨胀并支持构建器模式：
+
+```rust
+// Before: 7 parameters passed directly
+legacy_agent_loop.run(request, context, tools, identity, callback, abort_signal, initial_history).await
+
+// After: structured deps + FlowRequest
+let deps = HarnessDeps { session, tool_service, sandbox, provider, trace_sink };
+let flow = FlowRequest::new(agent_id, input, identity)
+    .with_abort_signal(abort_rx);
+HarnessRunner::run(flow, deps).await
+```
+
+**优势：**
+- 可扩展性：无需破坏性变更即可添加参数
+- 可读性：参数分组清晰
+- 类型安全：编译时验证
+- 人体工学：可选参数使用构建器模式
+
+### 新类型模式
+
+将原始类型包装在不同的结构体中，以实现编译时安全。你无法意外地将 `SessionId` 传递给需要 `ExperimentId` 的地方：
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExperimentId(String);
+
+impl ExperimentId {
+    pub fn new(id: impl Into<String>) -> Self { Self(id.into()) }
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+
+impl Deref for ExperimentId {
+    type Target = str;
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+```
+
+**新类型目录：**
+- **IDs**: `ExperimentId`, `VariantId`, `ContextId`, `TaskId`, `SubscriptionId`
+- **Collections**: `Ruleset`（权限规则）
+- **Values**: `Answer`（问题响应）
+
+### FromStr Trait 模式
+
+为代码库提供统一的解析接口：
+
+```rust
+impl FromStr for TaskStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            _ => Err(format!("Invalid TaskStatus: {}", s)),
+        }
+    }
+}
+
+// Usage
+let status: TaskStatus = "pending".parse()?;
+```
+
+**已实现于：** `FactType`、`HookKind`、`DeviceType`、`TaskStatus`、`RuntimeKind` 以及 10 余种其他类型。
+
+---
+
+## 特性标志
+
+所有生产特性默认编译；无需特性标志。仅保留测试特性：
+
+```toml
+[features]
+default = []
+loom = ["dep:loom"]       # 并发测试
+test-helpers = []          # 集成测试辅助工具
+```
+
+通道在运行时通过 `aleph.toml` 配置启用或禁用。
+
+---
+
+## 工作区结构
+
+Aleph 仓库组织为 Cargo 工作区：
+
+```
+aleph/
+├── desktop/                # 桌面桥接（共享 + 平台原生）
+│   ├── shared/             # DesktopCapability trait + IPC 协议
+│   ├── macos/              # macOS 原生实现
+│   ├── linux/              # Linux 原生实现
+│   └── windows/            # Windows 原生实现
+├── shared/
+│   └── protocol/           # 共享类型（IdentityContext 等）
+├── apps/
+│   ├── macos/              # 原生 macOS 应用（Swift）
+│   ├── desktop/            # Tauri 跨平台应用
+│   └── webchat/            # Web 聊天界面
+├── interfaces/
+│   ├── telegram/           # Telegram 机器人接口
+│   └── discord/            # Discord 机器人接口
+├── alephcore/              # 主库 crate（所有层）
+│   └── src/
+│       ├── gateway/        # 第二层：Gateway
+│       ├── orchestrator/   # 第三层：Orchestrator
+│       ├── harness/        # 第四层：Harness
+│       ├── agents/         # Agent 运行时
+│       ├── thinker/        # 大语言模型交互
+│       ├── dispatcher/     # 任务编排
+│       ├── engine/         # 工具执行
+│       ├── providers/      # AI 提供商适配器
+│       ├── tools/          # 工具 trait + 服务器
+│       ├── builtin_tools/  # 内置工具
+│       ├── memory/         # 第五层：记忆系统
+│       ├── exec/           # Shell 执行
+│       ├── mcp/            # MCP 客户端
+│       ├── extension/      # 插件系统
+│       ├── routing/        # 会话密钥解析
+│       ├── config/         # 配置
+│       └── ...             # 其他模块（见核心模块表）
+└── docs/                   # 文档和计划
+```
+
+---
+
+## 协议适配器系统
+
+Aleph 通过分层协议适配器架构支持多个 AI 提供商：
+
+| 层 | 类型 | 示例 |
+|-------|------|---------|
+| **Built-in** | 编译型 Rust | `OpenAiProtocol`, `AnthropicProtocol`, `GeminiProtocol`, `OllamaProvider` |
+| **Configurable** | YAML 热重载 | `~/.aleph/protocols/` 中的自定义协议，扩展内置或完全自定义 |
+| **Extension** | 插件 | WASM/Node.js 协议（未来） |
+
+`ProtocolRegistry` 通过先检查动态（YAML）协议，再检查内置协议来解析协议名称。YAML 协议定义在文件变更后 600ms 内通过 `notify-debouncer-full` 热重载。
+
+---
+
+## 身份与安全
+
+一个不可变的 `IdentityContext` 从会话创建到工具执行贯穿整个执行链。这实现了细粒度的基于角色的访问控制：
+
+- **Owner** 会话拥有所有工具的完全访问权限
+- **Guest** 会话携带 `GuestScope`，限制可用工具及会话过期时间
+- **Anonymous** 会话默认被拒绝
+
+`PolicyEngine` 在 Executor 级别执行无状态权限检查，确保每个工具调用在执行前都经过授权。
+
+### 身份上下文流转
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Identity Context Flow                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. Session Creation                                             │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  SessionManager                                           │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │ Owner Session:                                      │  │  │
+│  │  │   metadata = SessionIdentityMeta {                  │  │  │
+│  │  │     role: Owner,                                    │  │  │
+│  │  │     identity_id: "owner",                           │  │  │
+│  │  │     scope: None                                     │  │  │
+│  │  │   }                                                 │  │  │
+│  │  │                                                     │  │  │
+│  │  │ Guest Session:                                      │  │  │
+│  │  │   metadata = SessionIdentityMeta {                  │  │  │
+│  │  │     role: Guest,                                    │  │  │
+│  │  │     identity_id: "guest-123",                       │  │  │
+│  │  │     scope: Some(GuestScope {                        │  │  │
+│  │  │       allowed_tools: ["translate"],                 │  │  │
+│  │  │       expires_at: Some(1735689600)                  │  │  │
+│  │  │     })                                              │  │  │
+│  │  │   }                                                 │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           │                                      │
+│                           ▼                                      │
+│  2. Request Processing                                           │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Orchestrator                                             │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │ let identity = session_manager                      │  │  │
+│  │  │     .get_identity_context(&session_key, "gateway")  │  │  │
+│  │  │     .await?;                                        │  │  │
+│  │  │                                                     │  │  │
+│  │  │ // IdentityContext {                               │  │  │
+│  │  │ //   request_id: "req-456",                        │  │  │
+│  │  │ //   session_key: "session-123",                   │  │  │
+│  │  │ //   role: Guest,                                  │  │  │
+│  │  │ //   identity_id: "guest-123",                     │  │  │
+│  │  │ //   scope: Some(GuestScope { ... }),              │  │  │
+│  │  │ //   created_at: 1735689000,                       │  │  │
+│  │  │ //   source_channel: "gateway"                     │  │  │
+│  │  │ // }                                               │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           │                                      │
+│                           ▼                                      │
+│  3. Harness Execution                                            │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  HarnessRunner::run(                                      │  │
+│  │      FlowRequest {                                        │  │
+│  │          agent_id,                                        │  │
+│  │          input,                                           │  │
+│  │          identity,  // ← IdentityContext passed here     │  │
+│  │          abort_signal,                                    │  │
+│  │      },                                                   │  │
+│  │      HarnessDeps { session, tool_service, sandbox, ... } │  │
+│  │  )                                                        │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           │                                      │
+│                           ▼                                      │
+│  4. Tool Execution                                               │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Engine::execute(&action, &identity)                      │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │ // Normalize tool name                             │  │  │
+│  │  │ let normalized = normalize_tool_name(tool_name);   │  │  │
+│  │  │                                                     │  │  │
+│  │  │ // Check permission                                │  │  │
+│  │  │ let result = PolicyEngine::check_tool_permission(  │  │  │
+│  │  │     &identity,                                     │  │  │
+│  │  │     &normalized                                    │  │  │
+│  │  │ );                                                 │  │  │
+│  │  │                                                     │  │  │
+│  │  │ match result {                                     │  │  │
+│  │  │     Allowed => execute_tool(...),                  │  │  │
+│  │  │     Denied { reason } => ToolError { error: reason }│  │  │
+│  │  │ }                                                  │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 安全属性
+
+1. **不可变性**：`IdentityContext` 创建后无法修改
+2. **权限冻结**：Guest 作用域在会话创建时冻结
+3. **无状态检查**：`PolicyEngine` 无可变状态
+4. **授权证书**：身份一次性构建并向下传递
+5. **故障安全**：缺失或无效的元数据默认回退到 Owner（向后兼容）
+
+---
+
+## 下一步
+
+- [Gateway 架构](./gateway) — WebSocket 协议、JSON-RPC 方法和多渠道路由
+- [Harness](./harness) — Think→Act 周期、Orchestrator 和 AgentHarness
+- [会话管理](./sessions) — 会话生命周期、上下文压缩和持久化
+- [工具架构](./tools) — `AlephTool` trait、工具服务器和 MCP 集成
+- [记忆系统](./memory) — SQLite+sqlite-vec 存储、混合检索和认知记忆
+

@@ -1,0 +1,134 @@
+---
+title: "Executor"
+description: "Tool execution engine with 3 handler sources, layered middleware, and timeout management."
+---
+
+# Executor
+
+The Executor is the tool execution engine. It receives tool decisions from the Thinker (via the Dispatcher) and routes them to the appropriate handler.
+
+**Location**: `src/tools/`
+
+---
+
+## Execution Flow
+
+```
+Thinker Decision (tool_use)
+     │
+     ▼
+Dispatcher
+     │
+     ▼
+Executor
+     │
+     ├───▶ Builtin Tool (AlephTool trait)
+     │       Direct Rust execution
+     │
+     ├───▶ MCP Tool (Model Context Protocol)
+     │       JSON-RPC to external process
+     │
+     └───▶ Extension Tool (WASM / Node.js)
+             Plugin runtime execution
+```
+
+Exec-class tools (`code_exec`, `bash_exec`) route through an additional **Sandbox layer** (`src/sandbox/`) between the tool and process execution. The sandbox owns per-session workspace provisioning, capability enforcement, and OS-level seatbelt isolation via `OsSandboxDriver`.
+
+---
+
+## ToolService Façade
+
+Consumers depend on `Arc<dyn ToolService>` exclusively:
+
+```rust
+pub trait ToolService: Send + Sync + 'static {
+    async fn execute(&self, name: &str, input: Value) -> Result<ToolOutput, ToolError>;
+    async fn list(&self) -> Vec<ToolDefinition>;
+    async fn describe(&self, name: &str) -> Option<ToolDefinition>;
+}
+```
+
+---
+
+## Middleware Stack
+
+```
+ExecAuditLayer → PermissionLayer → ContextRuleLayer → TimeoutLayer → CoreDispatch
+```
+
+| Layer | Purpose |
+|-------|---------|
+| `ExecAuditLayer` | Audit logging |
+| `PermissionLayer` | Permission checks (`SmartFilter`) |
+| `ContextRuleLayer` | Context-based rules |
+| `TimeoutLayer` | Timeout enforcement |
+| `CoreDispatch` | Innermost layer holding the `ToolRegistry` with `BuiltinHandler`, `McpHandler`, and `ExtensionHandler` |
+
+`CoreDispatch` holds an `ArcSwap`-backed `ToolRegistry` of three handler sources:
+- `BuiltinHandler`
+- `McpHandler`
+- `ExtensionHandler`
+
+---
+
+## Core Dispatch
+
+Tool authors implement `AlephTool` — the façade adapts them via `BuiltinHandler`. No author-side API change.
+
+Session-event tracing: callers bundle `ToolService` dispatch + `SessionService` event emission via `crate::session::invoke_with_session_trace(tool_svc, session_svc, ...)`.
+
+---
+
+## AlephTool Trait
+
+### Static Dispatch (Compile-time)
+
+```rust
+pub trait AlephTool: Clone + Send + Sync + 'static {
+    /// Tool name (used in LLM tool_use)
+    const NAME: &'static str;
+
+    /// Tool description for LLM
+    const DESCRIPTION: &'static str;
+
+    /// Argument type (auto JSON Schema via schemars)
+    type Args: Serialize + DeserializeOwned + JsonSchema + Send;
+
+    /// Return type
+    type Output: Serialize + Send;
+
+    /// Execute the tool
+    async fn call(&self, args: Self::Args) -> Result<Self::Output>;
+}
+```
+
+### Dynamic Dispatch (Runtime)
+
+```rust
+pub trait AlephToolDyn: Send + Sync {
+    fn name(&self) -> &str;
+    fn definition(&self) -> ToolDefinition;
+    fn call(&self, args: Value) -> BoxFuture<'_, Result<Value>>;
+}
+
+// Blanket impl: Any AlephTool is also AlephToolDyn
+impl<T: AlephTool> AlephToolDyn for T { // Blanket implementation }
+```
+
+---
+
+## Exec-Class Tools & Sandbox
+
+- `code_exec`, `bash_exec` route through the Sandbox layer
+- `Sandbox` trait → `WorkspaceSandbox` → `OsSandboxDriver`
+- Per-session workspace at `~/.aleph/workspaces/{hash(session_id)}/`
+- Tool-level permissions (`SmartFilter`) gate *whether* a call runs
+- The sandbox's capability check gates *what the subprocess can do* once allowed
+
+---
+
+## See Also
+
+- [Tool Architecture](./tools) — Tool development guide
+- Sandbox — Execution isolation
+- MCP — Model Context Protocol

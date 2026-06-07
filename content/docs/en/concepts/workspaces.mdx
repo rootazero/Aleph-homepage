@@ -1,0 +1,306 @@
+---
+title: Workspaces
+description: How Aleph organizes per-agent state through workspace directories, including configuration files, session storage, plugin directories, and multi-agent isolation.
+---
+
+A workspace in Aleph is the on-disk state directory that contains everything the agent needs to operate: configuration, session history, memory databases, plugins, skills, and logs. The workspace model ensures clean separation between different agents and provides a predictable directory structure for all Aleph components to read and write state.
+
+## Directory Structure
+
+By default, Aleph stores its workspace at `~/.config/aleph/` (with `~/.aleph/` as a common symlink or alternative). The full structure:
+
+```
+~/.config/aleph/
+├── config.toml              # Main configuration file
+├── providers.toml           # AI provider credentials and settings
+├── sessions.db              # SQLite database for session history
+├── memory/
+│   ├── facts.lance/         # LanceDB vector store for facts
+│   └── graph.db             # Knowledge graph (nodes + edges)
+├── skills/                  # User and evolved skills
+│   ├── code-review/
+│   │   └── SKILL.md
+│   └── git-commit/
+│       └── SKILL.md
+├── plugins/                 # Installed extensions
+│   ├── my-plugin/
+│   │   ├── aleph_plugin.toml
+│   │   └── dist/
+│   └── another-plugin/
+├── protocols/               # Custom protocol definitions (YAML)
+│   └── my-custom-api.yaml
+├── soul.md                  # Global identity/personality definition
+├── keys/                    # API keys and secrets vault
+├── logs/                    # Gateway and runtime logs
+│   ├── gateway.log
+│   └── agent.log
+└── evolution.db             # Skill evolution tracking database
+```
+
+## Configuration Files
+
+### config.toml
+
+The primary configuration file controls all runtime behavior. It is organized into sections:
+
+```toml
+[agent]
+max_iterations = 25
+token_budget = 128000
+thinking_level = "medium"
+enable_compression = true
+compression_threshold = 100000
+
+[gateway]
+host = "127.0.0.1"
+port = 18790
+require_auth = false
+
+[interfaces.telegram]
+token = "BOT_TOKEN"
+allow_from = ["+1234567890"]
+
+[interfaces.discord]
+token = "BOT_TOKEN"
+guilds = ["guild-id-1"]
+
+[skills]
+enabled = true
+skills_dir = "skills"
+auto_match_enabled = false
+
+[extensions]
+enabled = true
+hot_reload = true
+
+[memory]
+auto_extract = true
+max_facts = 10000
+```
+
+### providers.toml
+
+Provider credentials are stored separately for security. This file is never committed to version control:
+
+```toml
+[providers.claude]
+protocol = "anthropic"
+model = "claude-opus-4-20250514"
+api_key = "sk-ant-..."
+enabled = true
+
+[providers.openai]
+protocol = "openai"
+model = "gpt-4o"
+api_key = "sk-..."
+enabled = true
+
+[providers.ollama]
+protocol = "ollama"
+model = "llama3.2"
+base_url = "http://localhost:11434"
+enabled = true
+```
+
+## Session Storage
+
+All conversation sessions are persisted in the `sessions.db` SQLite database:
+
+```sql
+CREATE TABLE sessions (
+    session_key TEXT PRIMARY KEY,
+    messages TEXT,           -- JSON array of Message objects
+    created_at INTEGER,
+    updated_at INTEGER,
+    message_count INTEGER,
+    token_count INTEGER
+);
+
+CREATE TABLE session_metadata (
+    session_key TEXT PRIMARY KEY,
+    agent_id TEXT,
+    channel TEXT,
+    last_compaction INTEGER
+);
+```
+
+Session keys use a hierarchical format that encodes the agent, channel, and scope:
+
+| Key Format | Example | Description |
+|------------|---------|-------------|
+| `agent:main:main` | Shared session | Cross-channel default session |
+| `agent:main:telegram:dm:user123` | Per-user DM | Isolated Telegram conversation |
+| `agent:main:discord:group:guild-id` | Group chat | Discord guild conversation |
+| `agent:main:cron:daily-summary` | Cron task | Scheduled task session |
+
+## Memory Storage
+
+The memory subsystem uses two storage backends within the workspace:
+
+### LanceDB Vector Store
+
+Facts are stored with vector embeddings for semantic search in the `memory/facts.lance/` directory. This enables the agent to recall relevant information from past conversations using similarity search.
+
+### Knowledge Graph
+
+The `memory/graph.db` SQLite database stores structured relationships between entities as a graph of nodes and edges. This complements the vector store by enabling traversal-based queries like "what do I know about project X and its dependencies?"
+
+## Plugin Directories
+
+Extensions are stored in `~/.aleph/plugins/`, with each plugin in its own subdirectory:
+
+```
+plugins/
+├── my-plugin/
+│   ├── aleph_plugin.toml    # Plugin manifest
+│   ├── package.json         # (Node.js plugins)
+│   ├── dist/
+│   │   └── index.js         # Compiled entry point
+│   └── src/
+│       └── index.ts         # Source code
+└── wasm-tool/
+    ├── aleph_plugin.toml
+    └── plugin.wasm          # Compiled WASM module
+```
+
+The extension system scans three search paths in order:
+
+1. `~/.aleph/plugins/` -- User-installed plugins (highest priority)
+2. `/usr/local/share/aleph/plugins/` -- System-wide plugins
+3. `./plugins/` -- Project-local plugins (relative to working directory)
+
+When hot reload is enabled, the file watcher monitors these directories and automatically loads, reloads, or unloads plugins as files change.
+
+## Identity and Soul Files
+
+Aleph uses a layered identity system where soul definitions can be specified at multiple levels:
+
+```
+Priority (highest to lowest):
+┌─────────────┐
+│  Session     │  ← Runtime override via RPC
+├─────────────┤
+│  Project     │  ← .soul/identity.md in project directory
+├─────────────┤
+│  Global      │  ← ~/.aleph/soul.md
+├─────────────┤
+│  Default     │  ← Built-in empty manifest
+└─────────────┘
+```
+
+The global `soul.md` file in the workspace defines the agent's default personality:
+
+```markdown
+---
+relationship: mentor
+expertise:
+  - Rust
+  - System design
+---
+
+# Identity
+
+I am Aleph, your AI programming partner.
+
+## Directives
+
+- Be helpful and encouraging
+- Explain concepts clearly
+- Suggest best practices
+
+## Anti-Patterns
+
+- Never be condescending
+- Never make up information
+```
+
+## Log Files
+
+Runtime logs are stored in the `logs/` directory:
+
+- `gateway.log` -- WebSocket server events, RPC calls, connection lifecycle.
+- `agent.log` -- Agent loop events, tool executions, LLM calls.
+
+Aleph uses the `tracing` crate with structured logging. Log levels can be configured via the `RUST_LOG` environment variable:
+
+```bash
+RUST_LOG=alephcore=debug cargo run -p alephcore --features gateway --bin aleph-gateway -- start
+```
+
+## Multi-Agent Workspace Separation
+
+When running multiple agents (e.g., a main agent and specialized sub-agents), each agent can maintain its own state while sharing the same workspace root:
+
+```
+~/.config/aleph/
+├── config.toml                    # Shared configuration
+├── sessions.db                    # Contains sessions for all agents
+│   ├── agent:main:main            # Main agent sessions
+│   ├── agent:main:telegram:dm:*   # Main agent Telegram sessions
+│   └── subagent:agent:main:translator  # Sub-agent sessions
+└── evolution.db                   # Shared skill evolution tracking
+```
+
+Sub-agent sessions use namespaced session keys (`subagent:agent:main:translator`) to maintain isolation within the shared database. The `SessionCoordinator` manages sub-agent session lifecycle:
+
+```rust
+pub struct SessionCoordinator {
+    db: Arc<VectorDatabase>,
+    config: CoordinatorConfig,
+}
+
+impl SessionCoordinator {
+    pub async fn create_session(&self, agent_type: &str, parent_id: &str)
+        -> Result<SessionHandle, AlephError>;
+    pub async fn acquire_session(&self, agent_type: &str, parent_id: &str)
+        -> Result<SessionHandle, AlephError>;
+    pub async fn release_session(&self, session_id: &str)
+        -> Result<(), AlephError>;
+}
+```
+
+Idle sub-agent sessions can be **swapped to disk** by the `SwapManager` to free memory:
+
+```rust
+pub struct SwapManager {
+    db: Arc<VectorDatabase>,
+    swap_dir: PathBuf,
+    config: SwapConfig,
+}
+
+impl SwapManager {
+    pub async fn swap_out(&self, session_id: &str, context: &SwappedContext)
+        -> Result<SwapResult, AlephError>;
+    pub async fn swap_in(&self, session_id: &str)
+        -> Result<SwappedContext, AlephError>;
+}
+```
+
+## Hot Reload
+
+Configuration changes are detected automatically via file watching:
+
+```
+~/.aleph/config.toml modified
+    │
+    ▼
+Debounce (500ms)
+    │
+    ▼
+Parse new config → Validate against schema
+    │
+    ▼
+Apply changes:
+ • Restart affected interfaces
+ • Update routing rules
+ • Emit config.changed event
+```
+
+No restart is required for most configuration changes. Provider credentials, interface tokens, skill directories, and extension settings all support hot reload.
+
+## Related Pages
+
+- [Agent Runtime](/docs/en/concepts/agent-runtime) -- How the agent uses workspace state during execution
+- [Messages](/docs/en/concepts/messages) -- Session storage and message persistence
+- [Extensions](/docs/en/concepts/extensions) -- Plugin directory layout and discovery
+- [Architecture Overview](/docs/en/architecture/overview) -- System-level view of the storage layer

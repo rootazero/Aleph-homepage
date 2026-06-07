@@ -1,0 +1,355 @@
+---
+title: "Hooks"
+description: "React to agent lifecycle events with shell commands, prompts, and agent invocations"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Hooks are callback functions that execute in response to agent lifecycle events — before a tool runs, when a session starts, after a command executes, and more. They let you inject custom logic into the agent pipeline without modifying core code: audit logging, security gates, notification dispatching, analytics, and dynamic prompt injection.
+
+## How Hooks Work
+
+Aleph's hook system sits between the agent loop and tool execution, forming an event-driven middleware pipeline. When a lifecycle event fires, the `HookExecutor` finds all registered hooks for that event, checks their matcher patterns, and executes their actions according to their kind (interceptor, observer, or resolver).
+
+```
+User Input ──▶ Agent Loop ──▶ [PreToolUse hooks] ──▶ Tool Execution
+                                                          │
+                                          [PostToolUse hooks] ◀──┘
+                                                │
+                                          Response ──▶ [SessionEnd hooks]
+```
+
+## Hook Events
+
+Every hook is bound to a specific event. Aleph supports the following hook events:
+
+### Tool Lifecycle
+
+| Event | When It Fires | Can Block? |
+|-------|---------------|------------|
+| `PreToolUse` | Before a tool is executed | Yes |
+| `PostToolUse` | After a tool completes successfully | No |
+| `PostToolUseFailure` | After a tool fails | No |
+
+### Session Lifecycle
+
+| Event | When It Fires | Can Block? |
+|-------|---------------|------------|
+| `SessionStart` | When a new session begins | No |
+| `SessionEnd` | When a session ends | No |
+| `PreCompact` | Before session compaction | Yes |
+
+### User Interaction
+
+| Event | When It Fires | Can Block? |
+|-------|---------------|------------|
+| `UserPromptSubmit` | When the user submits a prompt | Yes |
+| `PermissionRequest` | When a tool requests elevated permission | Yes |
+
+### Agent Lifecycle
+
+| Event | When It Fires | Can Block? |
+|-------|---------------|------------|
+| `SubagentStart` | When a sub-agent is launched | No |
+| `SubagentStop` | When a sub-agent finishes | No |
+| `Stop` | When processing stops | No |
+| `Notification` | When a notification is sent | No |
+| `Setup` | During initial setup | No |
+
+### Chat and Command (Plugin Events)
+
+| Event | When It Fires | Can Block? |
+|-------|---------------|------------|
+| `ChatMessage` | When a chat message is received | Yes |
+| `ChatParams` | When chat parameters are configured | Yes |
+| `ChatResponse` | When a chat response is generated | No |
+| `CommandExecuteBefore` | Before a command executes | Yes |
+| `CommandExecuteAfter` | After a command executes | No |
+
+## Hook Kinds
+
+Not all hooks behave the same way. Aleph classifies hooks into three kinds, each with different execution semantics:
+
+### Interceptor
+
+**Pipeline execution.** Interceptors run sequentially by priority and can modify the request context or block execution entirely. They short-circuit on the first block.
+
+Use interceptors for:
+- Security gates (block dangerous tool calls)
+- Input validation (reject malformed arguments)
+- Request modification (rewrite tool parameters)
+
+```toml
+# Block all shell commands that contain 'rm -rf'
+[[hooks]]
+event = "PreToolUse"
+kind = "interceptor"
+priority = "system"
+matcher = "shell:exec"
+actions = [{ type = "command", command = "echo $ARGUMENTS | grep -q 'rm -rf' && echo 'block: Dangerous command blocked' || echo 'pass'" }]
+```
+
+When an interceptor command outputs a line starting with `block:`, execution is halted and the rest of the line becomes the block reason shown to the user.
+
+### Observer
+
+**Fire-and-forget.** Observers run in parallel, receive read-only context, and cannot block or modify anything. Errors are logged but never propagated.
+
+Use observers for:
+- Audit logging
+- Analytics and metrics
+- External notifications
+- Telemetry
+
+```toml
+[[hooks]]
+event = "PostToolUse"
+kind = "observer"
+actions = [{ type = "command", command = "echo \"$(date): Tool $TOOL_NAME completed\" >> /var/log/aleph/tool_audit.log" }]
+```
+
+### Resolver
+
+**First-win competition.** Resolvers run sequentially by priority and stop as soon as one returns a value. Used for dynamic resolution where multiple sources might provide an answer.
+
+Use resolvers for:
+- Dynamic configuration lookup
+- Credential resolution
+- Route selection
+
+## Hook Priority
+
+Hooks execute in priority order within their kind. Lower numeric values run first:
+
+| Priority | Value | Use Case |
+|----------|-------|----------|
+| `system` | -1000 | Security, audit — always runs first |
+| `high` | -100 | Important business logic |
+| `normal` | 0 | Default priority |
+| `low` | 100 | Non-critical extensions |
+
+For interceptors, priority determines who gets to block first. For resolvers, it determines who gets to resolve first. For observers, priority has no practical effect since they run in parallel.
+
+## Hook Actions
+
+Each hook can execute one or more actions when triggered. Three action types are available:
+
+### Command
+
+Execute a shell command. The command runs in a subprocess with environment variables populated from the hook context:
+
+```toml
+actions = [{ type = "command", command = "${PLUGIN_ROOT}/scripts/validate.sh" }]
+```
+
+**Available environment variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `$TOOL_NAME` | Name of the tool being invoked |
+| `$ARGUMENTS` | Tool arguments as JSON string |
+| `$TOOL_INPUT` | Tool input content |
+| `$FILE` | File path (if applicable) |
+| `$SESSION_ID` | Current session ID |
+| `$PLUGIN_ROOT` | Root directory of the plugin |
+
+Both `$VAR` and `${VAR}` syntax are supported. Commands have a default timeout of 300 seconds.
+
+### Prompt
+
+Inject a prompt string into the conversation context. The prompt is passed to the LLM for evaluation, allowing hooks to influence the agent's reasoning:
+
+```toml
+actions = [{ type = "prompt", prompt = "Before executing ${TOOL_NAME}, verify the arguments are safe: ${ARGUMENTS}" }]
+```
+
+### Agent
+
+Invoke a named agent to handle the event. The agent runs as a sub-agent with its own session:
+
+```toml
+actions = [{ type = "agent", agent = "review-agent" }]
+```
+
+## Matcher Patterns
+
+Tool-related hooks can use `matcher` to restrict which tools they apply to. The matcher is a regex pattern tested against the tool name:
+
+```toml
+# Match only the Write tool
+matcher = "Write"
+
+# Match Write or Edit
+matcher = "Write|Edit"
+
+# Match any shell tool
+matcher = "shell:.*"
+
+# Match all tools (default when no matcher is specified)
+# matcher not set — hook fires for every tool
+```
+
+If no `matcher` is set, the hook fires for all tool invocations of that event type.
+
+## Registering Hooks
+
+### In Plugin Configuration
+
+Plugins define hooks in their `aleph-plugin.json` manifest:
+
+```json
+{
+  "name": "security-gate",
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "kind": "interceptor",
+      "priority": "system",
+      "matcher": "shell:exec|Write|Edit",
+      "actions": [
+        {
+          "type": "command",
+          "command": "${PLUGIN_ROOT}/check-safety.sh"
+        }
+      ]
+    },
+    {
+      "event": "PostToolUse",
+      "kind": "observer",
+      "actions": [
+        {
+          "type": "command",
+          "command": "${PLUGIN_ROOT}/log-action.sh"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### In TOML Configuration
+
+Hooks can also be defined directly in `aleph.toml`:
+
+```toml
+[[hooks]]
+event = "SessionStart"
+kind = "observer"
+plugin_name = "session-logger"
+actions = [
+  { type = "command", command = "echo 'Session started: $SESSION_ID' >> ~/aleph-sessions.log" }
+]
+
+[[hooks]]
+event = "PreToolUse"
+kind = "interceptor"
+priority = "high"
+matcher = "shell:exec"
+plugin_name = "command-guard"
+actions = [
+  { type = "command", command = "~/scripts/check-command.sh" }
+]
+```
+
+## Hook Execution Context
+
+Every hook receives a `HookContext` with information about the triggering event:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `session_id` | string | The active session ID |
+| `tool_name` | string? | Tool name (for tool events) |
+| `arguments` | string? | Tool arguments as JSON |
+| `tool_input` | string? | Tool input content |
+| `file_path` | string? | Relevant file path |
+| `working_dir` | string? | Working directory for commands |
+| `env` | map | Additional environment variables |
+
+For command actions, all context fields are injected as environment variables. For prompt actions, they are available as `${VAR}` template substitutions.
+
+## Interceptor Results
+
+Interceptor hooks return structured results that control the pipeline:
+
+| Outcome | What Happens |
+|---------|-------------|
+| **Pass** | Execution continues to the next interceptor or the tool itself |
+| **Block** | Execution halts. The block reason is reported to the user. |
+| **Block (silent)** | Execution halts without showing a message to the user |
+| **Modified** | Execution continues with a modified context (rewritten arguments, etc.) |
+
+<Callout type="warn">
+When an interceptor hook action fails (command exits non-zero, timeout, etc.), the default behavior is to **block** execution for safety. A broken security hook should fail closed, not open.
+</Callout>
+
+## Practical Examples
+
+### Audit Trail
+
+Log every tool invocation to a file for compliance:
+
+```json
+{
+  "event": "PostToolUse",
+  "kind": "observer",
+  "actions": [{
+    "type": "command",
+    "command": "jq -n --arg tool \"$TOOL_NAME\" --arg args \"$ARGUMENTS\" --arg session \"$SESSION_ID\" --arg ts \"$(date -u +%FT%TZ)\" '{timestamp: $ts, tool: $tool, arguments: $args, session: $session}' >> /var/log/aleph/audit.jsonl"
+  }]
+}
+```
+
+### Slack Notification on Session End
+
+Notify a Slack channel when a long-running session finishes:
+
+```json
+{
+  "event": "SessionEnd",
+  "kind": "observer",
+  "actions": [{
+    "type": "command",
+    "command": "curl -s -X POST \"$SLACK_WEBHOOK\" -H 'Content-Type: application/json' -d '{\"text\": \"Aleph session '$SESSION_ID' completed.\"}'"
+  }]
+}
+```
+
+### File Write Protection
+
+Prevent the agent from writing to sensitive directories:
+
+```json
+{
+  "event": "PreToolUse",
+  "kind": "interceptor",
+  "priority": "system",
+  "matcher": "Write|Edit",
+  "actions": [{
+    "type": "command",
+    "command": "echo $ARGUMENTS | jq -r '.file_path // .path // \"\"' | grep -qE '^/(etc|usr|System)' && echo 'block: Writing to system directories is not allowed' || echo 'pass'"
+  }]
+}
+```
+
+### Dynamic Prompt Injection
+
+Add context-aware instructions before tool execution:
+
+```json
+{
+  "event": "PreToolUse",
+  "kind": "observer",
+  "matcher": "shell:exec",
+  "actions": [{
+    "type": "prompt",
+    "prompt": "Safety reminder: You are about to execute a shell command. Verify that the command does not modify or delete files outside the project directory."
+  }]
+}
+```
+
+## See Also
+
+- [Events](/docs/en/automation/events) — Subscribe to system events programmatically
+- [Cron Jobs](/docs/en/automation/cron-jobs) — Schedule recurring tasks
+- [Extensions](/docs/en/architecture/extensions) — Plugin system that registers hooks
+- [Security](/docs/en/security/overview) — Security model and permission system

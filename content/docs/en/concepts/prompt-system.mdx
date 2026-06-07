@@ -1,0 +1,191 @@
+---
+title: Prompt System
+description: 29-layer PromptBuilder, section caching, assembly paths, and thinking modes.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+## Overview
+
+The prompt system is the canonical way Aleph assembles context for LLM calls. It lives in `src/thinker/` and is architected around the `PromptPipeline` with 29 layers that inject content into the final system prompt string.
+
+The sole public entry point is `thinker::PromptBuilder`, which wraps a `PromptPipeline`. The old `agent_loop::PromptBuilder` was removed during the Harness migration.
+
+## Architecture
+
+```
+FlowRequest
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│           PromptBuilder                  │
+│  ┌───────────────────────────────────┐  │
+│  │        PromptPipeline              │  │
+│  │  ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ │  │
+│  │  │Layer│→│Layer│→│Layer│→│ ...│ │  │
+│  │  │  1  │ │  2  │ │  3  │ │ 29 │ │  │
+│  │  └─────┘ └─────┘ └─────┘ └─────┘ │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+    │
+    ▼
+System Prompt String
+```
+
+## Layer System
+
+Each layer implements the `PromptLayer` trait:
+
+```rust
+pub trait PromptLayer: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn priority(&self) -> u32;
+    fn paths(&self) -> &'static [AssemblyPath];
+    fn inject(&self, output: &mut String, input: &LayerInput);
+}
+```
+
+The `PromptPipeline` executes layers in ascending priority order (lowest number first). Each layer inspects the `LayerInput` context and appends its content to the output string.
+
+### 29 Layers (sorted by priority)
+
+**Stable zone** — content rarely changes, eligible for section-level caching (priorities 50–1600):
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 50 | `SoulLayer` | Identity / personality |
+| 55 | `AgentRoleLayer` | Sub-agent role header + protocol blocks |
+| 75 | `ProfileLayer` | Workspace profile overlay |
+| 100 | `RoleLayer` | Base assistant role |
+| 300 | `EnvironmentLayer` | OS, date, working directory |
+| 400 | `RuntimeCapabilitiesLayer` | Python, Node.js, FFmpeg, etc. |
+| 500 | `ToolsLayer` | Tool definitions (text schema) |
+| 501 | `HydratedToolsLayer` | Semantic-retrieval tool definitions |
+| 550 | `ToolUsageGrammarLayer` | Data-driven tool usage conventions |
+| 600 | `SecurityLayer` | Safety / security guidelines |
+| 700 | `ProtocolTokensLayer` | JSON-RPC protocol tokens |
+| 710 | `HeartbeatLayer` | Session keep-alive instructions |
+| 800 | `OperationalGuidelinesLayer` | Operational rules |
+| 900 | `CitationStandardsLayer` | Citation formatting |
+| 1000 | `GenerationModelsLayer` | Available image/video/audio models |
+| 1050 | `SkillInstructionsLayer` | Active skill instructions |
+| 1100 | `SpecialActionsLayer` | Special action syntax |
+| 1200 | `ResponseFormatLayer` | Response structure |
+| 1300 | `GuidelinesLayer` | General guidelines |
+| 1350 | `ThinkingGuidanceLayer` | Structured reasoning guidance |
+| 1400 | `SkillModeLayer` | Strict skill workflow enforcement |
+| 1500 | `CustomInstructionsLayer` | User custom instructions |
+| 1600 | `LanguageLayer` | Response language |
+
+**Dynamic zone** — per-request, never cached (priorities 1700–1750):
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 1700 | `InboundContextLayer` | Sender, channel, session metadata |
+| 1710 | `VoiceModeLayer` | Voice-specific response instructions |
+| 1720 | `RuntimeContextLayer` | Current time, session info |
+| 1730 | `IdentityFilesLayer` | SOUL.md, IDENTITY.md workspace files |
+| 1740 | `MemoryAugmentationLayer` | Dual-path memory injection |
+| 1750 | `SessionContextGuideLayer` | Compressed session context guidance |
+
+## Assembly Paths
+
+Each layer declares which `AssemblyPath` values it participates in. The pipeline filters layers at assembly time based on the selected path:
+
+| Path | Description |
+|------|-------------|
+| `Basic` | Minimal system prompt — config + tool list only |
+| `Hydration` | Tools come from semantic retrieval (`HydrationResult`) |
+| `Soul` | Soul-enriched — includes identity / personality layers |
+| `Context` | Context-aware — uses `ResolvedContext` |
+| `Cached` | Pre-cached stable prefix |
+
+<Callout type="info">
+The default path for most calls is `Soul`, which includes identity, personality, and the full tool suite.
+</Callout>
+
+## Section Caching
+
+`PromptPipeline` caches the output of `LayerStability::Stable` layers after the first call. Dynamic layers always recompute. ~23 of 29 layers are Stable.
+
+```rust
+pipeline.invalidate("soul");    // Invalidate one layer by name
+pipeline.invalidate_all();      // Clear all cached sections
+pipeline.cache_stats();         // CacheStats { hits, misses, entries }
+```
+
+**Cache invalidation triggers:**
+- Tool list change → invalidate `"tools"` and `"hydrated_tools"`
+- Soul change → invalidate `"soul"`
+- Session reset → `invalidate_all()`
+
+### Stable vs Dynamic Zones
+
+| Zone | Layers | Behavior |
+|------|--------|----------|
+| **Stable** | Priorities 50–1600 | Cached across turns; recomputed only on invalidation |
+| **Dynamic** | Priorities 1700–1750 | Recomputed every request; never cached |
+
+## Thinking Modes
+
+`PromptMode` controls which layers participate during assembly:
+
+| Mode | Behavior |
+|------|----------|
+| `Full` (default) | All 29 layers participate |
+| `Compact` | Excludes 14 heavy layers (runtime context, environment, runtime capabilities, protocol tokens, heartbeat, operational guidelines, citation standards, generation models, skill instructions, special actions, guidelines, thinking guidance, skill mode, custom instructions) |
+| `Minimal` | Only 5 core layers: soul, tools, hydrated tools, response format, language |
+
+Use `Compact` for high-throughput scenarios where latency matters. Use `Minimal` for tool-only calls or when token budget is severely constrained.
+
+## Configuration
+
+The prompt system is configured via `aleph.toml`:
+
+```toml
+[thinker]
+# Default mode for system prompt assembly
+# Options: "full", "compact", "minimal"
+default_mode = "full"
+
+# Maximum total characters in assembled prompt
+max_total_chars = 80000
+
+# Protected priorities that survive budget enforcement
+protected_priorities = [50, 55, 75, 100, 500, 501, 1200]
+
+[thinker.caching]
+# Enable section-level caching for stable layers
+enabled = true
+
+[thinker.memory]
+# Path to workspace MEMORY.md (relative to workspace root)
+memory_file = ".aleph/MEMORY.md"
+# Maximum lines to read from MEMORY.md
+max_memory_lines = 200
+# Maximum characters for memory injection
+max_memory_chars = 20000
+```
+
+## Key Layers
+
+### AgentRoleLayer
+
+Replaces the old `prompt_sections::resolve()` function. When `LayerInput.agent_def` is set, injects role headers and protocol blocks from `AgentDef.prompt_sections` (e.g. `explore_constraints`, `coder_guidelines`, `researcher_protocol`).
+
+### ToolUsageGrammarLayer
+
+Reads `ToolInfo.usage_hint` fields (`prefer_for`, `prefer_over`) and generates data-driven guidelines like "use `file_read` instead of shell `cat`". All conventions come from tool definitions — no hardcoded rules.
+
+### MemoryAugmentationLayer
+
+Dual-path memory injection:
+1. **Structured index** — reads `.aleph/MEMORY.md`, truncated to 200 lines
+2. **Vector retrieval** — top-K semantic search results from sqlite-vec
+3. **Wikilink graph** — Obsidian-compatible `[[note]]` links form a traversable knowledge graph
+
+## Related Pages
+
+- [Thinker](./thinker) — LLM interaction and streaming
+- [Harness](./harness) — Think→Act loop execution
+- [Memory](./memory) — RAG, facts, and retrieval

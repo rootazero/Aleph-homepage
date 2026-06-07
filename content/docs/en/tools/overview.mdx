@@ -1,0 +1,302 @@
+---
+title: "Tool System"
+description: "Architecture, traits, and design of Aleph's extensible tool framework"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+Aleph's tool system is a type-safe, extensible framework that gives the AI agent the ability to act on the world — executing shell commands, reading files, searching the web, controlling a browser, and more. Every tool is defined as a Rust trait implementation with automatic JSON Schema generation, ensuring compile-time correctness and runtime flexibility.
+
+The tool system is built around three key principles:
+
+1. **Type safety first** — Tool arguments and outputs are strongly typed Rust structs. The JSON Schema sent to the LLM is auto-generated from these types via `schemars`, eliminating schema drift.
+2. **Static + dynamic dispatch** — Built-in tools use zero-cost static dispatch; MCP and plugin tools use dynamic dispatch. A blanket implementation bridges the two seamlessly.
+3. **Hot-reload capable** — The `AlephToolServer` supports adding, removing, and replacing tools at runtime without restarting the agent.
+
+## Architecture
+
+The tool system is organized into three layers:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    AlephTool (static)                       │
+│   Compile-time known tools with typed Args/Output           │
+│   Auto JSON Schema generation via schemars                   │
+└─────────────────────────────────┬───────────────────────────┘
+                                  │ Blanket impl
+                                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   AlephToolDyn (dynamic)                    │
+│   Runtime dispatch with JSON Value args                      │
+│   Used by: MCP tools, plugin tools, hot-reloaded tools      │
+└─────────────────────────────────┬───────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   AlephToolServer                           │
+│   Hot-reload enabled tool registry                           │
+│   Thread-safe add/remove/list/call operations               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Source locations:**
+- Traits: `src/tools/traits.rs`
+- Server: `src/tools/server.rs`
+- Built-in tools: `src/builtin_tools/`
+- MCP client: `src/mcp/`
+- Browser runtime: `src/browser/`
+
+## The AlephTool Trait
+
+The `AlephTool` trait is the primary interface for defining tools. It uses associated types for compile-time type safety and auto-generates JSON Schema from the `Args` type:
+
+```rust
+#[async_trait]
+pub trait AlephTool: Clone + Send + Sync + 'static {
+    /// Tool name used in function calls (e.g., "search", "file_read")
+    const NAME: &'static str;
+
+    /// Human-readable description for LLM tool selection
+    const DESCRIPTION: &'static str;
+
+    /// Input argument type (must derive JsonSchema for auto-schema generation)
+    type Args: Serialize + DeserializeOwned + JsonSchema + Send;
+
+    /// Output type (serialized to JSON for LLM)
+    type Output: Serialize + Send;
+
+    /// Get tool category (default: Builtin)
+    fn category(&self) -> ToolCategory { ToolCategory::Builtin }
+
+    /// Whether this tool requires user confirmation before execution
+    fn requires_confirmation(&self) -> bool { false }
+
+    /// Usage examples for few-shot learning context
+    fn examples(&self) -> Option<Vec<String>> { None }
+
+    /// Get tool definition with auto-generated JSON Schema
+    fn definition(&self) -> ToolDefinition { /* auto-implemented */ }
+
+    /// Execute the tool with typed arguments
+    async fn call(&self, args: Self::Args) -> Result<Self::Output>;
+
+    /// Execute with JSON arguments (auto-implemented)
+    async fn call_json(&self, args: Value) -> Result<Value> { /* auto-implemented */ }
+}
+```
+
+### Schema Generation via schemars
+
+Tool argument types derive `JsonSchema`, which automatically generates the JSON Schema sent to the LLM. Field-level documentation comments become parameter descriptions:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchArgs {
+    /// Search query (natural language)
+    pub query: String,
+
+    /// Maximum results to return (default: 10)
+    #[serde(default)]
+    pub max_results: Option<u32>,
+}
+```
+
+This generates the following schema, which is sent to the LLM as part of the tool definition:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Search query (natural language)"
+    },
+    "max_results": {
+      "type": "integer",
+      "description": "Maximum results to return (default: 10)"
+    }
+  },
+  "required": ["query"]
+}
+```
+
+## Dynamic Dispatch
+
+For tools loaded at runtime (MCP servers, plugins), Aleph provides the `AlephToolDyn` trait:
+
+```rust
+pub trait AlephToolDyn: Send + Sync {
+    fn name(&self) -> &str;
+    fn definition(&self) -> ToolDefinition;
+    fn call(&self, args: Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + '_>>;
+}
+```
+
+A blanket implementation ensures every `AlephTool` is automatically also an `AlephToolDyn`:
+
+```rust
+impl<T: AlephTool> AlephToolDyn for T {
+    fn name(&self) -> &str { T::NAME }
+    fn definition(&self) -> ToolDefinition { AlephTool::definition(self) }
+    fn call(&self, args: Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + '_>> {
+        Box::pin(async move { self.call_json(args).await })
+    }
+}
+```
+
+This means you can mix static and dynamic tools in the same collection:
+
+```rust
+let tools: Vec<Box<dyn AlephToolDyn>> = vec![
+    Box::new(SearchTool::new()),     // Static (AlephTool)
+    Box::new(mcp_tool_wrapper),      // Dynamic (AlephToolDyn only)
+];
+```
+
+## Tool Categories
+
+Tools in Aleph fall into four categories:
+
+| Category | Source | Dispatch | Examples |
+|----------|--------|----------|----------|
+| **Built-in** | `src/builtin_tools/` | Static | `bash`, `file_ops`, `web_fetch`, `browser` |
+| **MCP** | External processes | Dynamic | Filesystem server, GitHub server |
+| **Extension** | WASM/Node.js plugins | Dynamic | Custom plugins |
+| **Markdown Skills** | `SKILL.md` files | Dynamic | User-defined prompt workflows |
+
+## AlephToolServer
+
+The `AlephToolServer` is a thread-safe, hot-reload-capable registry that manages all tools:
+
+```rust
+pub struct AlephToolServer {
+    tools: Arc<RwLock<HashMap<String, Arc<dyn AlephToolDyn>>>>,
+}
+```
+
+### Registration
+
+Tools can be registered using the builder pattern or at runtime:
+
+```rust
+// Builder pattern during construction
+let server = AlephToolServer::new()
+    .with_bash()
+    .with_file_ops()
+    .with_search()
+    .with_web_fetch()
+    .with_browser();
+
+// Runtime registration
+server.add_tool(MyCustomTool::new()).await;
+
+// Hot-reload with update tracking
+let info = server.replace_tool(UpdatedTool::new()).await;
+if info.was_replaced {
+    println!("Updated: {}", info.tool_name);
+}
+```
+
+### Execution with Auto-Repair
+
+The server includes automatic tool name repair, inspired by OpenCode's `experimental_repairToolCall` pattern. When the LLM sends an incorrect tool name, the server tries:
+
+1. **Exact match** — `search` matches `search`
+2. **Case-insensitive** — `Search` repairs to `search`
+3. **Snake-case conversion** — `WebSearch` repairs to `web_search`
+4. **Invalid fallback** — Routes to the `invalid` tool handler with an error message
+
+```rust
+let (result, repair_info) = server.call_with_repair("WebSearch", args).await;
+if let Some(repair) = repair_info {
+    tracing::info!("Repaired {} -> {}", repair.original_name, repair.repaired_name);
+}
+```
+
+### Handles for Concurrency
+
+The server provides lightweight, cloneable handles for sharing across async tasks:
+
+```rust
+let handle = server.handle();
+tokio::spawn(async move {
+    handle.call("search", args).await
+});
+```
+
+## Tool Filtering
+
+Aleph supports fine-grained control over which tools are available to the agent:
+
+```rust
+pub struct ToolFilter {
+    pub allowed: Option<HashSet<String>>,      // Whitelist
+    pub blocked: HashSet<String>,              // Blacklist
+    pub require_confirmation: HashSet<String>, // Require user approval
+}
+```
+
+Configure via JSON:
+
+```json
+{
+  "tools": {
+    "allowed": ["file_read", "web_fetch", "memory_*"],
+    "blocked": ["bash"],
+    "requireConfirmation": ["file_write", "file_delete"]
+  }
+}
+```
+
+<Callout type="info">
+Wildcard patterns like `memory_*` are supported in the allowed list, matching any tool whose name starts with the prefix.
+</Callout>
+
+## Tool Result
+
+Every tool execution returns a standardized `ToolResult`:
+
+```rust
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ToolResult {
+    pub success: bool,
+    pub output: Value,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+```
+
+## Tool Progress Callbacks
+
+Aleph provides a global callback system for monitoring tool execution, enabling streaming progress updates to the UI:
+
+```rust
+pub trait ToolProgressCallback: Send + Sync {
+    fn on_tool_start(&self, tool_name: &str, args_summary: &str);
+    fn on_tool_result(&self, tool_name: &str, result_summary: &str, success: bool);
+}
+
+// Set handler before agent execution
+set_tool_progress_handler(Some(Arc::new(MyProgressHandler)));
+```
+
+## Integration with the Agent Loop
+
+When the LLM responds with a `tool_use` block, the agent loop:
+
+1. **Resolves** the tool name via the `AlephToolServer` (with auto-repair)
+2. **Filters** the call through the `ToolFilter` (whitelist/blacklist check)
+3. **Checks confirmation** for tools marked as requiring user approval
+4. **Executes** the tool with the provided JSON arguments
+5. **Returns** the `ToolResult` to the LLM as a `tool_result` message
+
+This cycle repeats until the LLM produces a final text response without tool calls.
+
+## Next Steps
+
+- [Built-in Tools](/docs/en/tools/builtin) — Complete catalog of tools shipped with Aleph
+- [MCP Integration](/docs/en/tools/mcp) — Connecting external MCP servers
+- [Creating Tools](/docs/en/tools/creating) — Step-by-step guide to building custom tools
+- [Browser Automation](/docs/en/tools/browser) — Deep-dive into browser control

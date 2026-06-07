@@ -1,0 +1,234 @@
+---
+title: "身份上下文"
+description: "不可变的身份快照流经整个执行链，在工具执行级别启用基于身份的权限强制执行。"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## 概述
+
+`IdentityContext` 是一个不可变的身份快照，流经整个执行链，在工具执行级别启用基于身份的权限强制执行。
+
+每个进入 Aleph 的请求都携带一个身份——无论是来自所有者、具有有限范围的访客，还是未经认证的调用者。该身份在会话创建时捕获一次，并在请求生命周期的剩余时间内变为只读。通过使身份不可变，系统防止了调用者可能在执行过程中更改角色的特权升级攻击。
+
+## 身份上下文流程
+
+```
+1. 会话创建
+   SessionManager
+   ┌────────────────────────────────────────────┐
+   │ 所有者会话:                                 │
+   │   metadata = SessionIdentityMeta {          │
+   │     role: Owner,                            │
+   │     identity_id: "owner",                   │
+   │     scope: None                             │
+   │   }                                         │
+   │                                             │
+   │ 访客会话:                                   │
+   │   metadata = SessionIdentityMeta {          │
+   │     role: Guest,                            │
+   │     identity_id: "guest-123",               │
+   │     scope: Some(GuestScope { ... })         │
+   │   }                                         │
+   └────────────────────────────────────────────┘
+            │
+            ▼
+2. 请求处理
+   ExecutionEngine
+   ┌────────────────────────────────────────────┐
+   │ let identity = session_manager              │
+   │     .get_identity_context(&session_key)     │
+   │     .await?;                                │
+   │                                             │
+   │ // IdentityContext {                        │
+   │ //   request_id, session_key, role,         │
+   │ //   identity_id, scope, created_at,        │
+   │ //   source_channel                         │
+   │ // }                                        │
+   └────────────────────────────────────────────┘
+            │
+            ▼
+3. Harness 执行
+   HarnessRunner::run(
+       FlowRequest {
+           agent_id, input,
+           identity,  // IdentityContext 在此处传递
+           abort_signal,
+       }, ...
+   )
+            │
+            ▼
+4. 工具执行
+   Executor::execute(&action, &identity)
+   ┌────────────────────────────────────────────┐
+   │ let normalized = normalize_tool_name(...);  │
+   │                                             │
+   │ let result = PolicyEngine::check_tool_permission(
+   │     &identity, &normalized                  │
+   │ );                                          │
+   │                                             │
+   │ match result {                              │
+   │     Allowed => execute_tool(...),           │
+   │     Denied { reason } => ToolError { ... }  │
+   │ }                                           │
+   └────────────────────────────────────────────┘
+            │
+            ▼
+5. 权限检查
+   PolicyEngine::check_tool_permission
+   ┌────────────────────────────────────────────┐
+   │ match identity.role {                       │
+   │     Role::Owner => Allowed,                 │
+   │     Role::Guest => { check scope },         │
+   │     Role::Anonymous => Denied,              │
+   │ }                                           │
+   └────────────────────────────────────────────┘
+```
+
+## 关键组件
+
+| 组件 | 位置 | 职责 |
+|-----------|----------|----------------|
+| **IdentityContext** | `shared/protocol/src/auth.rs` | 不可变的身份快照 |
+| **SessionIdentityMeta** | `src/gateway/session_manager.rs` | 持久化身份元数据 |
+| **PolicyEngine** | `src/gateway/security/policy_engine.rs` | 无状态权限检查器 |
+| **InvitationManager** | `src/gateway/security/invitation_manager.rs` | 访客邀请生命周期 |
+| **SessionManager** | `src/gateway/session_manager.rs` | 身份构建 |
+| **Orchestrator** | `src/orchestrator/` | 身份注入到 FlowRequest |
+
+## 角色类型
+
+Aleph 定义了三个角色层级，决定调用者被允许执行的操作：
+
+| 角色 | 权限 | 使用场景 |
+|------|-------------|----------|
+| **Owner** | 绕过所有检查 | 具有完全访问权限的服务器所有者 |
+| **Guest** | 范围受限 | 通过邀请获得的临时访问权限 |
+| **Anonymous** | 除非禁用认证否则拒绝 | 未经认证的请求 |
+
+### Owner
+
+所有者角色分配给服务器管理员。所有者会话跳过所有权限检查——当 `role == Owner` 时，`PolicyEngine` 立即返回 `Allowed`。这是适当的，因为所有者已经通过操作系统拥有完全的系统访问权限。
+
+### Guest
+
+访客会话通过邀请系统创建。访客接收一个有限的范围，定义他们可以调用哪些工具以及他们的访问何时到期。`PolicyEngine` 验证所有三个维度：角色、范围存在性和工具成员资格。
+
+### Anonymous
+
+匿名请求被拒绝，除非服务器在禁用认证的情况下运行（开发模式）。在生产环境中，所有请求必须携带所有者或访客身份。
+
+## GuestScope
+
+当创建访客会话时，它携带一个 `GuestScope`，限定访客可以执行的操作：
+
+```rust
+pub struct GuestScope {
+    pub allowed_tools: Vec<String>,  // 访客可以调用的工具名称
+    pub expires_at: Option<i64>,     // Unix 时间戳；None = 无到期时间
+    pub display_name: Option<String>,// 用于日志的人工可读名称
+}
+```
+
+| 字段 | 类型 | 描述 |
+|-------|------|-------------|
+| `allowed_tools` | `Vec<String>` | 访客可以调用的确切工具名称 |
+| `expires_at` | `Option<i64>` | 访问被拒绝后的 Unix 时间戳 |
+| `display_name` | `Option<String>` | 审计日志中显示的友好名称 |
+
+<Callout type="warn">
+访客范围在工具执行级别强制执行，而不是在 API 边界。访客可以发送任何请求，但 `PolicyEngine` 会拒绝不在 `allowed_tools` 中的工具调用。
+</Callout>
+
+## PolicyEngine
+
+`PolicyEngine` 是一个**无状态**的权限检查器。它没有可变状态、没有数据库访问，也没有副作用。它接收一个 `IdentityContext` 和一个规范化的工具名称，并返回 `Allow` 或 `Deny` 决策。
+
+```rust
+pub struct PolicyEngine;
+
+impl PolicyEngine {
+    pub fn check_tool_permission(
+        identity: &IdentityContext,
+        tool_name: &str,
+    ) -> PermissionResult {
+        match identity.role {
+            Role::Owner => PermissionResult::Allowed,
+            Role::Guest => { /* 检查范围、到期时间、工具列表 */ }
+            Role::Anonymous => PermissionResult::Denied { reason: "auth required" },
+        }
+    }
+}
+```
+
+由于 `PolicyEngine` 是无状态的，它可以在调用链中的任何位置实例化，而无需担心生命周期或同步问题。不可变的 `IdentityContext` 提供了做出决策所需的所有数据。
+
+## 示例：所有者请求
+
+```rust
+// 1. 所有者创建会话（默认）
+let session_key = "owner-session-1";
+let metadata = SessionIdentityMeta::owner("gateway");
+
+// 2. 请求到达
+let identity = session_manager
+    .get_identity_context(session_key, "gateway")
+    .await?;
+// identity.role = Role::Owner
+
+// 3. 执行工具
+let action = Action::ToolCall {
+    tool_name: "shell_exec".to_string(),
+    arguments: json!({"command": "ls"}),
+};
+
+let result = executor.execute(&action, &identity).await;
+// 结果：ToolSuccess（所有者绕过所有检查）
+```
+
+## 示例：带邀请的访客请求
+
+```rust
+// 1. 所有者创建邀请
+let invitation = manager.create_invitation(CreateInvitationRequest {
+    guest_name: "Alice".to_string(),
+    scope: GuestScope {
+        allowed_tools: vec!["translate".to_string()],
+        expires_at: Some(now + 3600),
+        display_name: Some("Alice".to_string()),
+    },
+})?;
+
+let guest_token = manager.activate_invitation(&invitation.token)?;
+
+// 2. 访客创建会话
+// SessionManager 存储带有访客范围的元数据
+
+// 3. 请求到达
+let identity = session_manager
+    .get_identity_context(session_key, "gateway")
+    .await?;
+// identity.role = Role::Guest
+// identity.scope = Some(GuestScope { allowed_tools: ["translate"], ... })
+
+// 4. 执行允许的工具
+let action1 = Action::ToolCall {
+    tool_name: "translate".to_string(),
+    arguments: json!({"text": "Hello"}),
+};
+let result1 = executor.execute(&action1, &identity).await;
+// 结果：ToolSuccess（工具在 allowed_tools 中）
+
+// 5. 执行被拒绝的工具
+let action2 = Action::ToolCall {
+    tool_name: "shell_exec".to_string(),
+    arguments: json!({"command": "ls"}),
+};
+let result2 = executor.execute(&action2, &identity).await;
+// 结果：ToolError { error: "Tool 'shell_exec' not in guest scope" }
+```
+
+## 另请参阅
+
+- [工具系统](/docs/zh/concepts/tool-system) -- 工具如何声明能力和执行
+- [安全概述](/docs/zh/security/overview) -- 纵深防御安全架构

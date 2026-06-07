@@ -1,0 +1,570 @@
+---
+title: "Tool Architecture"
+description: "The ToolService facade, middleware stack, AlephTool trait, automatic schema generation, tool registration pipeline, execution flow, and MCP integration."
+---
+
+Tools are how Aleph interacts with the world. When the Agent Loop's Thinker decides to take action, it calls a tool -- reading a file, running a shell command, searching the web, or invoking an external service. This page covers the `ToolService` facade, the middleware stack, the `AlephTool` trait, how tool schemas are generated from Rust types, the registration pipeline, the execution flow from validation to response, and the three categories of tools (built-in, MCP, extension).
+
+For how tools are invoked by the agent, see [Agent Harness](./harness). For memory-specific tools, see [Memory System](./memory).
+
+---
+
+## ToolService Facade
+
+All tool consumers (the Agent Harness, MCP servers, and extension plugins) interact with tools through a single `Arc<dyn ToolService>` façade. This is the only interface consumers see -- the complexity of dispatch, permission checking, and timeout management is hidden behind it.
+
+```rust
+#[async_trait]
+pub trait ToolService: Send + Sync + 'static {
+    /// Execute a tool by name with JSON input.
+    async fn execute(&self, name: &str, input: Value) -> Result<ToolOutput, ToolError>;
+
+    /// List all currently available tools.
+    async fn list(&self) -> Vec<ToolDefinition>;
+
+    /// Get the definition for a single tool.
+    async fn describe(&self, name: &str) -> Option<ToolDefinition>;
+}
+```
+
+**Location**: `src/tools/service.rs`
+
+The façade is constructed at startup by `build_tool_service()` in `src/tools/facade.rs`. It wires a decorator chain of middleware layers around a `CoreDispatch`, which routes calls to the actual tool handlers. The returned `Arc<dyn ToolService>` is what the agent loop holds; the shared `Arc<ToolRegistry>` is threaded into `McpClient` and `ExtensionManager` so that dynamic tool registration extends the same registry.
+
+---
+
+## Middleware Stack
+
+Every tool call flows through a five-layer middleware stack, outer to inner:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  ExecAuditLayer                                         │
+│  • Traces tool calls (start / ok / err)                 │
+│  • Records latency_ms in ToolOutput metadata            │
+├─────────────────────────────────────────────────────────┤
+│  PermissionLayer                                        │
+│  • SmartFilter classification: Allow / Confirm / Deny   │
+│  • ApprovalGate confirmation for dangerous tools        │
+│  • Swappable at runtime via set_smart_filter            │
+├─────────────────────────────────────────────────────────┤
+│  ContextRuleLayer                                       │
+│  • ContextRule evaluation: Allow / Deny / Rewrite       │
+│  • Empty by default; rules wired via set_rules          │
+├─────────────────────────────────────────────────────────┤
+│  TimeoutLayer                                           │
+│  • Default timeout + per-tool overrides from config     │
+│  • Emits ToolError::Timeout on elapsed                  │
+├─────────────────────────────────────────────────────────┤
+│  CoreDispatch → ToolRegistry                            │
+│  • ArcSwap-backed snapshot for lock-free reads          │
+│  • Routes to BuiltinHandler / McpHandler / ExtHandler   │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Location**: `src/tools/middleware/`
+
+Each layer implements `ToolService` and wraps the next layer, so `execute()` delegates inward and `list()`/`describe()` pass through transparently. The stack is immutable after construction except for the `PermissionLayer` and `ContextRuleLayer` setters, which atomically swap their policies via `ArcSwap`.
+
+### CoreDispatch
+
+At the bottom of the stack, `CoreDispatch` holds an `Arc<ToolRegistry>` and routes `execute` / `list` / `describe` through the registry's `ArcSwap` snapshot. The snapshot is released *before* awaiting the handler so that concurrent `register`/`unregister` calls never block an in-flight execution.
+
+**Location**: `src/tools/dispatch.rs`
+
+---
+
+## AlephTool Trait
+
+Every built-in tool implements the `AlephTool` trait, which provides compile-time type safety and automatic JSON Schema generation:
+
+```rust
+#[async_trait]
+pub trait AlephTool: Clone + Send + Sync + 'static {
+    /// Tool name (used in LLM tool_use calls)
+    const NAME: &'static str;
+
+    /// Tool description shown to the LLM
+    const DESCRIPTION: &'static str;
+
+    /// Argument type (auto JSON Schema via schemars)
+    type Args: Serialize + DeserializeOwned + JsonSchema + Send;
+
+    /// Return type
+    type Output: Serialize + Send;
+
+    /// Execute the tool with typed arguments
+    async fn call(&self, args: Self::Args) -> Result<Self::Output>;
+
+    /// JSON interface (auto-implemented by the trait)
+    async fn call_json(&self, args: Value) -> Result<Value> {
+        let typed_args: Self::Args = serde_json::from_value(args)?;
+        let result = self.call(typed_args).await?;
+        Ok(serde_json::to_value(result)?)
+    }
+
+    /// Get tool definition (auto-implemented by the trait)
+    fn definition(&self) -> ToolDefinition {
+        let schema = schema_for!(Self::Args);
+        // ... includes examples if provided, confirmation flag, strict mode
+        ToolDefinition::new(Self::NAME, Self::DESCRIPTION, parameters, self.category())
+            .with_confirmation(self.requires_confirmation())
+            .with_strict(self.strict_schema())
+    }
+}
+```
+
+**Location**: `src/tools/traits.rs`
+
+### Key Design Decisions
+
+- **`Args` uses `schemars::JsonSchema`**: The trait bound on `Args` means JSON Schema is generated at compile time from the Rust type definition. Doc comments on struct fields become the schema `description`, which the LLM uses to understand each parameter.
+- **`call_json` is auto-implemented**: The trait provides a default JSON-in/JSON-out wrapper, so implementors only write the typed `call` method.
+- **`definition()` is auto-implemented**: Tool definitions (name, description, schema, examples) are derived automatically -- no manual JSON maintenance.
+- **`examples()` for few-shot learning**: Override to provide usage examples that are injected into the tool definition's `llm_context` field.
+
+### Dynamic Dispatch
+
+For runtime polymorphism (the registry stores heterogeneous tools), a dynamic dispatch trait wraps the static one:
+
+```rust
+pub trait AlephToolDyn: Send + Sync {
+    fn name(&self) -> &str;
+    fn definition(&self) -> ToolDefinition;
+    fn call(&self, args: Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + '_>>;
+}
+
+// Blanket implementation: any AlephTool is also AlephToolDyn
+impl<T: AlephTool> AlephToolDyn for T { ... }
+```
+
+---
+
+## Schema Generation
+
+When you define a tool's argument struct, the JSON Schema is generated automatically from the Rust type:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FileReadArgs {
+    /// File path to read
+    pub path: String,
+
+    /// Character encoding (default: utf-8)
+    #[serde(default)]
+    pub encoding: Option<String>,
+}
+```
+
+This produces the following schema, which is sent to the LLM:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "File path to read"
+    },
+    "encoding": {
+      "type": "string",
+      "description": "Character encoding (default: utf-8)"
+    }
+  },
+  "required": ["path"]
+}
+```
+
+The `#[serde(default)]` attribute makes `encoding` optional in the schema (not listed in `required`), and the doc comment becomes the field description. This means the LLM naturally knows which parameters are required and what each one does.
+
+---
+
+## Tool Registration Pipeline
+
+Tools are registered into the shared `ToolRegistry` at startup via `build_tool_service()`:
+
+```
+Startup
+    │
+    ▼
+┌──────────────────────────────────────────────┐
+│ 1. Build CoreDispatch + ToolRegistry         │
+│    → Empty registry with ArcSwap snapshot    │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 2. Register built-in tools                   │
+│    register_builtins_into(&registry, server) │
+│    → Wrap each in BuiltinHandler             │
+│    → Insert into ArcSwap-backed registry     │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 3. Wire middleware layers                    │
+│    TimeoutLayer → ContextRuleLayer           │
+│    → PermissionLayer → ExecAuditLayer        │
+│    → Arc<dyn ToolService> returned           │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 4. Connect MCP servers                       │
+│    → Thread registry Arc into McpClient      │
+│    → Discover tools, wrap in McpHandler      │
+│    → Register into same registry             │
+└──────────────────────┬───────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│ 5. Load extension plugins                    │
+│    → Thread registry Arc into ExtManager     │
+│    → Wrap in ExtensionHandler                │
+│    → Register into same registry             │
+└──────────────────────────────────────────────┘
+```
+
+### ToolRegistry
+
+The `ToolRegistry` is the central, `ArcSwap`-backed map that holds all tools:
+
+```rust
+pub struct ToolRegistry {
+    inner: Arc<ArcSwap<HashMap<String, Arc<dyn ToolHandler>>>>,
+    change_tx: broadcast::Sender<RegistryChange>,
+}
+
+impl ToolRegistry {
+    pub fn register(&self, name: String, handler: Arc<dyn ToolHandler>) -> Result<(), ToolError>;
+    pub fn unregister(&self, name: &str) -> Option<Arc<dyn ToolHandler>>;
+    pub fn snapshot(&self) -> Arc<HashMap<String, Arc<dyn ToolHandler>>>;
+}
+```
+
+**Location**: `src/tools/registry.rs`
+
+The registry emits `RegistryChange` events on registration/unregistration, which MCP and extension managers can subscribe to for reactive updates.
+
+---
+
+## Execution Pipeline
+
+When the Thinker decides to call a tool, the request flows through the middleware stack:
+
+```
+Thinker Decision: tool_use("bash_exec", {"command": "ls -la"})
+    │
+    ▼
+┌──────────────────────────────────────────────┐
+│ 1. EXECAUDIT                                 │
+│    • tracing::info!(target: "tool.call", ...) │
+│    • Stamp latency_ms on ToolOutput metadata │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│ 2. PERMISSION                                │
+│    • SmartFilter.classify(name, input)       │
+│    • Allow → pass through                    │
+│    • Deny → ToolError::PermissionDenied      │
+│    • Confirm → ApprovalGate.ask()            │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│ 3. CONTEXTRULE                               │
+│    • Evaluate ContextRule rules (if any)     │
+│    • Allow → pass through                    │
+│    • Deny → PermissionDenied                 │
+│    • Rewrite → forward with new input        │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│ 4. TIMEOUT                                   │
+│    • Apply default or per-tool override      │
+│    • tokio::time::timeout()                  │
+│    • Elapsed → ToolError::Timeout            │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│ 5. COREDISPATCH                              │
+│    • Take ArcSwap snapshot of registry       │
+│    • Look up handler by name                 │
+│    • Release snapshot, await handler.invoke()│
+│    • Builtin → BuiltinHandler → AlephToolDyn │
+│    • MCP → McpHandler → McpClient RPC        │
+│    • Extension → ExtensionHandler → plugin   │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│ 6. RESPOND                                   │
+│    • Return ToolOutput (value + metadata)    │
+│    • Feed back into Agent Harness (Feedback) │
+│    • Emit stream.tool_end event              │
+└──────────────────────────────────────────────┘
+```
+
+### ToolOutput
+
+Every tool execution returns a standardized output:
+
+```rust
+pub struct ToolOutput {
+    pub value: Value,              // JSON output from the tool
+    pub metadata: ToolOutputMetadata,
+}
+
+pub struct ToolOutputMetadata {
+    pub latency_ms: u64,
+    pub tokens_used: Option<u64>,
+    pub source: ToolSource,
+}
+```
+
+On failure, the error is one of the `ToolError` variants (`NotFound`, `PermissionDenied`, `ValidationFailed`, `Execution`, `Timeout`, `Transport`), and the error message is fed back to the Thinker so it can decide how to recover -- retry with different arguments, try a different tool, or report the error to the user.
+
+**Location**: `src/tools/service.rs`
+
+---
+
+## Built-in Tools
+
+Built-in tools are compiled directly into the Aleph binary. They execute as native Rust code with zero serialization overhead.
+
+### File Operations
+
+| Tool | Description | Key Args |
+|------|-------------|----------|
+| `file_read` | Read file content | `path`, `encoding?` |
+| `file_write` | Write to file | `path`, `content` |
+| `file_list` | List directory | `path`, `recursive?` |
+| `file_delete` | Delete file or directory | `path` |
+| `file_mkdir` | Create directory | `path` |
+| `file_chmod` | Change permissions | `path`, `mode` |
+
+### Code Execution
+
+| Tool | Description | Key Args |
+|------|-------------|----------|
+| `bash_exec` | Run bash command | `command`, `timeout?` |
+| `code_exec` | Execute code snippet | `language`, `code` |
+| `python_exec` | Run Python | `code`, `requirements?` |
+
+### Web and Search
+
+| Tool | Description | Key Args |
+|------|-------------|----------|
+| `web_fetch` | Fetch URL content | `url`, `method?`, `headers?` |
+| `web_search` | Search the web | `query`, `engine?` |
+
+### Memory
+
+| Tool | Description | Key Args |
+|------|-------------|----------|
+| `memory_store` | Store a fact | `content`, `tags?` |
+| `memory_search` | Hybrid search with deduplication | `query`, `max_results?` |
+| `memory_forget` | Delete a fact | `fact_id` |
+| `memory_browse` | Browse memory clusters | `query`, `path?` |
+| `memory_reflect` | Reflect on memory insights | `topic`, `depth?` |
+| `memory_timeline` | Timeline view of memories | `query`, `range?` |
+
+### Session and Agent
+
+| Tool | Description | Key Args |
+|------|-------------|----------|
+| `sessions_spawn` | Spawn sub-agent | `model?`, `thinking?`, `prompt` |
+| `sessions_send` | Send message to sub-agent | `session_key`, `message` |
+| `sessions_list` | List active sub-agents | -- |
+
+### Perception and Generation
+
+| Tool | Description | Key Args |
+|------|-------------|----------|
+| `snapshot_capture` | Capture AX tree + OCR | `target`, `region?`, `include_vision?` |
+| `image_generate` | Generate image | `prompt`, `provider?`, `size?` |
+| `speech_generate` | Text-to-speech | `text`, `voice?` |
+| `pdf_generate` | Generate PDF | `content`, `template?` |
+
+### Meta Tools
+
+| Tool | Description | Key Args |
+|------|-------------|----------|
+| `list_tools` | List available tools by category | `category?` |
+| `get_tool_schema` | Get JSON Schema for a tool | `tool_name` |
+
+**Location**: `src/builtin_tools/`
+
+---
+
+## Developing a Custom Built-in Tool
+
+### Step 1: Define Arguments
+
+```rust
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TranslateArgs {
+    /// Text to translate
+    pub text: String,
+
+    /// Target language code (e.g., "en", "zh", "ja")
+    pub target_language: String,
+
+    /// Source language (auto-detect if omitted)
+    #[serde(default)]
+    pub source_language: Option<String>,
+}
+```
+
+### Step 2: Implement the Tool
+
+```rust
+use crate::tools::AlephTool;
+
+#[derive(Clone)]
+pub struct TranslateTool {
+    provider: Arc<dyn TranslationProvider>,
+}
+
+#[async_trait]
+impl AlephTool for TranslateTool {
+    const NAME: &'static str = "translate";
+    const DESCRIPTION: &'static str =
+        "Translate text between languages";
+
+    type Args = TranslateArgs;
+    type Output = String;
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output> {
+        self.provider
+            .translate(&args.text, &args.target_language)
+            .await
+    }
+}
+```
+
+### Step 3: Register
+
+```rust
+// In builtin_tools/mod.rs
+pub fn register_builtins(server: &mut AlephToolServer) {
+    server.register(TranslateTool::new(provider));
+    // ... other tools
+}
+```
+
+The tool is wrapped in a `BuiltinHandler` and inserted into the shared `ToolRegistry` during `build_tool_service()`. It is then available to the LLM with a fully typed schema, automatic JSON serialization, and integration with the permission system.
+
+---
+
+## MCP Integration
+
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) allows external tool servers to be connected to Aleph. MCP tools are invoked via JSON-RPC to a separate process.
+
+```rust
+pub struct McpClient {
+    transport: Transport,  // Stdio, WebSocket, or HTTP
+    tools: Vec<ToolDefinition>,
+}
+
+impl McpClient {
+    pub async fn list_tools(&self) -> Result<Vec<ToolDefinition>>;
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<Value>;
+}
+```
+
+### Configuration
+
+```json
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "filesystem",
+        "command": "npx",
+        "args": ["-y", "@anthropic/mcp-server-filesystem"],
+        "env": { "HOME": "/Users/user" }
+      }
+    ]
+  }
+}
+```
+
+MCP tools are discovered at startup via the `list_tools` RPC call, wrapped in `McpHandler`, and registered into the same `ToolRegistry` as built-in tools. The qualified name in the registry is `{server_id}__{tool}` to avoid collisions. From the Thinker's perspective, MCP tools look identical to built-in tools.
+
+---
+
+## Tool Filtering
+
+The `PermissionLayer` controls which tools the LLM sees and which require user confirmation via the `SmartFilter` trait surface:
+
+```rust
+pub trait SmartFilter: Send + Sync {
+    /// Classify a tool invocation into Allow / Confirm / Deny.
+    fn classify(&self, name: &str, input: &Value) -> Classification;
+}
+
+pub enum Classification {
+    Allow,
+    Confirm { reason: String },
+    Deny { reason: String },
+}
+```
+
+The production implementation (`LayeredPermissionResolver` in `src/tools/middleware/permission/resolver.rs`) consults the merged global + per-agent `ToolPermissionsConfig`. The filter and approver can be swapped at runtime via `PermissionLayer::set_smart_filter()` and `set_approver()`.
+
+### Legacy ToolFilter (still supported)
+
+```rust
+pub struct ToolFilter {
+    pub allowed: Option<HashSet<String>>,  // Whitelist (if set)
+    pub blocked: HashSet<String>,           // Always excluded
+    pub require_confirmation: HashSet<String>,
+}
+```
+
+Glob patterns are supported in the `allowed` list (e.g., `memory_*` matches all memory tools).
+
+Tool filtering interacts with the security system: even if a tool passes the filter, the `PolicyEngine` checks the `IdentityContext` to ensure the session's role permits the tool call. Guest sessions can only call tools listed in their `GuestScope.allowed_tools`.
+
+---
+
+## Extension Tools
+
+Extension tools run in sandboxed plugin runtimes:
+
+| Runtime | Feature Flag | Execution Model |
+|---------|-------------|-----------------|
+| WASM | `plugin-wasm` | Extism-based, sandboxed memory |
+| Node.js | `plugin-nodejs` | Spawned process, stdio communication |
+
+Extension tools implement the same `ToolDefinition` interface as built-in tools, so they are seamlessly discoverable by the Thinker. The `CoreDispatch` routes to the correct handler transparently:
+
+```rust
+impl ToolService for CoreDispatch {
+    async fn execute(&self, name: &str, input: Value) -> Result<ToolOutput, ToolError> {
+        let snapshot = self.registry.snapshot();
+        let handler = snapshot.get(name).cloned()
+            .ok_or_else(|| ToolError::NotFound { name: name.to_string() })?;
+        drop(snapshot);  // Release before await
+        handler.invoke(input).await
+    }
+}
+```
+
+Extension tools are qualified as `ext__{plugin_id}__{tool_name}` in the registry to avoid collisions with MCP tools.
+
+---
+
+## Related Pages
+
+- [Architecture Overview](./overview) -- Where tools fit in the system
+- [Agent Harness](./harness) -- How the Thinker decides to call tools
+- [Gateway Architecture](./gateway) -- MCP and tool RPC methods
+- [Memory System](./memory) -- Memory tools and retrieval architecture

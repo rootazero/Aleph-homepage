@@ -1,0 +1,170 @@
+---
+title: "logs.*"
+description: "系统日志和诊断 RPC 方法"
+---
+
+日志方法提供对系统日志、诊断和追踪信息的访问，用于监控和调试 Aleph 操作。
+
+## 方法
+
+### logs.list
+
+列出可用的日志文件或最近的日志条目。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "logs.list",
+  "params": {
+    "limit": 100,
+    "level": "info"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "entries": [
+      {
+        "timestamp": "2024-01-15T10:30:00Z",
+        "level": "info",
+        "component": "gateway",
+        "message": "RPC request: agent.run"
+      }
+    ],
+    "total": 1
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `limit` | number | 否 | 返回的最大条目数 |
+| `level` | string | 否 | 按级别过滤：`"trace"`、`"debug"`、`"info"`、`"warn"`、`"error"` |
+| `component` | string | 否 | 按组件名称过滤 |
+| `since` | string | 否 | 范围起始的 ISO 时间戳 |
+
+### logs.get
+
+获取特定日志条目或日志文件内容。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "logs.get",
+  "params": {
+    "log_id": "log-1"
+  }
+}
+```
+
+### logs.tail
+
+流式传输最近的日志条目（用于实时监控）。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "logs.tail",
+  "params": {
+    "lines": 50,
+    "follow": false
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "entries": [
+      {
+        "timestamp": "2024-01-15T10:30:00Z",
+        "level": "info",
+        "message": "Session started: session-uuid-123"
+      }
+    ]
+  }
+}
+```
+
+### logs.levels
+
+获取所有组件的当前日志级别。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "logs.levels",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "levels": {
+      "gateway": "info",
+      "agent": "debug",
+      "memory": "warn"
+    }
+  }
+}
+```
+
+### logs.set_level
+
+设置组件的日志级别。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "logs.set_level",
+  "params": {
+    "component": "agent",
+    "level": "trace"
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `component` | string | 是 | 组件名称或 `"*"` 表示所有组件 |
+| `level` | string | 是 | 日志级别：`"trace"`、`"debug"`、`"info"`、`"warn"`、`"error"` |
+
+## 日志级别
+
+| 级别 | 描述 |
+|-------|-------------|
+| `trace` | 详细追踪信息 |
+| `debug` | 调试信息 |
+| `info` | 一般操作信息 |
+| `warn` | 警告消息 |
+| `error` | 错误消息 |
+
+## 参见
+
+- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间

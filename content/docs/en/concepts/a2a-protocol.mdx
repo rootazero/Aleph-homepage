@@ -1,0 +1,151 @@
+---
+title: "A2A Protocol"
+description: "Agent-to-Agent (A2A) protocol adapter for cross-agent communication and task delegation."
+---
+
+The `a2a` module implements the A2A (Agent-to-Agent) protocol adapter. A2A enables Aleph to communicate with other AI agents, delegate tasks to external agent systems, and receive results in a standardized format.
+
+## Design Philosophy
+
+A2A integration follows two principles:
+
+1. **Protocol abstraction** — Aleph speaks A2A natively; the adapter handles translation to/from internal types
+2. **Trust boundaries** — External agents are treated with the same permission model as internal tools
+
+---
+
+## Protocol Overview
+
+A2A is a protocol for agent-to-agent communication that defines:
+- **Task delegation** — How one agent asks another to perform work
+- **Status updates** — How progress is reported back
+- **Result delivery** — How completed work is returned
+- **Capability discovery** — How agents advertise what they can do
+
+```
+┌─────────────┐         A2A Protocol          ┌─────────────┐
+│   Aleph     │  ───────────────────────────→ │ External    │
+│  Agent      │  task request + context       │  Agent      │
+│             │  ←─────────────────────────── │             │
+│             │  status updates + result      │             │
+└─────────────┘                               └─────────────┘
+```
+
+---
+
+## Core Types
+
+### A2ATask
+
+Represents a task delegated to an external agent:
+
+```rust
+pub struct A2ATask {
+    pub task_id: String,
+    pub description: String,
+    pub input: serde_json::Value,
+    pub deadline: Option<i64>,
+}
+```
+
+### A2AResult
+
+The outcome of an A2A task:
+
+```rust
+pub struct A2AResult {
+    pub task_id: String,
+    pub status: A2AStatus,
+    pub output: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
+
+pub enum A2AStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+}
+```
+
+### FileContent
+
+Validates file attachments against A2A specification invariants:
+
+```rust
+pub struct FileContent {
+    pub mime_type: String,
+    pub data: Vec<u8>,
+    pub name: String,
+}
+
+impl FileContent {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        // Enforces: non-empty MIME type, non-empty data,
+        // valid filename (no path traversal, no null bytes)
+    }
+}
+```
+
+---
+
+## Trust Levels
+
+A2A connections use the same `TrustLevel` system as internal components:
+
+| Level | Behavior |
+|---|---|
+| `Local` | Full access, no approval needed |
+| `Private` | Standard approval flow |
+| `Public` | Strictest approval, all actions audited |
+| `Untrusted` | Blocked by default |
+
+Trust levels are inferred from the connection source (IP address, hostname, or mTLS certificate).
+
+---
+
+## Capability Discovery
+
+Before delegating tasks, Aleph queries the external agent's capabilities:
+
+```rust
+pub async fn discover_capabilities(
+    &self,
+    endpoint: &str,
+) -> Result<Vec<Capability>, A2AError> {
+    let response = self.client
+        .get(format!("{}/capabilities", endpoint))
+        .send().await?;
+    
+    response.json().await
+}
+```
+
+Capabilities are cached locally to avoid repeated discovery calls.
+
+---
+
+## Integration Points
+
+The A2A adapter integrates with:
+- **Gateway** — Receives A2A requests from external agents
+- **Orchestrator** — Decides whether to handle locally or delegate via A2A
+- **Approval** — Routes sensitive A2A operations through approval workflow
+- **Session** — Persists A2A task state across restarts
+
+---
+
+## Code Location
+
+- `src/a2a/mod.rs` — Module entry point
+- `src/a2a/protocol.rs` — A2A message types
+- `src/a2a/client.rs` — External agent client
+- `src/a2a/server.rs` — A2A request handler
+- `src/a2a/discovery.rs` — Capability discovery
+
+## See Also
+
+- [Agent Runtime](./agent-runtime) — How agents spawn and manage tasks
+- [Orchestrator](./orchestrator) — Task routing and delegation decisions
+- [Security: Overview](../security/overview) — Trust levels and approval

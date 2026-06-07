@@ -1,0 +1,269 @@
+---
+title: "Changelog"
+description: "Release history, milestones, and notable changes in Aleph"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+# Changelog
+
+Aleph follows a milestone-driven development process. Since the project is pre-1.0, changes are organized by month and milestone rather than semantic version tags.
+
+<Callout type="info">
+Aleph is under active development. Breaking changes may occur between milestones. The API and architecture are stabilizing but not yet frozen.
+</Callout>
+
+---
+
+## February 2026
+
+### Desktop Bridge Overhaul
+
+A complete redesign of the desktop integration layer, migrating from a native Swift macOS app to a cross-platform Tauri-based bridge architecture.
+
+**Server-Centric Build Architecture**
+
+- Introduced `BridgeSupervisor` — the Rust server now spawns and manages the Tauri bridge as a subprocess
+- Implemented `DesktopBridgeManager` for server-side bridge lifecycle management
+- Added JSON-RPC protocol over Unix Domain Sockets (UDS) for server-to-bridge communication
+- Bridge handshake with capability negotiation (`aleph.handshake`, `system.ping`)
+
+**Browser Automation**
+
+- New `BrowserTool` with Chrome DevTools Protocol (CDP) transport via `chromiumoxide`
+- Cross-platform Chromium discovery (macOS, Linux, Windows)
+- ARIA snapshot extraction with `ref_id` resolution for semantic element targeting
+- Full action set: click, type, fill, scroll, hover with ARIA ref targeting
+- Integration tests for complete browser workflows
+
+**Vision & Approval System**
+
+- `VisionTool` with pluggable providers: Claude vision and platform-native OCR
+- `ApprovalPolicy` trait and configuration for gating sensitive tool actions
+- Approval checks integrated into `BrowserTool` and `DesktopTool`
+
+**Desktop Capabilities (Phase 3)**
+
+- 12 bridge methods implemented: `click`, `type_text`, `key_combo`, `launch_app`, `window_list`, `focus_window`, `canvas_overlay`, `tray.update_status`, `ocr`, `ax_tree`, `scroll`, `drag`
+- Windows support: input simulation via WinRT, OCR, UI Automation accessibility tree
+- macOS: Vision framework OCR, Accessibility API inspection
+
+**Breaking Changes**
+
+- UniFFI Swift bindings removed — replaced by UDS IPC protocol
+- macOS Swift app deprecated and removed — Tauri bridge is the sole desktop frontend
+- macOS-specific CI workflows and build scripts removed
+
+### Cron System Redesign
+
+- Replaced window-based scheduling with a state-machine scheduling engine
+- Added delivery pipeline with `DeliveryTarget` trait (webhook support)
+- Template system, resource management, and job chaining
+- Schema migration with state-machine, resilience, delivery, and chain fields
+
+### Memory System Enhancements
+
+- Storage-time deduplication via vector similarity
+- JSONL backup service with rolling retention
+- `ScoringPipeline` wired into `HybridRetrieval` search flow
+- `NoiseFilter` integrated into the ingestion pipeline
+- Adaptive retrieval and backup settings added to `MemoryConfig`
+
+---
+
+## Early February 2026
+
+### Swarm Intelligence Architecture
+
+- Event bus foundation with `AgentLoopEvent` enum and publishing (shadow mode)
+- Semantic aggregator for cross-agent context
+- Context injector with `ContextProvider` trait integrated into `MessageBuilder`
+- `SwarmContextProvider` implementation
+- Collective memory for multi-agent shared state
+- Phase 1 Shadow Monitor Mode completed
+
+### System State Bus (SSB)
+
+- Core infrastructure: event routing, subscriptions, and state tracking
+- Robustness and privacy layer with PII filtering
+- Action dispatcher for automated responses to system events
+- Platform Abstraction Layer (PAL) with macOS-specific sensors
+- Integration with `SystemStateBus` for perception data
+
+### Control Plane UI
+
+- Sidebar narrow/wide mode switching
+- Tooltip and StatusBadge components for alert indicators
+- Real-time alert system via WebSocket subscriptions
+- Settings with nested routing and `SettingsLayout`
+- Real Gateway RPC integration (replaced mock data)
+
+### Collaborative Skill Evolution
+
+- `SuccessManifest` data structure for tracking successful tool patterns
+- `ConstraintValidator` for skill safety checks
+- `CollaborativeSolidificationPipeline` for multi-agent skill sharing
+- Integration with tool execution for automatic manifest creation
+
+---
+
+## Late January 2026
+
+### POE (Principle-Operation-Evaluation) Architecture
+
+A new execution framework for structured, validated agent task execution.
+
+- Core types: principles, operations, evaluation criteria
+- Entropy-based budget manager for resource allocation
+- Hard validation rules and semantic validation via LLM judge
+- Composite validator combining rule-based and semantic checks
+- `POEManager` for orchestrating POE lifecycles
+- Worker abstraction with `AgentLoopWorker` integration
+- Gateway RPC handlers: `poe.run`, `poe.status`, `poe.cancel`, `poe.list`
+- Experience crystallization feeding into the skill evolution system
+
+### Agent-Action Interaction
+
+- `QuestionKind` types for structured user interaction (confirm, select, input)
+- `UserAnswer` type for structured responses
+- `AskUserRich` decision variant in the agent loop
+- `on_user_question` callback in `LoopCallback` trait
+- CLI implementation via `inquire` crate
+
+### Skill Evolution System
+
+- `EvolutionTracker` for logging tool execution patterns
+- `SolidificationDetector` for detecting repeated successful patterns
+- `SkillGenerator` for automatic `SKILL.md` creation
+- `GitCommitter` for auto-committing evolved skills
+- `SkillCompiler` (Phase 10) for compiling skills into executable form
+
+### Spec-Driven Development
+
+- `SpecWriter` for automated requirement analysis
+- `TestWriter` for test generation from specifications
+- `LlmJudge` for evaluation of generated code against specs
+- `SpecDrivenWorkflow` orchestrator tying it all together
+
+### Resilient Task Execution
+
+- `ResilientTask` trait for defining fault-tolerant tasks
+- `ResilientExecutor` with retry logic, exponential backoff, and fallback strategies
+- Cron integration with `PodcastTask` example
+
+---
+
+## Mid-January 2026
+
+### rig-core Migration
+
+A major internal migration from the custom AI provider layer to the `rig-core` framework.
+
+- Upgraded `rig-core` from 0.6 to 0.28
+- Complete V1-to-V2 core migration (`AetherCore` removed, `AetherV2Core` is now the sole implementation)
+- New UniFFI v2 bindings with async callback pattern
+- `RigAgentManager` with process methods for tool-calling agents
+- `MemoryStore` with SQLite and `fastembed` for vector search
+- `SearchTool` (Tavily API) and `WebFetchTool` (HTML extraction) as built-in tools
+- Legacy routing, semantic, and tools modules removed
+
+### Aether Cowork Mode
+
+- Task orchestration core (Phase 1)
+- Swift UI progress panel for task tracking
+- UniFFI bindings for task orchestration
+- Configuration system and settings UI
+
+### macOS UI Polish
+
+- Liquid Glass implementation for macOS 26+ with consistent appearance
+- Multi-modal attachment architecture with encoding field
+- Memory storage integration into conversation processing
+- Clipboard image attachments passed to AI via rig-core
+
+---
+
+## Late December 2025
+
+### Internationalization
+
+- Full English and Simplified Chinese localization support
+- Localized UI strings throughout the macOS app
+
+### Permission System
+
+- Mandatory permission gating at startup (Accessibility, Input Monitoring)
+- Auto-restart after permission grant
+- Debounced permission status monitoring
+- In-app permission prompts (replaced system dialogs)
+
+### Provider Management
+
+- Provider activation/deactivation toggle
+- Inline connection test results
+- Custom provider authentication fixes
+- Settings window layout improvements
+
+### macOS 26 Window Design
+
+- Phase 1 & 2 implementation of new window chrome
+- Minimum window size constraints
+- Window reopening via URL scheme
+
+---
+
+## Mid-December 2025
+
+### Memory Module (Phase 4)
+
+- RAG-based contextual memory with vector search
+- Memory retention policies
+- macOS context capture (Swift)
+- Performance benchmarks and comprehensive test suite
+- Core integration with conversation pipeline
+
+### AI Provider Integration
+
+- Foundation AI provider interface
+- Multi-provider router implementation
+- AetherCore and memory integration
+- Config management backend with hot-reload
+- Routing rules editor
+- Behavior settings and hotkey customization
+- PII scrubbing for privacy
+- Typewriter effect output mode
+
+### Halo Overlay
+
+- Enhanced Halo overlay UI
+- Three input modes: cut, copy, and halo
+- Input mode selection UI before AI processing
+- Clipboard context mechanism (10-second window)
+- Double-shift default hotkey (avoiding input method conflicts)
+
+---
+
+## Pre-December 2025
+
+### Foundation
+
+The initial development period established the core Rust server, Gateway WebSocket protocol, agent loop, session management, and the original macOS Swift app. Key milestones included:
+
+- Rust core with async runtime (Tokio)
+- Gateway JSON-RPC 2.0 protocol over WebSocket
+- Multi-provider AI routing (Claude, GPT, Gemini, Ollama)
+- Telegram and Discord channel adapters
+- Three-tier command execution security model
+- MCP (Model Context Protocol) tool integration
+- SQLite-backed conversation persistence
+- Configuration via TOML with environment variable overrides
+
+---
+
+## Tags
+
+| Tag | Description |
+|-----|-------------|
+| `pre-aleph-rename` | Snapshot before the project was renamed to Aleph |
+| `pre-cleanup-20260131` | Snapshot before the January 2026 code cleanup |
+| `phase4-foundation` | Phase 4 foundation milestone |

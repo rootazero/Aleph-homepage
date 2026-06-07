@@ -1,0 +1,175 @@
+---
+title: "Markdown Parsing"
+description: "Markdown code fence parsing and text formatting utilities for streaming output processing."
+---
+
+The `markdown` and `utils` modules provide parsing utilities for Markdown content and general-purpose text formatting functions used across the codebase.
+
+## Design Philosophy
+
+1. **Streaming-friendly** — Fence parsing handles incomplete Markdown from streaming LLM output
+2. **Lightweight** — Minimal dependencies, focused scope
+3. **UTF-8 safe** — All string operations respect character boundaries
+
+---
+
+## Markdown Fence Parsing
+
+The `markdown::fences` module parses code fence blocks in Markdown:
+
+```rust
+pub struct FenceSpan {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub fence_char: char,  // '`' or '~'
+    pub info_string: String,
+}
+```
+
+### Parsing Functions
+
+```rust
+pub fn parse_fence_spans(text: &str) -> Vec<FenceSpan>
+```
+
+Parses all code fence blocks in the text, handling:
+- Backtick fences (```)
+- Tilde fences (~~~)
+- Info strings (language identifiers)
+- Nested fences (longer closing fence than opening)
+- Unclosed fences (extends to end of text)
+
+```rust
+pub fn find_fence_at(
+    text: &str,
+    line: usize,
+) -> Option<&FenceSpan>
+```
+
+Finds the fence span containing a specific line.
+
+```rust
+pub fn is_safe_fence_break(
+    text: &str,
+    pos: usize,
+) -> bool
+```
+
+Checks whether it's safe to break the text at a given position (not inside a fence).
+
+```rust
+pub fn get_fence_split(
+    text: &str,
+) -> FenceSplit
+```
+
+Splits text at a safe boundary, preferring fence boundaries.
+
+---
+
+## Text Formatting
+
+The `utils::text_format` module provides text manipulation utilities:
+
+```rust
+pub fn truncate_text(
+    text: &str,
+    max_chars: usize,
+) -> String
+```
+
+Truncates text to a maximum character count using `char_indices().nth()` for UTF-8 safety.
+
+---
+
+## JSON Extraction
+
+The `utils::json_extract` module extracts JSON from text:
+
+```rust
+pub fn extract_json_objects(
+    text: &str,
+) -> Vec<&str>
+```
+
+Finds top-level JSON objects in arbitrary text (useful for parsing LLM output that may contain Markdown + JSON).
+
+---
+
+## Path Utilities
+
+The `utils::paths` module provides path manipulation:
+
+```rust
+pub fn get_agent_config_dir(
+    agent_id: &str,
+) -> Result<PathBuf>
+```
+
+Returns the configuration directory for a specific agent, with validation against path traversal (`/`, `\`, `..`, empty strings).
+
+```rust
+pub fn expand_tilde(
+    path: &str,
+) -> PathBuf
+```
+
+Expands `~` to the user's home directory.
+
+---
+
+## PII Scrubbing
+
+The `utils::pii` module provides log-safe PII scrubbing (less strict than the gateway `pii` module):
+
+```rust
+pub fn scrub_pii(text: &str) -> String
+```
+
+Accepts false positives (safe for logs, not for LLM API calls).
+
+---
+
+## OneOrMany
+
+The `utils::one_or_many` module handles serialization of single values or arrays:
+
+```rust
+pub enum OneOrMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+```
+
+Useful for deserializing config fields that can be either `"value"` or `["value1", "value2"]`.
+
+---
+
+## Safety Properties
+
+- **UTF-8 safe** — `char_indices()` for truncation, `.get(..n)` for slicing
+- **No lock issues** — No Mutex/RwLock in these modules
+- **No `static mut`** — Uses `OnceLock` and `LazyLock`
+- **Path traversal protection** — `get_agent_config_dir` validates against `..` and separators
+- **TOCTOU safety** — `create_dir_all` called directly (idempotent, no existence check)
+
+---
+
+## Code Location
+
+**Markdown:**
+- `src/markdown/mod.rs` — Module entry point
+- `src/markdown/fences.rs` — Fence parsing
+
+**Utils:**
+- `src/utils/mod.rs` — Module entry point
+- `src/utils/text_format.rs` — Text truncation
+- `src/utils/json_extract.rs` — JSON extraction
+- `src/utils/paths.rs` — Path utilities
+- `src/utils/pii.rs` — Log-safe PII scrubbing
+- `src/utils/one_or_many.rs` — Single/array serialization
+
+## See Also
+
+- [Builtin Tools](./builtin-tools) — Tools that use markdown parsing
+- [PII Protection](./pii-protection) — Gateway-level PII filtering

@@ -1,0 +1,135 @@
+---
+title: "ACP Protocol"
+description: "Agent Control Protocol (ACP) implementation for standardized agent command and control."
+---
+
+The `acp` module implements the ACP (Agent Control Protocol), a standardized interface for controlling and monitoring agent behavior. ACP provides a common language for external systems to interact with Aleph's agent runtime.
+
+## Design Philosophy
+
+ACP serves as the "remote control" for Aleph agents:
+
+1. **Standardized commands** — Start, stop, pause, resume, inspect — all via uniform protocol
+2. **Observable state** — Real-time visibility into agent status, progress, and resource usage
+3. **Secure by default** — All ACP commands require authentication and respect permission boundaries
+
+---
+
+## Protocol Commands
+
+### Lifecycle Commands
+
+| Command | Description | Required Permission |
+|---|---|---|
+| `start` | Start a new agent with given configuration | `agent:write` |
+| `stop` | Gracefully terminate a running agent | `agent:write` |
+| `pause` | Pause agent execution (preserves state) | `agent:write` |
+| `resume` | Resume a paused agent | `agent:write` |
+| `inspect` | Get detailed agent status and metrics | `agent:read` |
+| `logs` | Stream agent log output | `agent:read` |
+
+### State Inspection
+
+```rust
+pub struct AgentStatus {
+    pub agent_id: AgentId,
+    pub state: AgentState,
+    pub progress: f32,           // 0.0 to 1.0
+    pub current_task: Option<String>,
+    pub metrics: AgentMetrics,
+}
+
+pub struct AgentMetrics {
+    pub cpu_time_ms: u64,
+    pub memory_kb: u64,
+    pub tokens_used: u64,
+    pub tool_calls: u32,
+}
+```
+
+---
+
+## ACP Server
+
+The ACP server exposes a JSON-RPC interface over WebSocket:
+
+```rust
+pub struct AcpServer {
+    handlers: HashMap<String, Box<dyn AcpHandler>>,
+}
+
+impl AcpServer {
+    pub async fn handle_command(
+        &self,
+        cmd: AcpCommand,
+        auth: &IdentityContext,
+    ) -> Result<AcpResponse, AcpError> {
+        // Verify permission
+        if !auth.can(&cmd.required_permission()) {
+            return Err(AcpError::Forbidden);
+        }
+        
+        // Dispatch to handler
+        let handler = self.handlers.get(&cmd.name)
+            .ok_or(AcpError::UnknownCommand)?;
+        handler.execute(cmd.params).await
+    }
+}
+```
+
+**Authentication:**
+- ACP commands use the same `IdentityContext` flow as Gateway requests
+- Owner sessions have full ACP access
+- Guest sessions can only inspect their own agents
+
+---
+
+## Event Streaming
+
+ACP supports real-time event streaming for monitoring:
+
+```rust
+pub enum AcpEvent {
+    StateChange {
+        agent_id: AgentId,
+        old_state: AgentState,
+        new_state: AgentState,
+    },
+    ProgressUpdate {
+        agent_id: AgentId,
+        progress: f32,
+    },
+    LogLine {
+        agent_id: AgentId,
+        level: LogLevel,
+        message: String,
+    },
+}
+```
+
+Clients subscribe to events via the Gateway's WebSocket event bus.
+
+---
+
+## Integration Points
+
+ACP integrates with:
+- **Gateway** — Exposes ACP endpoints via JSON-RPC
+- **Agent Runtime** — Controls agent lifecycle
+- **Session Service** — Persists agent state
+- **Metrics** — Collects and reports agent metrics
+
+---
+
+## Code Location
+
+- `src/acp/mod.rs` — Module entry point
+- `src/acp/server.rs` — ACP server implementation
+- `src/acp/commands.rs` — Command definitions
+- `src/acp/events.rs` — Event streaming
+
+## See Also
+
+- [Agent Runtime](./agent-runtime) — Agent lifecycle management
+- [Gateway](../architecture/gateway) — WebSocket JSON-RPC interface
+- [Event System](./event-system) — Real-time event distribution

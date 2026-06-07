@@ -1,0 +1,146 @@
+---
+title: "World Model"
+description: "World model for proactive agent behavior, context inference, and action planning."
+---
+
+The `worldmodel` module provides a world model for the daemon's proactive behavior, enabling the agent to infer context, predict needs, and plan actions autonomously.
+
+## Overview
+
+The World Model enables:
+- **Context inference** — Infer user intent and context from observations
+- **State tracking** — Maintain a model of the current system and user state
+- **Action prediction** — Predict what actions might be needed
+- **Proactive planning** — Generate plans for anticipated needs
+
+## Architecture
+
+```
+WorldModel
+  ├── CoreState — Current system state
+  ├── EnhancedContext — Enriched context with inferences
+  ├── InferenceCache — Cached inference results
+  └── PendingAction — Queued proactive actions
+```
+
+## Core Components
+
+### WorldModel
+
+Central world model facade:
+
+```rust
+// src/daemon/worldmodel/mod.rs
+pub struct WorldModel {
+    state: CoreState,
+    inference_cache: InferenceCache,
+    config: WorldModelConfig,
+}
+
+impl WorldModel {
+    pub fn update_state(
+        &mut self,
+        event: SystemEvent,
+    );
+    
+    pub fn infer_context(
+        &self,
+        raw_context: &Context,
+    ) -> EnhancedContext;
+    
+    pub fn predict_actions(
+        &self,
+    ) -> Vec<PendingAction>;
+    
+    pub fn get_state(&self,
+    ) -> &CoreState;
+}
+```
+
+### CoreState
+
+Represents the current system state:
+
+```rust
+// src/daemon/worldmodel/mod.rs
+pub struct CoreState {
+    pub system_load: SystemLoad,
+    pub active_sessions: Vec<SessionId>,
+    pub recent_events: Vec<SystemEvent>,
+    pub user_presence: PresenceStatus,
+}
+```
+
+### EnhancedContext
+
+Context enriched with inferences:
+
+```rust
+pub struct EnhancedContext {
+    pub raw: Context,
+    pub inferred_intent: Option<Intent>,
+    pub predicted_needs: Vec<Need>,
+    pub confidence: f32,
+}
+```
+
+### PendingAction
+
+Actions queued for execution:
+
+```rust
+pub struct PendingAction {
+    pub id: ActionId,
+    pub action_type: ActionType,
+    pub priority: Priority,
+    pub scheduled_at: DateTime<Utc>,
+    pub confidence: f32,
+}
+```
+
+## Activity Types
+
+The world model tracks different activity types:
+
+```rust
+pub enum ActivityType {
+    UserMessage,
+    SystemEvent,
+    ScheduledTask,
+    ExternalTrigger,
+}
+```
+
+## Integration with Dispatcher
+
+The World Model feeds the proactive Dispatcher:
+
+```
+Observation → WorldModel.update_state() → infer_context()
+                                              │
+                                              ▼
+                                       predict_actions()
+                                              │
+                                              ▼
+                                       Dispatcher.dispatch()
+```
+
+## Configuration
+
+```toml
+[daemon.worldmodel]
+enabled = true
+inference_timeout = 5000  # ms
+max_pending_actions = 20
+confidence_threshold = 0.7
+```
+
+## Code Location
+
+- `src/daemon/worldmodel/mod.rs` — WorldModel facade and types
+- `src/daemon/mod.rs` — Daemon module entry
+
+## See Also
+
+- [Dispatcher](./dispatcher) — Proactive action dispatching
+- [Daemon](../concepts/daemon) — Background service management

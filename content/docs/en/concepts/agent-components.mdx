@@ -1,0 +1,112 @@
+---
+title: "Agent Components"
+description: "Core event handler components for the agentic loop: intent analysis, task planning, tool execution, loop control, session recording, and compaction."
+---
+
+The `components` module provides the 6 core components of Aleph's agentic loop. Each component is an independent event handler that subscribes to specific event types and publishes outcomes to the event bus.
+
+## Design Philosophy
+
+1. **Event-driven composition** — Each component is an `EventHandler` with typed subscriptions
+2. **Clean separation** — Components communicate only via events, no direct coupling
+3. **Recoverable state** — Session recording persists state to SQLite for crash recovery
+4. **Token awareness** — Session compaction manages context window limits
+
+## Component Overview
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      Agentic Loop                            │
+├──────────────────────────────────────────────────────────────┤
+│  InputReceived                                               │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌──────────────┐   multi-step?   ┌──────────────┐          │
+│  │IntentAnalyzer│ ──────────────► │ TaskPlanner  │          │
+│  │              │   simple        │              │          │
+│  │  Complexity  │ ──────────────► │ Decompose    │          │
+│  │  detection   │                 │ into steps   │          │
+│  └──────────────┘                 └──────────────┘          │
+│                                          │                   │
+│                                          ▼                   │
+│  ┌──────────────┐   success     ┌──────────────┐          │
+│  │LoopController│ ◄──────────── │ ToolExecutor │          │
+│  │              │   failure     │              │          │
+│  │  Protection  │ ◄──────────── │ Retry logic  │          │
+│  │  mechanisms  │               │ Timeout      │          │
+│  └──────────────┘               └──────────────┘          │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌──────────────┐   persist     ┌──────────────┐          │
+│  │SessionRecorder│ ──────────── │SessionCompactor│         │
+│  │              │               │              │          │
+│  │  SQLite      │               │  Token limit │          │
+│  │  persistence │               │  management  │          │
+│  └──────────────┘               └──────────────┘          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## IntentAnalyzer
+
+Detects input complexity for routing decisions. Uses rule-based keyword matching (Chinese and English multi-step keywords) to identify whether a request needs multi-step planning.
+
+**Subscribes to**: `InputReceived`  
+**Publishes**: `PlanRequested` (multi-step) or `ToolCallRequested` (simple)
+
+## TaskPlanner
+
+Decomposes multi-step requests into executable tasks. Identifies parallel groups and dependency chains for optimal execution order.
+
+**Key feature**: Transitive depth computation for correct parallel group identification. A sequential chain A→B→C produces depths 0, 1, 2 (not 1, 1, 1).
+
+## ToolExecutor
+
+Executes tools with retry logic and timeout handling. Wraps tool calls with error recovery and result formatting.
+
+**Retry policy**: Configurable max attempts with exponential backoff.
+
+## LoopController
+
+Controls the agentic loop with protection mechanisms:
+
+- **Max iterations** — Prevents infinite loops
+- **Timeout** — Per-iteration time limit
+- **Error budget** — Stops after N consecutive failures
+- **Yield points** — Allows cancellation between steps
+
+## SessionRecorder
+
+Persists session state to SQLite:
+
+- Agent events with timestamps
+- Task execution records
+- Tool call history
+- Token usage statistics
+
+**Error handling**: Database errors are propagated via `RecorderError`, not silently swallowed.
+
+## SessionCompactor
+
+Manages context window limits through compaction:
+
+- **Token tracking** — Monitors cumulative token usage
+- **Model limits** — Per-model context window limits with longest-prefix matching
+- **Pruning** — Removes oldest turns when approaching limits
+- **Summarization** — Replaces pruned content with compact summaries
+
+## Key Source Files
+
+- `src/components/mod.rs` — Component re-exports
+- `src/components/intent_analyzer.rs` — Complexity detection
+- `src/components/task_planner.rs` — Task decomposition
+- `src/components/tool_executor.rs` — Tool execution with retry
+- `src/components/loop_controller.rs` — Loop protection
+- `src/components/session_recorder/` — SQLite persistence
+- `src/components/session_compactor/` — Token management
+
+## See Also
+
+- [Event System](/docs/concepts/event-system) — Event bus architecture
+- [Agent Runtime](/docs/concepts/agent-runtime) — Runtime configuration
+- [Thinker](/docs/concepts/thinker) — Prompt construction
+- [Task Scheduling](/docs/concepts/task-scheduling) — Task queue

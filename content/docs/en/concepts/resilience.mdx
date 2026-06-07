@@ -1,0 +1,110 @@
+---
+title: "Multi-Agent Resilience"
+description: "State database and core types for multi-agent task tracking, event persistence, and session recovery."
+---
+
+The `resilience` module provides the database layer and core types for multi-agent resilience. It tracks agent tasks, events, traces, and subagent sessions in SQLite for recovery and observability.
+
+## Design Philosophy
+
+1. **Persistent state** — All agent state survives restarts via SQLite
+2. **Structured traces** — Task execution traces enable shadow replay for debugging
+3. **Session lifecycle** — Subagent sessions track creation, idle, and swap states
+4. **Tiered events** — Skeleton events for structure, Pulse events for detail
+
+## Core Types
+
+### TaskStatus
+
+Tasks progress through a state machine:
+
+```rust
+pub enum TaskStatus {
+    Pending,      // Waiting to execute
+    Running,      // Currently executing
+    Completed,    // Success
+    Failed,       // Error occurred
+    Interrupted,  // System restart
+    Idle,         // Paused (Session-as-a-Service)
+    Swapped,      // Context swapped to disk
+}
+```
+
+### AgentTask
+
+A task with recovery checkpoints:
+
+```rust
+pub struct AgentTask {
+    pub task_id: String,
+    pub status: TaskStatus,
+    pub lane: Lane,           // Execution lane (Sequential/Parallel)
+    pub risk_level: RiskLevel,// Low/Medium/High/Critical
+    pub checkpoint_data: Option<String>,// Serialized state for recovery
+}
+```
+
+### TaskTrace
+
+Structured execution traces for shadow replay:
+
+```rust
+pub struct TaskTrace {
+    pub trace_id: String,
+    pub task_id: String,
+    pub events: Vec<TaskTraceInfo>,
+}
+```
+
+### SubagentSession
+
+Long-lived subagent session management:
+
+```rust
+pub struct SubagentSession {
+    pub session_id: String,
+    pub status: SessionStatus,
+    pub idle_since: Option<DateTime<Utc>>,
+    pub swapped_at: Option<DateTime<Utc>>,
+}
+```
+
+## StateDatabase
+
+SQLite database providing CRUD operations for:
+
+| Table | Purpose |
+|-------|---------|
+| `events` | Agent events (skeleton + pulse tiers) |
+| `tasks` | Agent tasks with status and checkpoints |
+| `traces` | Task execution traces |
+| `sessions` | Subagent sessions |
+| `memory_events` | Memory-backed event indexing |
+
+### Schema
+
+The schema is versioned with migration utilities in `migration.rs`. Key indexes:
+
+- `tasks(task_id, status)` — Task lookup by status
+- `events(event_id, created_at)` — Event time-range queries
+- `traces(trace_id, task_id)` — Trace-to-task mapping
+
+## Safety
+
+- **Integer overflow prevention** — `usize` to `i64` conversions use `try_from` with `i64::MAX` fallback
+- **Lock safety** — All `lock()` calls use `unwrap_or_else(|e| e.into_inner())`
+- **Parameterized queries** — All SQL uses `params![]`, no string interpolation
+- **No static mut** — `AtomicBool` for flags
+
+## Key Source Files
+
+- `src/resilience/mod.rs` — Module overview
+- `src/resilience/types.rs` — Core types (AgentTask, TaskTrace, etc.)
+- `src/resilience/database/state_database.rs` — SQLite CRUD operations
+- `src/resilience/database/migration.rs` — Schema versioning
+
+## See Also
+
+- [Agent Runtime](/docs/concepts/agent-runtime) — Agent execution loop
+- [Task Scheduling](/docs/concepts/task-scheduling) — Task queue and scheduling
+- [Event System](/docs/concepts/event-system) — Event bus architecture

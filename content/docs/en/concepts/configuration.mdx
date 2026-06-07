@@ -1,0 +1,238 @@
+---
+title: "Configuration"
+description: "Configuration management with atomic writes, hot reload, conflict detection, and preset overrides."
+---
+
+The `config` module manages Aleph's configuration system. It supports file-based configuration via TOML, programmatic updates at runtime, and hot-reloading without restarting the server.
+
+## Design Philosophy
+
+Configuration in Aleph follows three principles:
+
+1. **Atomicity** — Configuration changes are never partial; either the entire change applies or none of it does
+2. **Safety** — Runtime updates are guarded against conflicts and accidental erasure
+3. **Transparency** — Changes are logged, auditable, and reversible
+
+The configuration system is built on top of standard Rust file operations with defensive patterns to prevent data loss.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────┐
+│           ConfigManager                  │
+│  ┌─────────────┐  ┌──────────────────┐ │
+│  │  FileStore  │  │  ConfigPatcher   │ │
+│  └─────────────┘  └──────────────────┘ │
+└─────────────────────────────────────────┘
+     │                           ▲
+     │ read/write                │ patch
+     ▼                           │
+┌──────────┐              ┌──────────────┐
+│ aleph.toml│              │  Runtime     │
+│ (~/.aleph/)│              │  Updates     │
+└──────────┘              └──────────────┘
+```
+
+---
+
+## Core Components
+
+### ConfigManager
+
+The central configuration coordinator.
+
+```rust
+pub struct ConfigManager {
+    store: FileStore,
+    patcher: ConfigPatcher,
+    defaults: ConfigDefaults,
+}
+```
+
+**Responsibilities:**
+- Loads configuration from `~/.aleph/aleph.toml` at startup
+- Watches the file for changes (via `notify` crate)
+- Applies runtime patches from the Gateway's admin API
+- Persists changes back to disk atomically
+
+### FileStore
+
+Handles all file I/O with atomic write semantics.
+
+```rust
+impl FileStore {
+    pub async fn save_to_file(&self,
+        path: &Path,
+        config: &Config,
+    ) -> Result<(), ConfigError> {
+        // 1. Write to temp file
+        // 2. fsync to ensure data hits disk
+        // 3. Atomic rename (replace old file)
+        // 4. Clean up temp file on success
+    }
+}
+```
+
+**Atomic Write Pattern:**
+1. Write new content to a temporary file in the same directory
+2. Call `fsync()` to flush OS buffers to disk
+3. Rename temp file to target filename (atomic on POSIX)
+4. Delete temp file if rename succeeds
+
+If any step fails, the original configuration file remains untouched.
+
+### ConfigPatcher
+
+Applies incremental updates with conflict detection.
+
+```rust
+pub struct ConfigPatcher {
+    last_modified: SystemTime,
+}
+
+impl ConfigPatcher {
+    pub async fn apply(
+        &mut self,
+        config: &mut Config,
+        patch: ConfigPatch,
+    ) -> Result<(), PatchError> {
+        // 1. Check mtime — has file changed since last read?
+        // 2. If conflict, re-read file and re-apply patch
+        // 3. Validate patch invariants
+        // 4. Apply under write lock
+    }
+}
+```
+
+**Conflict Detection (TOCTOU Mitigation):**
+- Records the file's modification time before reading
+- Before writing, checks if the mtime has changed
+- If changed: re-reads the file, merges the patch with current state, then writes
+- This prevents lost updates when both file watcher and API try to modify config simultaneously
+
+---
+
+## Configuration Structure
+
+```toml
+# ~/.aleph/aleph.toml
+
+[server]
+host = "127.0.0.1"
+port = 18790
+
+[channels.telegram]
+enabled = true
+token = "${TELEGRAM_BOT_TOKEN}"
+
+[channels.discord]
+enabled = true
+token = "${DISCORD_BOT_TOKEN}"
+
+[memory]
+embedding_model = "text-embedding-3-small"
+max_facts = 10000
+
+[tools]
+allowed = ["search", "bash_exec", "file_read"]
+
+[[presets]]
+name = "fast"
+provider = "openai"
+model = "gpt-4o-mini"
+temperature = 0.7
+```
+
+### Environment Variable Substitution
+
+Values prefixed with `${}` are resolved from environment variables at load time:
+
+```toml
+token = "${TELEGRAM_BOT_TOKEN}"
+```
+
+This keeps secrets out of the configuration file while allowing version-controlled defaults for non-sensitive settings.
+
+### Preset Override
+
+Named presets can override default settings:
+
+```rust
+// Use the "fast" preset for this request
+let config = Config::load()
+    .with_preset("fast")
+    .build();
+```
+
+Presets are useful for:
+- Switching between fast/cheap and slow/accurate models
+- A/B testing configurations
+- Guest-specific settings
+
+---
+
+## Defensive Design
+
+### Embedding Provider Guard
+
+Prevents accidental erasure of embedding provider configuration:
+
+```rust
+if patch.removes("memory.embedding_model") {
+    // Capture backtrace for debugging
+    tracing::warn!("Attempted to remove embedding provider");
+    return Err(PatchError::InvalidEmbeddingChange);
+}
+```
+
+### Validation
+
+All patches are validated before application:
+- Port numbers must be in valid range (1-65535)
+- File paths must not contain path traversal (`../`)
+- Array lengths must be within bounds
+- Enum values must be valid variants
+
+---
+
+## Hot Reload
+
+Configuration changes are detected within 600ms via `notify-debouncer-full`:
+
+```rust
+// File watcher setup
+let mut watcher = notify::recommended_watcher(move |res| {
+    match res {
+        Ok(event) if event.kind.is_modify() => {
+            // Reload configuration
+            config_manager.reload().await?;
+        }
+        _ => {}
+    }
+})?;
+
+watcher.watch(config_path, RecursiveMode::NonRecursive)?;
+```
+
+**Limitations:**
+- Embedding model changes require a server restart (model weights are loaded at startup)
+- Port changes require a restart (socket binding happens at startup)
+- Channel token changes take effect immediately
+
+---
+
+## Code Location
+
+- `src/config/mod.rs` — ConfigManager and public API
+- `src/config/store.rs` — FileStore with atomic writes
+- `src/config/patcher.rs` — ConfigPatcher with conflict detection
+- `src/config/validation.rs` — Patch validation rules
+- `src/config/presets.rs` — Preset override logic
+
+## See Also
+
+- [Getting Started: Configuration](../getting-started/configuration) — User-facing configuration guide
+- [Gateway](../architecture/gateway) — Admin API for runtime config updates
+- [Error Handling](./error-handling) — How config errors are propagated

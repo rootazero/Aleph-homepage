@@ -1,0 +1,475 @@
+---
+title: "Built-in Tools"
+description: "Complete catalog of tools shipped with Aleph, organized by category"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+Aleph ships with a comprehensive set of built-in tools that cover file operations, code execution, web interaction, memory management, browser automation, and more. All built-in tools implement the `AlephTool` trait with static dispatch for maximum performance.
+
+Built-in tools are registered on the `AlephToolServer` using builder methods:
+
+```rust
+let server = AlephToolServer::new()
+    .with_bash()
+    .with_file_ops()
+    .with_search()
+    .with_web_fetch()
+    .with_youtube()
+    .with_code_exec()
+    .with_browser()
+    .with_desktop()
+    .with_memory_search(database)
+    .with_atomic_ops(workspace_root);
+```
+
+---
+
+## Code Execution
+
+### bash
+
+Execute bash/shell commands. A convenience wrapper that routes to the code execution engine with `language=shell`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cmd` | string | Yes | The bash command to execute |
+| `working_dir` | string | No | Working directory (defaults to temp directory) |
+| `timeout` | integer | No | Timeout in seconds (default: 60) |
+
+```json
+{ "cmd": "find . -name '*.rs' | wc -l", "working_dir": "/project", "timeout": 30 }
+```
+
+<Callout type="warn">
+Dangerous commands such as `sudo`, `rm -rf /`, and similar destructive operations are blocked by a safety filter.
+</Callout>
+
+### code_exec
+
+Execute code snippets in multiple languages with sandboxed environments.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `language` | string | Yes | Language: `shell`, `python`, `javascript` |
+| `code` | string | Yes | Code to execute |
+| `working_dir` | string | No | Working directory |
+| `timeout` | integer | No | Timeout in seconds (default: 60) |
+
+```json
+{ "language": "python", "code": "import math\nprint(math.pi)" }
+```
+
+---
+
+## File Operations
+
+### file_ops
+
+A unified file system tool supporting multiple operations via an `action` parameter.
+
+#### Supported Actions
+
+| Action | Description | Required Parameters |
+|--------|-------------|---------------------|
+| `list` | List directory contents | `path` |
+| `read` | Read file content | `path`, optional `encoding` |
+| `write` | Write content to file | `path`, `content` |
+| `edit` | Apply targeted edits to a file | `path`, `edits` |
+| `move` | Move/rename a file | `source`, `destination` |
+| `copy` | Copy a file | `source`, `destination` |
+| `delete` | Delete a file or directory | `path` |
+| `mkdir` | Create a directory | `path` |
+| `search` | Search files by pattern | `path`, `pattern` |
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | Operation to perform (see above) |
+| `path` | string | Varies | File or directory path |
+| `content` | string | Varies | Content for write operations |
+| `source` | string | Varies | Source path for move/copy |
+| `destination` | string | Varies | Destination path for move/copy |
+| `encoding` | string | No | File encoding (default: `utf-8`) |
+| `pattern` | string | Varies | Search pattern (glob or regex) |
+| `recursive` | boolean | No | Recursive listing/search |
+
+```json
+{ "action": "read", "path": "/etc/hostname" }
+```
+
+```json
+{ "action": "write", "path": "/tmp/output.txt", "content": "Hello, Aleph!" }
+```
+
+```json
+{ "action": "search", "path": "/project/src", "pattern": "*.rs", "recursive": true }
+```
+
+### atomic_ops
+
+Atomic search, replace, and move operations powered by the Atomic Engine. Designed for precise code modifications across a workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | `search`, `replace`, or `move` |
+| `path` | string | Yes | File or directory path |
+| `pattern` | string | Varies | Search pattern |
+| `replacement` | string | Varies | Replacement text |
+| `source` | string | Varies | Source path for move |
+| `destination` | string | Varies | Destination path for move |
+
+---
+
+## Web & Search
+
+### web_fetch
+
+Fetch and extract content from web URLs with automatic HTML-to-text conversion.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | Yes | URL to fetch |
+| `method` | string | No | HTTP method (default: `GET`) |
+| `headers` | object | No | Custom HTTP headers |
+
+```json
+{ "url": "https://api.github.com/repos/rust-lang/rust", "headers": { "Accept": "application/json" } }
+```
+
+### search
+
+Search the web using SearXNG or other configured search engines.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Search query |
+| `engine` | string | No | Search engine to use |
+
+```json
+{ "query": "Rust async trait patterns 2025" }
+```
+
+### youtube
+
+Extract video information and transcripts from YouTube URLs.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | Yes | YouTube video URL |
+
+```json
+{ "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }
+```
+
+---
+
+## Browser Automation
+
+### browser
+
+Control a Chromium browser via the Chrome DevTools Protocol (CDP). Supports launching browsers, navigating pages, interacting with elements, taking screenshots, and obtaining accessibility snapshots.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | Browser action (see below) |
+| `tab_id` | string | Varies | Target tab identifier |
+| `url` | string | Varies | URL for navigation |
+| `ref_id` | string | Varies | ARIA element ref ID |
+| `selector` | string | Varies | CSS selector (fallback) |
+| `text` | string | Varies | Text for type/fill actions |
+| `js` | string | Varies | JavaScript code to evaluate |
+| `direction` | string | Varies | Scroll direction |
+| `headless` | boolean | No | Launch in headless mode |
+| `full_page` | boolean | No | Full-page screenshot |
+
+#### Actions
+
+| Action | Description | Required |
+|--------|-------------|----------|
+| `start` | Launch a browser instance | Optional: `headless` |
+| `stop` | Shut down the browser | - |
+| `open_tab` | Open a new tab | `url` |
+| `close_tab` | Close a tab | `tab_id` |
+| `list_tabs` | List all open tabs | - |
+| `navigate` | Navigate to URL | `tab_id`, `url` |
+| `click` | Click an element | `tab_id`, `ref_id` or `selector` |
+| `type` | Type text into element | `tab_id`, `ref_id` or `selector`, `text` |
+| `fill` | Replace element value | `tab_id`, `ref_id` or `selector`, `text` |
+| `scroll` | Scroll page/element | `tab_id`, `direction` |
+| `hover` | Hover over element | `tab_id`, `ref_id` or `selector` |
+| `screenshot` | Capture screenshot | `tab_id`, optional `full_page` |
+| `snapshot` | ARIA accessibility tree | `tab_id` |
+| `evaluate` | Run JavaScript | `tab_id`, `js` |
+
+For detailed usage, see [Browser Automation](/docs/en/tools/browser).
+
+---
+
+## Desktop Integration
+
+### desktop
+
+Bridge to the Aleph macOS desktop application. Provides access to native macOS capabilities through the desktop companion app.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | Desktop action to perform |
+
+<Callout type="info">
+The desktop tool requires the Aleph macOS companion app to be running. When the app is not running, all calls return a friendly message instead of an error, allowing the agent to degrade gracefully.
+</Callout>
+
+---
+
+## Perception
+
+### vision
+
+Image understanding and OCR powered by a configurable vision pipeline. Supports multiple providers (e.g., Claude Vision, platform-native OCR).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | Vision action to perform |
+| `image` | string | Varies | Image data or path |
+
+### snapshot_capture
+
+Capture the system accessibility tree and optional OCR/screenshot data.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | string | Yes | Capture target |
+| `region` | object | No | Region to capture |
+| `include_ax` | boolean | No | Include accessibility tree |
+| `include_vision` | boolean | No | Include vision analysis |
+| `include_image` | boolean | No | Include raw image data |
+
+---
+
+## Generation
+
+### image_generate
+
+Generate images from text prompts using configured image generation providers.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `prompt` | string | Yes | Image generation prompt |
+| `provider` | string | No | Provider to use |
+| `size` | string | No | Image dimensions |
+
+### speech_generate
+
+Text-to-speech generation.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `text` | string | Yes | Text to convert to speech |
+
+### pdf_generate
+
+Generate PDF documents from text or Markdown content.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `content` | string | Yes | Content to render as PDF |
+| `template` | string | No | PDF template name |
+
+---
+
+## Memory
+
+### memory_search
+
+Search personal memory using hybrid retrieval with intelligent redundancy elimination.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Natural language search query |
+| `max_results` | integer | No | Maximum results (default: 10) |
+
+The tool performs hybrid retrieval across both compressed facts and raw conversation transcripts, using the `ContextComptroller` to deduplicate results:
+
+```
+memory_search(query)
+  -> FactRetrieval.retrieve(query)
+    -> Hybrid search (facts + raw memories fallback)
+  -> ContextComptroller.arbitrate(results, budget)
+    -> Detect redundancy via cosine similarity (threshold: 0.95)
+    -> Remove redundant transcripts when facts exist
+    -> Sort by similarity score (descending)
+    -> Trim to fit token budget
+  -> Return deduplicated results
+```
+
+```json
+{ "query": "What are my coding preferences?", "max_results": 10 }
+```
+
+### memory_store
+
+Store a fact or piece of information in long-term memory.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `content` | string | Yes | Content to store |
+| `tags` | array | No | Tags for categorization |
+
+### memory_forget
+
+Delete a specific fact from memory.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `fact_id` | string | Yes | ID of the fact to delete |
+
+### memory_browse
+
+Browse and explore stored memory entries.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | Browse action |
+
+---
+
+## Session Management
+
+### sessions_spawn
+
+Spawn a sub-agent session for parallel task execution.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `prompt` | string | Yes | Initial prompt for the sub-agent |
+| `model` | string | No | LLM model to use |
+| `thinking` | boolean | No | Enable extended thinking |
+
+### sessions_send
+
+Send a message to an existing sub-agent session.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_key` | string | Yes | Target session identifier |
+| `message` | string | Yes | Message to send |
+
+### sessions_list
+
+List all active sub-agent sessions. Takes no parameters.
+
+---
+
+## Cross-Channel Messaging
+
+### message
+
+Send, reply, edit, delete, and react to messages across all connected channels (Telegram, Discord, etc.).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `action` | string | Yes | `send`, `reply`, `edit`, `delete`, `react` |
+| `channel` | string | Varies | Target channel |
+| `content` | string | Varies | Message content |
+| `message_id` | string | Varies | Target message ID |
+
+---
+
+## Meta Tools
+
+### list_tools
+
+List available tools by category. Supports Smart Tool Discovery for the agent.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `category` | string | No | Filter by category |
+
+### get_tool_schema
+
+Get the full JSON Schema for a specific tool.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `tool_name` | string | Yes | Name of the tool |
+
+### skill_read
+
+Read a Markdown skill definition.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `skill_name` | string | Yes | Name of the skill |
+
+### list_skills
+
+List all available Markdown skills. Takes no parameters.
+
+### ask_user
+
+Ask the user a question and wait for a response.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `question` | string | Yes | Question to ask |
+| `options` | array | No | Predefined answer options |
+
+### canvas_show
+
+Display content in the UI canvas area.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `content` | string | Yes | Content to display |
+| `type` | string | Yes | Content type |
+
+---
+
+## MCP Bridge Tools
+
+### mcp_read_resource
+
+Read a resource from a connected MCP server.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `uri` | string | Yes | Resource URI (e.g., `server:file:///path`) |
+
+### mcp_get_prompt
+
+Retrieve a prompt from a connected MCP server.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Prompt name (e.g., `server:prompt_name`) |
+| `arguments` | object | No | Prompt arguments |
+
+### invalid
+
+Fallback handler for unrecognized tool names. Provides helpful error messages suggesting available tools. This tool is registered automatically and is not intended for direct use.
+
+---
+
+## Tool Registration Summary
+
+| Method | Tools Registered |
+|--------|-----------------|
+| `.with_bash()` | `bash` |
+| `.with_file_ops()` | `file_ops` |
+| `.with_search()` | `search` |
+| `.with_web_fetch()` | `web_fetch` |
+| `.with_youtube()` | `youtube` |
+| `.with_code_exec()` | `code_exec` |
+| `.with_pdf_generate()` | `pdf_generate` |
+| `.with_browser()` | `browser` |
+| `.with_desktop()` | `desktop` |
+| `.with_vision(pipeline)` | `vision` |
+| `.with_atomic_ops(root)` | `atomic_ops` |
+| `.with_memory_search(db)` | `memory_search` |
+| `.with_mcp_read_resource(handle)` | `mcp_read_resource` |
+| `.with_mcp_get_prompt(handle)` | `mcp_get_prompt` |
+| `.with_invalid(tools)` | `invalid` |

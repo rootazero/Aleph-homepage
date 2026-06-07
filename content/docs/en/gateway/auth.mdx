@@ -1,0 +1,406 @@
+---
+title: "Authentication"
+description: "Gateway authentication flow, token management, and device pairing"
+---
+
+The Gateway supports device-based authentication with HMAC-SHA256 signed tokens. When `require_auth` is enabled, every client must authenticate before issuing RPC calls.
+
+## Authentication Flow
+
+```
+Client connects via WebSocket
+    |
+    v
++-----------------------------+
+| require_auth enabled?       |
+|   Yes -> First frame must   |
+|          be "connect"       |
+|   No  -> Direct access      |
++-----------------------------+
+    |
+    v (if auth required)
++-----------------------------+
+| Validate credentials        |
+|   - Bearer token + HMAC sig |
+|   - Device fingerprint      |
+|   - Public key verification |
++-----------------------------+
+    |
+    v
++-----------------------------+
+| Issue session token          |
+| Assign client role           |
+| (operator or node)           |
++-----------------------------+
+```
+
+When authentication is not required (local-only deployments), clients connect and begin issuing RPC calls immediately. When enabled, the very first WebSocket frame must be a `connect` request.
+
+## Connect Request
+
+The `connect` method negotiates protocol version, identifies the client, and presents credentials.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "connect",
+  "params": {
+    "minProtocol": 1,
+    "maxProtocol": 1,
+    "client": {
+      "id": "macos-app",
+      "version": "1.0.0",
+      "platform": "macos"
+    },
+    "role": "operator",
+    "auth": {
+      "token": "bearer_token",
+      "signature": "hmac_sha256_signature"
+    }
+  }
+}
+```
+
+**Response (success):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "session_token": "session-uuid",
+    "role": "operator",
+    "scopes": ["*"],
+    "expires_at": 1706400000000
+  }
+}
+```
+
+**Response (failure):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32001,
+    "message": "Authentication failed: invalid token"
+  }
+}
+```
+
+### Connect Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `minProtocol` | number | Yes | Minimum protocol version the client supports |
+| `maxProtocol` | number | Yes | Maximum protocol version the client supports |
+| `client.id` | string | Yes | Client identifier (e.g. `"cli"`, `"macos-app"`, `"web"`) |
+| `client.version` | string | Yes | Client version string |
+| `client.platform` | string | Yes | Platform (`"macos"`, `"ios"`, `"android"`, `"cli"`, `"web"`) |
+| `role` | string | Yes | Requested role: `"operator"` or `"node"` |
+| `auth.token` | string | Yes | Bearer token issued during device pairing |
+| `auth.signature` | string | Yes | HMAC-SHA256 signature of the token |
+
+## Token Types
+
+Aleph uses two categories of tokens, each serving a different phase of the authentication lifecycle.
+
+### Device Token
+
+A long-lived token issued during device pairing. Stored securely on the client device (Keychain on macOS/iOS, encrypted storage on other platforms). Used to obtain session tokens via the `connect` method.
+
+| Property | Value |
+|----------|-------|
+| Lifetime | Until revoked |
+| Storage | Client-side secure storage |
+| Scope | Device-level identity |
+| Rotation | Manual via `auth.rotate` |
+
+### Session Token
+
+A short-lived token issued by the Gateway after a successful `connect` handshake. Automatically included in subsequent requests during the WebSocket session. Expires after 24 hours by default.
+
+| Property | Value |
+|----------|-------|
+| Lifetime | 24 hours (default) |
+| Storage | In-memory (Gateway) |
+| Scope | Per-session |
+| Rotation | Automatic on reconnect |
+
+## HMAC-SHA256 Signing
+
+All tokens are signed with HMAC-SHA256. The Gateway never stores raw token values -- only their HMAC hashes are persisted in SQLite.
+
+```
+Token Issuance:
+  token        = UUID v4
+  signature    = HMAC-SHA256(secret, token)
+  stored_hash  = HMAC-SHA256(secret, token)
+
+Token Validation:
+  1. Verify HMAC signature matches token
+  2. Compute hash = HMAC-SHA256(secret, token)
+  3. Look up hash in database
+  4. Check expiry and revocation status
+  5. Update last_used_at timestamp
+```
+
+The HMAC secret is generated at server startup (32 bytes of cryptographically secure random data). It can be persisted across restarts for token continuity.
+
+## Token Validation Result
+
+When a token passes validation, the Gateway returns an internal `TokenValidation` containing the identity context for the session.
+
+```json
+{
+  "token_id": "tok-uuid",
+  "device_id": "dev-uuid",
+  "role": "operator",
+  "scopes": ["*"],
+  "remaining_ms": 86400000
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `token_id` | string | Unique token identifier |
+| `device_id` | string | Device that owns this token |
+| `role` | string | `"operator"` (full control) or `"node"` (limited) |
+| `scopes` | string[] | Permission scopes (`["*"]` = all) |
+| `remaining_ms` | number | Milliseconds until token expires |
+
+## Device Roles
+
+| Role | Description | Permissions |
+|------|-------------|-------------|
+| `operator` | Full control (CLI, macOS App, Web UI) | All RPC methods, tool execution, config changes |
+| `node` | Limited execution (iOS/Android nodes) | Agent interaction, read-only config, no exec approval |
+
+## Device Pairing
+
+New devices must be paired before they can authenticate. The pairing flow uses a challenge-response protocol.
+
+### Pairing Flow
+
+```
+New Device                          Gateway
+    |                                  |
+    |--- auth.pairing.request -------->|
+    |    { device_name, platform,      |
+    |      public_key }                |
+    |                                  |
+    |<-- pairing_id, challenge --------|
+    |                                  |
+    |                    Owner approves via CLI/UI
+    |                                  |
+    |--- auth.pairing.complete ------->|
+    |    { pairing_id, signed_challenge}|
+    |                                  |
+    |<-- device_token, signature ------|
+```
+
+### Approve/Reject Pairing
+
+The owner approves or rejects pending pairing requests via `auth.pairing.approve` or `auth.pairing.reject`.
+
+**Approve:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "auth.pairing.approve",
+  "params": {
+    "pairing_id": "pair-uuid",
+    "role": "operator",
+    "scopes": ["*"]
+  }
+}
+```
+
+**Reject:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "auth.pairing.reject",
+  "params": {
+    "pairing_id": "pair-uuid",
+    "reason": "Unknown device"
+  }
+}
+```
+
+### List Devices
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "auth.devices.list"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "devices": [
+      {
+        "device_id": "dev-uuid-1",
+        "device_name": "MacBook Pro",
+        "device_type": "macos",
+        "role": "operator",
+        "scopes": ["*"],
+        "last_seen_at": 1706400000000,
+        "created_at": 1706313600000
+      }
+    ]
+  }
+}
+```
+
+## Token Rotation
+
+Tokens can be rotated without re-pairing. The old token is revoked and a new one is issued with the same permissions.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "auth.rotate",
+  "params": {
+    "token": "old-token",
+    "signature": "old-signature"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "token": "new-token",
+    "signature": "new-signature",
+    "token_id": "new-tok-uuid",
+    "expires_at": 1706486400000
+  }
+}
+```
+
+## Token Revocation
+
+Revoke a specific token or all tokens for a device.
+
+**Revoke single token:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "auth.revoke",
+  "params": {
+    "token_id": "tok-uuid"
+  }
+}
+```
+
+**Revoke all device tokens:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "auth.revoke_device",
+  "params": {
+    "device_id": "dev-uuid"
+  }
+}
+```
+
+## Guest Access
+
+Aleph supports invitation-based guest access with scoped permissions. Guests receive limited access to specific tools.
+
+### Guest Invitation Flow
+
+1. **Owner creates invitation** with scoped permissions and optional expiry
+2. **Guest activates invitation** using the one-time token
+3. **Gateway creates identity context** with frozen permissions
+4. **Guest operates within scope** -- PolicyEngine enforces boundaries
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "auth.invite",
+  "params": {
+    "guest_name": "Mom",
+    "allowed_tools": ["translate"],
+    "expires_in_seconds": 86400,
+    "display_name": "Mom"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "invitation_token": "inv-token-uuid",
+    "url": "https://aleph.local/join?t=inv-token-uuid",
+    "expires_at": 1706486400000
+  }
+}
+```
+
+### Permission Matching
+
+Guest permissions use a hierarchical matching system:
+
+| Pattern | Matches |
+|---------|---------|
+| `"translate"` | Exact tool name `translate` |
+| `"shell"` | Category match: `shell:exec`, `shell:read`, etc. |
+| `"*"` | Wildcard: all tools |
+
+## Security Headers
+
+When using the HTTP fallback endpoint, include authentication in headers:
+
+| Header | Value | Description |
+|--------|-------|-------------|
+| `Authorization` | `Bearer <token>` | Device or session token |
+| `X-Aleph-Signature` | `<hmac_signature>` | HMAC-SHA256 of the token |
+| `X-Aleph-Device-Id` | `<device_id>` | Device identifier |
+
+## Error Codes
+
+| Code | Constant | Description |
+|------|----------|-------------|
+| -32000 | `AUTH_REQUIRED` | No credentials provided |
+| -32001 | `AUTH_FAILED` | Invalid token or signature |
+| -32002 | `PERMISSION_DENIED` | Valid auth but insufficient permissions |
+
+## Configuration
+
+```json5
+{
+  "gateway": {
+    "require_auth": true,
+    "token_expiry_ms": 86400000,  // 24 hours
+    "max_devices": 10,
+    "auto_cleanup_expired": true
+  }
+}
+```
+
+## See Also
+
+- [Protocol](/docs/en/gateway/protocol) -- WebSocket JSON-RPC 2.0 protocol details
+- [Methods Reference](/docs/en/gateway/methods) -- Complete RPC method catalog

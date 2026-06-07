@@ -1,0 +1,312 @@
+---
+title: "config.*"
+description: "Runtime configuration RPC methods"
+---
+
+Config methods provide runtime configuration management. Read the current configuration, apply partial updates, replace the full configuration, reload from disk, and validate config objects -- all without restarting the Gateway server.
+
+:::warning
+This page documents the intended API. The actual runtime-registered methods are: `config.reload`, `config.get`, `config.validate`, `config.path`, `config.get_tool_permissions`, `config.update_tool_permissions`. Methods like `config.patch` and `config.apply` reflect the design target but may differ from current runtime wiring. See [Methods Reference](/docs/en/gateway/methods) for the accurate method listing.
+:::
+
+## Methods
+
+### config.get
+
+Get the current active configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "config.get"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "config": {
+      "agent": {
+        "default_model": "claude-sonnet-4-20250514",
+        "thinking_level": "medium",
+        "max_iterations": 25,
+        "token_budget": 128000
+      },
+      "gateway": {
+        "bind": "127.0.0.1:18790",
+        "require_auth": true,
+        "cors_origins": ["http://localhost:3000"]
+      },
+      "interfaces": {
+        "telegram": {
+          "enabled": true,
+          "token": "[REDACTED]"
+        }
+      },
+      "exec": {
+        "security": "allowlist",
+        "allowlist": ["git *", "npm install", "cargo build"]
+      }
+    },
+    "source": "~/.aleph/config.json",
+    "loaded_at": 1706400000000
+  }
+}
+```
+
+This method takes no parameters. Sensitive values (API keys, tokens) are redacted in the response.
+
+### config.patch
+
+Apply a partial update using JSON Merge Patch (RFC 7386). Only the specified fields are changed; all other fields remain untouched. Changes take effect immediately.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "config.patch",
+  "params": {
+    "patch": {
+      "agent": {
+        "thinking_level": "high",
+        "max_iterations": 50
+      }
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "applied": true,
+    "changed_keys": [
+      "agent.thinking_level",
+      "agent.max_iterations"
+    ],
+    "restart_required": false
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `patch` | object | Yes | JSON Merge Patch object. Set a key to `null` to remove it. |
+
+Some configuration changes require an interface or service restart. When this is the case, `restart_required` will be `true` and the affected components are listed.
+
+**Example -- removing a field:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "config.patch",
+  "params": {
+    "patch": {
+      "interfaces": {
+        "discord": null
+      }
+    }
+  }
+}
+```
+
+### config.apply
+
+Replace the entire configuration. This is a full overwrite -- any fields not included in the new configuration will be removed. Use with caution; prefer `config.patch` for incremental changes.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "config.apply",
+  "params": {
+    "config": {
+      "agent": {
+        "default_model": "claude-sonnet-4-20250514",
+        "thinking_level": "medium",
+        "max_iterations": 25,
+        "token_budget": 128000
+      },
+      "gateway": {
+        "bind": "127.0.0.1:18790",
+        "require_auth": false
+      }
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "applied": true,
+    "restart_required": true,
+    "restart_components": ["gateway"]
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `config` | object | Yes | Complete configuration object to apply |
+
+### config.reload
+
+Reload configuration from the config file on disk (`~/.aleph/config.json`). Useful after manually editing the file or pulling changes from a dotfiles repository.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "config.reload"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "reloaded": true,
+    "source": "~/.aleph/config.json",
+    "changed_keys": [
+      "agent.default_model",
+      "interfaces.telegram.token"
+    ],
+    "restart_required": true,
+    "restart_components": ["telegram"]
+  }
+}
+```
+
+This method takes no parameters. The Gateway automatically detects which sections changed and reports whether component restarts are needed.
+
+### config.validate
+
+Validate a configuration object against the schema without applying it. Returns any validation errors found.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "config.validate",
+  "params": {
+    "config": {
+      "agent": {
+        "default_model": "nonexistent-model",
+        "thinking_level": "ultra",
+        "max_iterations": -5
+      }
+    }
+  }
+}
+```
+
+**Response (valid):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "valid": true,
+    "warnings": []
+  }
+}
+```
+
+**Response (invalid):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "valid": false,
+    "errors": [
+      {
+        "path": "agent.thinking_level",
+        "message": "Invalid value 'ultra'. Expected one of: off, minimal, low, medium, high, xhigh"
+      },
+      {
+        "path": "agent.max_iterations",
+        "message": "Value must be a positive integer"
+      }
+    ],
+    "warnings": [
+      {
+        "path": "agent.default_model",
+        "message": "Model 'nonexistent-model' is not in the known model list"
+      }
+    ]
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `config` | object | Yes | Configuration object to validate |
+
+## Hot Reload
+
+The Gateway watches `~/.aleph/config.json` for changes using a filesystem watcher. When the file is modified:
+
+1. **Debounce** -- Waits 500ms for additional writes to settle
+2. **Parse** -- Reads and parses the new configuration
+3. **Validate** -- Checks against the configuration schema
+4. **Diff** -- Computes which sections changed
+5. **Apply** -- Updates in-memory config and restarts affected interfaces
+6. **Emit** -- Sends a `config.changed` event to all subscribed clients
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "config.changed",
+    "data": {
+      "changed_keys": ["agent.thinking_level"],
+      "source": "file_watcher",
+      "timestamp": 1706400000000
+    }
+  }
+}
+```
+
+## Configuration Sections
+
+| Section | Description | Hot Reload |
+|---------|-------------|------------|
+| `agent` | Model, thinking level, iteration limits | Yes |
+| `gateway` | Bind address, auth settings | Requires restart |
+| `interfaces` | Telegram, Discord, iMessage config | Restarts affected interface |
+| `exec` | Security level, allowlist, denylist | Yes |
+| `memory` | Vector DB settings, embedding model | Requires restart |
+| `cron` | Scheduler settings | Yes |
+| `browser` | CDP settings, headless mode | Requires restart |
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [Protocol](/docs/en/gateway/protocol) -- JSON-RPC 2.0 transport

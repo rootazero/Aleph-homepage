@@ -1,0 +1,262 @@
+---
+title: "Memory System"
+description: "Long-term memory with raw_memories + notes (SQLite + Markdown), hybrid retrieval, and dream daemon."
+---
+
+The `memory` module provides Aleph's long-term memory system. It stores conversations in an ephemeral raw-memory buffer (L0) and distills persistent knowledge into markdown notes (L1) with a rebuildable SQLite index.
+
+## Design Philosophy
+
+1. **Markdown-first** — Notes are `.md` files on disk; SQLite indexes are rebuildable
+2. **Hybrid retrieval** — FTS5 full-text + sqlite-vec vector search fused with RRF
+3. **LLM sovereignty** — Retrieval gives ranked candidates; the LLM decides what matters
+4. **Event-sourced** — Every note mutation is captured as an immutable `MemoryEvent`
+
+---
+
+## Architecture
+
+```
+Gateway / Agent Loop
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L0: raw_memories (SQLite)                                    │
+│   sessions · transcripts · attachment_text                   │
+│   consumed by CompressionService (is_processed flag)         │
+└─────────────────────────────────────────────────────────────┘
+    │  CompressionService (realtime)
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L1: notes (Markdown files + SQLite index)                    │
+│   ~/.aleph/memory/note/{agent}/{category}/*.md               │
+│   notes_index · notes_links · notes_fts · notes_vec_{dim}    │
+└─────────────────────────────────────────────────────────────┘
+    │  Dream Daemon (offline, idle-only)
+    ▼
+   consolidate → drift → lint → decay → digest
+    │
+    ▼
+   queries: NoteFactRetrieval.retrieve() → ScoredFact<MemoryFact>
+```
+
+---
+
+## Core Components
+
+### Storage Layer (SQLite)
+
+The storage layer uses **four separate traits** — not a monolithic `MemoryStore`. Each caller depends only on the capabilities it needs.
+
+| Trait | File | Purpose | Primary Caller |
+|---|---|---|---|
+| `NoteStore` | `src/memory/notes/store.rs` | Notes index, wikilinks, FTS, vector search | `NoteFactRetrieval`, `NoteIndexer` |
+| `RawMemoryStore` | `src/memory/store/raw_memory.rs` | Raw memory CRUD + `is_processed` flag | `CompressionService`, `SessionCompactor` |
+| `DreamStore` | `src/memory/store/mod.rs` | Dream status + daily insights | `DreamDaemon` |
+| `CompressionStore` | `src/memory/store/mod.rs` | Compression-run audit metadata | `CompressionService` |
+
+All four traits are implemented by `SqliteMemoryBackend`, wrapped in:
+
+```rust
+pub type MemoryBackend = Arc<SqliteMemoryBackend>;
+```
+
+### sqlite-vec Integration
+
+Vector storage using the sqlite-vec extension with per-dimension virtual tables:
+
+| Table | Dimension |
+|---|---|
+| `notes_vec_768` | 768 |
+| `notes_vec_1024` | 1024 |
+| `notes_vec_1536` | 1536 |
+
+A `notes_vec_map` table links `(path, agent_id)` pairs to numeric rowids for vec0 table joins.
+
+### Knowledge Notes
+
+Markdown-based notes with wikilink support:
+
+```rust
+// src/memory/notes/note.rs
+pub struct KnowledgeNote {
+    pub title: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub facts: Vec<String>,
+    pub links: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub content_hash: String,
+}
+```
+
+**Features:**
+- Wikilink syntax: `[[Note Title]]`
+- Bidirectional link tracking via `notes_links` table
+- Note retrieval by title or content
+- Graph traversal for connected concepts
+
+### Transcript Indexer
+
+Indexes conversation transcripts for exact recall:
+
+```rust
+// src/memory/transcript_indexer/indexer.rs
+pub struct TranscriptIndexer;
+```
+
+Config: `max_tokens_per_chunk = 400`, `overlap_tokens = 80`, `enable_chunking = true`.
+
+### Dream Daemon
+
+Background memory processing with a **5-stage daily** / **6-stage weekly** pipeline:
+
+**Daily:** `[Consolidate] → [Drift] → [Lint] → [Decay] → [DailyDigest]`
+**Weekly:** `[Consolidate] → [Drift] → [Synthesis] → [Lint] → [Decay] → [DailyDigest]`
+
+```rust
+// src/memory/dreaming/mod.rs
+pub fn ensure_dream_daemon();
+pub fn record_activity();
+```
+
+### WorkingMemoryAssembler
+
+Replaces the legacy `ContextComptroller::arbitrate` path. Produces a `MemoryEnvelope` with explicit slots:
+
+```rust
+// src/memory/assembler/mod.rs
+#[async_trait]
+pub trait WorkingMemoryAssembler: Send + Sync {
+    async fn assemble(
+        &self,
+        query: &str,
+        agent_id: &str,
+        session_id: Option<&str>,
+        budget: AssemblyBudget,
+    ) -> Result<MemoryEnvelope, AlephError>;
+}
+```
+
+### MemoryReflector
+
+Synthesis layer on top of `HybridAssembler` (Spec 2):
+
+```rust
+// src/memory/reflector/mod.rs
+pub struct MemoryReflector;
+```
+
+Returns a coherent LLM-synthesised answer with cited sources via the `memory_reflect` builtin tool.
+
+### Retrieval Pipeline
+
+```
+Query → Vector Search (sqlite-vec) → FTS Search (FTS5) → RRF Fusion → Scoring Pipeline → Context Injection
+```
+
+Scoring stages (6 stages):
+1. `cosine_rerank` — Blend vector-search score with fresh cosine
+2. `recency_boost` — Additive boost for recently created facts
+3. `length_normalization` — Penalize very long content
+4. `time_decay` — Exponential decay by age, floor 0.5
+5. `hard_min_score` — Drop candidates below threshold (default 0.35)
+6. `mmr_diversity` — Defer near-duplicate embeddings to tail
+
+---
+
+## Memory Evolution Specs
+
+Aleph's memory system has evolved through a series of specs:
+
+| Spec | Focus | Status |
+|---|---|---|
+| **Spec 1** | Memory Capture Hooks (PreCompress, Delegation, SessionEnd) | Shipped |
+| **Spec 2** | MemoryReflector — synthesis layer on top of HybridAssembler | Shipped |
+| **Spec 3** | Context Fencing + Memory Modes (Context/Tools/Hybrid) | Shipped |
+| **Spec 4** | Pluggable Memory Extensions (`MemoryExtension` trait) | Shipped |
+| **Spec A** | Curated Hot Memory (`remember` tool, frozen snapshot) | Shipped |
+| **Spec B** | session_search Summarization | Shipped |
+| **Spec C** | Cross-process Safety | Shipped |
+
+See [Memory Evolution](../architecture/memory-evolution) for full details.
+
+---
+
+## Deleted Concepts
+
+The following concepts were removed in the **Memory Sovereignty Cleanup** (2026-04-12):
+
+- `MemoryTier` (ShortTerm/LongTerm/Core) — replaced by structural distinction (raw_memories vs notes)
+- `MemoryFact.strength` / `confidence` — deterministic heuristics deleted per LLM sovereignty (R8)
+- `importance_weight` scoring stage — deleted
+- `ValueEstimator` — deleted entirely
+
+---
+
+## Module Structure
+
+| Module | Purpose |
+|--------|---------|
+| `ai_retrieval` | AI-powered memory retrieval |
+| `assembler` | Memory assembly for context windows (WorkingMemoryAssembler + HybridAssembler) |
+| `audit` | Memory access auditing |
+| `compression` | Memory compression and compaction |
+| `context` | Context anchors and fact metadata |
+| `context_comptroller` | Context budget management |
+| `curated` | Curated hot memory (Spec A) |
+| `dreaming` | Background dream daemon |
+| `embedding_manager` | Embedding model management |
+| `embedding_provider` | Remote embedding providers |
+| `events` | Memory event sourcing |
+| `extensions` | Pluggable memory extensions (Spec 4) |
+| `ingestion` | Memory ingestion pipeline |
+| `namespace` | Scoped memory namespaces |
+| `noise_filter` | Filter irrelevant memories |
+| `note_retrieval` | NoteFactRetrieval (hybrid search) |
+| `notes` | Knowledge notes (wikilinks) |
+| `query_expander` | Query expansion for retrieval |
+| `reembed` | Re-embedding operations |
+| `reflector` | Memory reflection (Spec 2) |
+| `reranker` | Result reranking |
+| `ripple` | Ripple search expansion |
+| `scoring_pipeline` | Multi-factor scoring |
+| `scratchpad` | Temporary working memory |
+| `session_compactor` | Per-session compaction |
+| `session_resume` | Session restoration |
+| `store` | SQLite storage backends |
+| `transcript_indexer` | Conversation indexing |
+
+---
+
+## Safety Properties
+
+- **UTF-8 safe** — `chars().take(n)` for truncation
+- **Lock recovery** — `unwrap_or_else(|e| e.into_inner())`
+- **No SQL injection** — Parameterized queries via rusqlite
+- **Vector bounds** — Cosine similarity clamped to `[-1.0, 1.0]`
+
+---
+
+## Code Location
+
+- `src/memory/mod.rs` — Module entry point
+- `src/memory/assembler/` — WorkingMemoryAssembler + HybridAssembler
+- `src/memory/curated/` — Curated hot memory (Spec A)
+- `src/memory/extensions/` — MemoryExtension trait + registry (Spec 4)
+- `src/memory/note_retrieval/` — NoteFactRetrieval
+- `src/memory/reflector/` — MemoryReflector (Spec 2)
+- `src/memory/notes/` — Knowledge notes
+- `src/memory/store/` — SQLite storage backends
+- `src/memory/store/sqlite/` — SQLite + sqlite-vec implementation
+- `src/memory/retrieval/` — Search and ranking
+- `src/memory/dreaming/` — Dream daemon
+- `src/memory/transcript_indexer/` — Conversation indexing
+- `src/memory/events/` — Event sourcing
+
+## See Also
+
+- [Thinker](./thinker) — How memories are injected into prompts
+- [Architecture: Memory](../architecture/memory) — Deep dive into storage implementation
+- [Memory Evolution](../architecture/memory-evolution) — Spec 1-4 and Spec A-C details

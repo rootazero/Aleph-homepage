@@ -1,0 +1,280 @@
+---
+title: "Configuration Management"
+description: "Read, write, validate, and reload Aleph configuration from the CLI"
+---
+
+Aleph has two layers of configuration: the **client config** (used by `aleph`) and the **server config** (managed through `aleph-server config`). This page covers both.
+
+## Client Configuration
+
+The `aleph` client CLI stores its settings in a TOML file.
+
+### File Location
+
+| Platform | Default Path |
+|----------|-------------|
+| macOS | `~/Library/Application Support/aleph-cli/config.toml` |
+| Linux | `~/.config/aleph-cli/config.toml` |
+
+Override with `--config <PATH>` or `-c <PATH>` on any `aleph` command.
+
+### File Format
+
+```toml
+# Default server to connect to
+server = "ws://127.0.0.1:18790"
+
+# Unique device identifier (auto-generated on first run)
+device_id = "550e8400-e29b-41d4-a716-446655440000"
+
+# Human-readable device name
+device_name = "aleph-cli"
+
+# Bearer token (saved by `aleph connect`)
+auth_token = "eyJhbGciOiJIUzI1NiJ9..."
+
+# Default session key for `aleph ask`
+default_session = "default"
+
+# Client manifest — controls which tools this client advertises
+[manifest]
+tool_categories = ["builtin", "mcp"]
+specific_tools = []
+excluded_tools = ["dangerous_tool"]
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server` | string | Default Gateway WebSocket URL |
+| `device_id` | string | Unique device identifier (UUID v4) |
+| `device_name` | string | Human-readable name shown to the server |
+| `auth_token` | string? | Saved authentication token |
+| `default_session` | string? | Session key used when `--session` is not provided |
+| `manifest.tool_categories` | string[] | Tool categories this client supports |
+| `manifest.specific_tools` | string[] | Specific tools to include |
+| `manifest.excluded_tools` | string[] | Tools to exclude from this client |
+
+---
+
+## Server Configuration (`aleph-server config`)
+
+The `aleph-server config` subcommand reads and writes the server-side configuration through the Gateway RPC interface.
+
+### `config get` — Read Configuration
+
+Retrieve the full configuration or a specific key path:
+
+```bash
+# Get entire config (human-readable)
+aleph-server config get
+
+# Get a specific value
+aleph-server config get general.language
+
+# Get as JSON
+aleph-server config get --json
+
+# Get a nested path as JSON
+aleph-server config get agent.main.model --json
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<PATH>` | no | Dot-separated config path (e.g. `general.language`) |
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Output in JSON format |
+| `--url <URL>` | `ws://127.0.0.1:18790` | Gateway WebSocket URL |
+
+### `config set` — Write Configuration
+
+Update a single configuration value:
+
+```bash
+# Set a string value
+aleph-server config set general.language "zh-Hans"
+
+# Set a numeric value
+aleph-server config set gateway.port 9000
+
+# Set a boolean
+aleph-server config set security.require_auth true
+
+# Set a JSON object
+aleph-server config set agent.main '{"provider":"anthropic","model":"claude-sonnet-4-20250514"}'
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `<PATH>` | yes | Dot-separated config path |
+| `<VALUE>` | yes | Value to set (string, number, boolean, or JSON) |
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--url <URL>` | `ws://127.0.0.1:18790` | Gateway WebSocket URL |
+
+### `config edit` — Open in Editor
+
+Open the configuration file in your default editor (`$EDITOR`):
+
+```bash
+aleph-server config edit
+```
+
+This opens the raw TOML file at `~/.aleph/config.toml`. After saving, use `config reload` to apply changes.
+
+### `config validate` — Check Configuration
+
+Validate the current configuration for errors:
+
+```bash
+aleph-server config validate
+```
+
+```
+✓ Configuration is valid
+```
+
+If there are problems:
+
+```
+✗ Configuration error:
+  - agent.main.model: unknown model "gpt-5"
+  - gateway.port: value must be between 1 and 65535
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--url <URL>` | `ws://127.0.0.1:18790` | Gateway WebSocket URL |
+
+### `config reload` — Apply Changes
+
+Reload the configuration from disk without restarting the server:
+
+```bash
+aleph-server config reload
+```
+
+```
+✓ Configuration reloaded
+```
+
+This sends a `config.reload` RPC call to the running Gateway, causing it to re-read `~/.aleph/config.toml` and apply changes that support hot-reload (e.g. agent model, language, tool settings).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--url <URL>` | `ws://127.0.0.1:18790` | Gateway WebSocket URL |
+
+### `config schema` — Export JSON Schema
+
+Export the configuration JSON Schema for editor autocompletion and validation:
+
+```bash
+# Print to stdout
+aleph-server config schema
+
+# Write to file
+aleph-server config schema -o aleph-config-schema.json
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--output <PATH>` | `-o` | — | Write schema to file instead of stdout |
+| `--url <URL>` | — | `ws://127.0.0.1:18790` | Gateway WebSocket URL |
+
+Use the schema with VS Code for autocompletion in your `config.toml`:
+
+```json
+// .vscode/settings.json
+{
+  "evenBetterToml.schema.associations": {
+    "~/.aleph/config.toml": "./aleph-config-schema.json"
+  }
+}
+```
+
+---
+
+## Server Configuration File
+
+The server reads `~/.aleph/config.toml` on startup. Here is a reference of common sections:
+
+```toml
+[general]
+language = "en"
+
+[agent.main]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+[gateway]
+bind = "127.0.0.1"
+port = 18790
+
+[control_plane]
+port = 18790
+
+[security]
+require_auth = true
+
+[memory]
+enabled = true
+```
+
+### Configuration Precedence
+
+Values are resolved in this order (highest priority first):
+
+1. **CLI flags** (`--port`, `--bind`, etc.)
+2. **Environment variables** (`ANTHROPIC_API_KEY`, `RUST_LOG`)
+3. **Configuration file** (`~/.aleph/config.toml`)
+4. **Built-in defaults**
+
+---
+
+## Environment Variable Overrides
+
+Certain configuration values can be set through environment variables:
+
+| Variable | Equivalent Config Path | Description |
+|----------|----------------------|-------------|
+| `ANTHROPIC_API_KEY` | — | Anthropic provider API key (not stored in config) |
+| `ANTHROPIC_BASE_URL` | — | Custom Anthropic API endpoint |
+| `ALEPH_MASTER_KEY` | — | Master key for the secret vault |
+| `RUST_LOG` | `log_level` | Log level filter |
+| `TOKIO_WORKER_THREADS` | — | Async runtime thread count |
+
+---
+
+## Encrypted Secrets
+
+Sensitive values (API keys, tokens) should be stored in the encrypted vault rather than in plain-text config files:
+
+```bash
+# Initialize the vault (requires ALEPH_MASTER_KEY)
+aleph-server secret init
+
+# Store an API key
+aleph-server secret set anthropic.main
+# (prompts for value to avoid shell history)
+
+# Store with inline value (less secure)
+aleph-server secret set openai.backup --value "sk-..."
+
+# List stored secret names
+aleph-server secret list
+
+# Verify a secret exists
+aleph-server secret verify anthropic.main
+
+# Delete a secret
+aleph-server secret delete openai.backup
+
+# List secret providers
+aleph-server secret providers
+```
+
+See [Security](/docs/security) for more details on the vault encryption model.

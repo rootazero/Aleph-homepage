@@ -1,0 +1,4 @@
+{
+  "title": "Automation",
+  "pages": ["cron-jobs", "hooks", "events"]
+}

@@ -1,0 +1,277 @@
+---
+title: Messages
+description: How messages flow through Aleph from any interface to the agent and back, including message types, routing rules, session threading, and persistence.
+---
+
+Messages are the fundamental unit of communication in Aleph. Whether a user sends a text via Telegram, types a command in the CLI, or submits a prompt through the desktop app, every interaction is normalized into Aleph's unified message format before reaching the agent. This abstraction allows the same agent brain to serve every interface without modification.
+
+## Message Types
+
+Aleph uses a role-based message model inspired by the LLM chat completion standard, extended with additional types for tool interactions:
+
+| Role | Direction | Description |
+|------|-----------|-------------|
+| `user` | Inbound | Messages from the human user |
+| `assistant` | Outbound | Responses from the AI agent |
+| `system` | Internal | System prompts, environment contracts, identity directives |
+| `tool_call` | Agent to Tools | The agent's request to invoke a specific tool |
+| `tool_result` | Tools to Agent | The output returned by a tool execution |
+
+### Message Structure
+
+Each message in a session carries metadata beyond its content:
+
+```rust
+pub struct Message {
+    pub role: Role,
+    pub content: MessageContent,    // Text, structured blocks, or tool payloads
+    pub metadata: MessageMetadata,
+}
+
+pub struct MessageMetadata {
+    pub timestamp: i64,
+    pub source_channel: String,     // "telegram", "cli", "discord", etc.
+    pub session_key: String,        // Session this message belongs to
+    pub run_id: Option<String>,     // Agent run that produced this message
+    pub token_count: Option<u32>,   // Token count for budget tracking
+}
+```
+
+### Content Blocks
+
+Assistant messages can contain multiple content blocks, supporting rich multi-modal responses:
+
+```json
+{
+  "role": "assistant",
+  "content": [
+    { "type": "thinking", "text": "Let me analyze this code..." },
+    { "type": "text", "text": "Here is the refactored version:" },
+    { "type": "tool_use", "id": "call_1", "name": "file_write", "input": { "path": "main.rs", "content": "..." } }
+  ]
+}
+```
+
+The `thinking` block type is used for Chain-of-Thought transparency, allowing clients to display the agent's reasoning process when extended thinking is enabled.
+
+## Message Routing
+
+When a message arrives from any interface, it follows a precise routing path through the Gateway to the agent:
+
+```
+User sends message (e.g., Telegram)
+    │
+    ▼
+Interface Layer (Telegram Bot)
+    │ Normalizes to ChannelMessage
+    ▼
+Gateway: Inbound Router
+    │ Parses JSON-RPC, validates auth
+    ▼
+Session Key Resolution
+    │ Determines which session this message belongs to
+    ▼
+Session Manager
+    │ Loads session history, appends new message
+    ▼
+Agent Loop
+    │ Observe → Think → Act → Feedback
+    ▼
+Gateway: Outbound Emitter
+    │ Streams events back through EventBus
+    ▼
+Interface Layer
+    │ Formats response for the platform
+    ▼
+User receives response
+```
+
+### Channel Abstraction
+
+Every interface implements the `Interface` trait, which normalizes platform-specific messages into a common format:
+
+```rust
+#[async_trait]
+pub trait Interface: Send + Sync {
+    fn name(&self) -> &str;
+    async fn start(&self) -> Result<()>;
+    async fn stop(&self) -> Result<()>;
+    async fn send_message(
+        &self,
+        target: &InterfaceTarget,
+        message: &str,
+    ) -> Result<()>;
+    fn is_running(&self) -> bool;
+}
+```
+
+This means the agent never needs to know whether a message came from Telegram, Discord, or the CLI. It receives the same normalized message structure regardless of the source.
+
+### Interaction Manifests
+
+Each channel declares its capabilities through an `InteractionManifest`:
+
+```rust
+InteractionManifest {
+    paradigm: InteractionParadigm::Messaging,
+    capabilities: [RichText, ImageInline],
+    constraints: { max_output_chars: Some(4096), supports_streaming: false }
+}
+```
+
+Available paradigms:
+
+| Paradigm | Description | Typical Capabilities |
+|----------|-------------|---------------------|
+| `CLI` | Terminal interface | RichText, CodeHighlight, Streaming |
+| `WebRich` | Full web interface | All capabilities including Canvas |
+| `Messaging` | Chat platforms (Telegram, Discord) | RichText, ImageInline |
+| `Background` | Scheduled/cron tasks | SilentReply |
+| `Embedded` | Constrained environments | None |
+
+The Thinker uses these manifests to adapt its output format. For example, it avoids Mermaid diagrams when the channel does not support them, and it keeps responses shorter for platforms with message length limits.
+
+## Session Threading
+
+Aleph uses a hierarchical session key system to isolate conversations across channels, users, and contexts:
+
+### Session Key Variants
+
+| Variant | Format | Use Case |
+|---------|--------|----------|
+| **Main** | `agent:main:main` | Cross-channel shared session |
+| **DirectMessage** | `agent:main:telegram:dm:user123` | Per-user DM on a specific platform |
+| **Group** | `agent:main:discord:group:guild-id` | Group/channel chat |
+| **Task** | `agent:main:cron:daily-summary` | Cron jobs, webhooks |
+| **Subagent** | `subagent:agent:main:translator` | Sub-agent delegation |
+| **Ephemeral** | `agent:main:ephemeral:uuid` | Temporary session, no persistence |
+
+### DM Scope Strategies
+
+For direct messages, Aleph supports three isolation strategies:
+
+```rust
+pub enum DmScope {
+    Main,           // All DMs share the main session
+    PerPeer,        // Isolated per user (default)
+    PerChannelPeer, // Isolated per channel + user
+}
+```
+
+The default `PerPeer` strategy means each person chatting with Aleph gets their own conversation history, regardless of which platform they use. Switching to `Main` lets all DMs share a single session -- useful when you want continuity across platforms.
+
+## Message Persistence
+
+Sessions and their messages are persisted in SQLite:
+
+```sql
+CREATE TABLE sessions (
+    session_key TEXT PRIMARY KEY,
+    messages TEXT,           -- JSON array of Message objects
+    created_at INTEGER,
+    updated_at INTEGER,
+    message_count INTEGER,
+    token_count INTEGER
+);
+
+CREATE TABLE session_metadata (
+    session_key TEXT PRIMARY KEY,
+    agent_id TEXT,
+    channel TEXT,
+    last_compaction INTEGER
+);
+```
+
+### Session Compaction
+
+When a session accumulates too many tokens (exceeding the configured threshold), the Session Manager triggers compaction:
+
+1. Extract key facts from older messages.
+2. Store the extracted facts in the [memory system](/docs/en/architecture/memory) for long-term retrieval.
+3. Replace old messages with a concise summary.
+4. Update the token count.
+
+This process is transparent to the user. The agent retains awareness of the full conversation through the summary and fact store.
+
+## Event Streaming
+
+As the agent processes a message, it emits real-time events through the Gateway's EventBus. Clients subscribe to event topics using glob patterns:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "events.subscribe",
+  "params": { "pattern": "stream.*" },
+  "id": 1
+}
+```
+
+Key event topics:
+
+| Topic | Payload |
+|-------|---------|
+| `stream.chunk` | Incremental text content from the agent's response |
+| `stream.tool_start` | Notification that a tool execution has begun |
+| `stream.tool_end` | Tool execution result |
+| `agent.started` | Agent run has begun processing |
+| `agent.completed` | Agent run has finished |
+| `agent.error` | An error occurred during processing |
+
+This streaming model enables responsive UIs across all interfaces -- the CLI can display tokens as they arrive, the desktop app can show a typing indicator, and Telegram can send chunked messages.
+
+## Security Context
+
+Each message carries an identity context that flows through the entire execution chain:
+
+```rust
+pub struct IdentityContext {
+    pub request_id: String,
+    pub session_key: String,
+    pub role: Role,              // Owner, Guest, Anonymous
+    pub identity_id: String,
+    pub scope: Option<GuestScope>,
+    pub created_at: i64,
+    pub source_channel: String,
+}
+```
+
+The identity context is immutable once created and determines what tools the agent can invoke on behalf of the user. Owner sessions have unrestricted access, while Guest sessions are limited to the tools specified in their `GuestScope`. See the [Security section](/docs/en/security/overview) for details on the permission model.
+
+## JSON-RPC Protocol
+
+All message exchange between clients and the Gateway uses JSON-RPC 2.0 over WebSocket:
+
+**Sending a message:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "msg-001",
+  "method": "agent.run",
+  "params": {
+    "message": "Explain the Rust borrow checker",
+    "session_key": "agent:main:main",
+    "thinking": "medium"
+  }
+}
+```
+
+**Receiving a streamed response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "stream.chunk",
+    "data": {
+      "run_id": "run-123",
+      "content": "The borrow checker is Rust's..."
+    }
+  }
+}
+```
+
+## Related Pages
+
+- [Gateway Overview](/docs/en/gateway/overview) -- WebSocket protocol and event bus
+- [Agent Runtime](/docs/en/concepts/agent-runtime) -- How the agent processes messages
+- [Workspaces](/docs/en/concepts/workspaces) -- Session storage and state directories

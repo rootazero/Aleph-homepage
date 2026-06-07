@@ -1,0 +1,125 @@
+---
+title: "Core Types"
+description: "Shared type definitions used across the Aleph codebase — MediaAttachment, CapturedContext, CompressionStats, and MemoryEntry."
+---
+
+The `core` module provides pure data types that are shared across all layers of Aleph. It has no business logic, no platform-specific code, and only one external dependency: `serde`.
+
+## Design Philosophy
+
+The `core` module follows the principle of **high cohesion and zero coupling**. Every type in this module is a pure data container with derived implementations for `Debug`, `Clone`, `Serialize`, and `Deserialize`. There are no methods beyond simple field access — business logic lives in the modules that consume these types.
+
+This design ensures that:
+- Types can be shared between the server, desktop bridge, and client interfaces without pulling in heavy dependencies
+- Serialization contracts are stable and versioned via `serde`
+- The module compiles quickly and never blocks other modules
+
+---
+
+## MediaAttachment
+
+Multimodal content support for images, documents, and video from clipboard or file uploads.
+
+```rust
+pub struct MediaAttachment {
+    pub media_type: String,       // "image", "document", "video", "file"
+    pub mime_type: String,        // "image/png", "application/pdf"
+    pub data: String,             // Content (base64 or utf8)
+    pub encoding: String,         // "base64" | "utf8"
+    pub filename: Option<String>, // Original filename
+    pub size_bytes: u64,          // Original size
+}
+```
+
+The `encoding` field determines how to interpret `data`:
+- `"base64"` — Binary content encoded as Base64 (images, PDFs)
+- `"utf8"` — Plain text content (markdown, extracted text)
+
+**Usage:** Used by `CapturedContext` to pass clipboard content from the Desktop Bridge to the Thinker, and by tool outputs that generate or receive files.
+
+---
+
+## CapturedContext
+
+Context from the user's active application, bridged from the native desktop layer.
+
+```rust
+pub struct CapturedContext {
+    pub window_title: Option<String>,
+    pub attachments: Option<Vec<MediaAttachment>>,
+    pub session_id: Option<String>,
+}
+```
+
+**Fields:**
+- `window_title` — Title of the active window (e.g., "Notes.app", "VS Code")
+- `attachments` — Clipboard content (images, files) captured at the moment of interaction
+- `session_id` — Session identifier for multi-turn conversations
+
+**Usage:** Injected into the prompt context when the user interacts via the Desktop Bridge, giving the AI awareness of what the user is currently working on.
+
+---
+
+## CompressionStats
+
+Statistics about the memory compression state, used by the Settings UI to display memory health.
+
+```rust
+pub struct CompressionStats {
+    pub total_raw_memories: u64,
+    pub total_facts: u64,
+    pub valid_facts: u64,
+    pub facts_by_type: HashMap<String, u64>,
+}
+```
+
+**Fields:**
+- `total_raw_memories` — Layer 1: raw user messages stored before compression
+- `total_facts` — Layer 2: compressed facts extracted from memories
+- `valid_facts` — Non-invalidated facts still considered active
+- `facts_by_type` — Breakdown by type (preference, plan, learning, etc.)
+
+**Usage:** Queried by the Gateway's config handlers to populate the memory dashboard in the Panel UI.
+
+---
+
+## MemoryEntry
+
+A memory record returned by the Memory system's API, suitable for serialization to clients.
+
+```rust
+pub struct MemoryEntry {
+    pub id: String,
+    pub window_title: String,
+    pub user_input: String,
+    pub ai_output: String,
+    pub timestamp: i64,
+    pub similarity_score: Option<f32>,
+}
+```
+
+**Usage:** Returned by memory search queries. The `similarity_score` field is populated when the entry is retrieved via vector search, indicating relevance to the query.
+
+---
+
+## Where These Types Are Used
+
+| Type | Used By | Purpose |
+|---|---|---|
+| `MediaAttachment` | Desktop Bridge, Thinker, Tools | Multimodal content passing |
+| `CapturedContext` | Desktop Bridge, Orchestrator | Context injection |
+| `CompressionStats` | Memory, Gateway, Panel UI | Memory health display |
+| `MemoryEntry` | Memory, Gateway | API response serialization |
+
+---
+
+## Code Location
+
+- `src/core/mod.rs` — Module entry point, re-exports
+- `src/core/types.rs` — Type definitions
+
+## See Also
+
+- [Memory System](./memory) — How memories are stored and compressed
+- [Desktop Bridge](./desktop-bridge) — How CapturedContext is captured from native apps
+- [Thinker](./thinker) — How context is injected into prompts

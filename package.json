@@ -6,10 +6,15 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "fumadocs-mdx"
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "fumadocs-core": "^16.9.3",
+    "fumadocs-mdx": "^15.0.11",
+    "fumadocs-ui": "^16.9.3",
     "lucide-react": "^0.575.0",
     "motion": "^12.34.3",
     "next": "16.1.6",
@@ -22,6 +27,7 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "^4.2.1",
+    "@types/mdx": "^2.0.13",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

@@ -1,0 +1,206 @@
+---
+title: "Execution Engine"
+description: "Sandboxed command execution with approval workflow, risk analysis, seatbelt profiles, and audit logging."
+---
+
+The `exec` module provides sandboxed command execution for Aleph. It handles shell command parsing, risk analysis, approval workflows, and sandbox enforcement via platform-specific profiles (Seatbelt on macOS).
+
+## Design Philosophy
+
+1. **Default deny** — Commands are blocked unless explicitly approved or allowlisted
+2. **Progressive trust** — One-time, session, or permanent approval
+3. **Sandbox enforcement** — Platform-specific sandboxing (Seatbelt on macOS)
+
+---
+
+## Architecture
+
+```
+Command → Parser → Risk Analyzer → Approval Manager → Sandbox → Execute
+                                          │
+                              ┌───────────┼───────────┐
+                              ▼           ▼           ▼
+                          Allowlist    Human      Auto
+                           Check     Approval   Approve
+                              │           │       │
+                              └───────────┼───────┘
+                                          │
+                                          ▼
+                                    Audit Log
+```
+
+---
+
+## Core Components
+
+### Command Parser
+
+Parses and normalizes shell commands:
+
+```rust
+pub struct CommandParser;
+
+impl CommandParser {
+    pub fn parse(
+        &self,
+        cmd: &str,
+    ) -> Result<ParsedCommand> { /* ... */ }
+}
+```
+
+**Normalization:**
+- Expands environment variables
+- Resolves relative paths
+- Detects chained commands (`;`, `&&`, `||`)
+
+### Risk Analyzer
+
+Classifies commands by risk level:
+
+```rust
+pub enum RiskLevel {
+    Safe,      // Read-only operations (ls, cat, grep)
+    Caution,   // Destructive but common (rm, mv, cp)
+    Dangerous, // System-level (sudo, chmod, kill)
+    Unknown,   // Unrecognized command
+}
+
+pub struct RiskAnalyzer;
+
+impl RiskAnalyzer {
+    pub fn analyze(
+        &self,
+        cmd: &ParsedCommand,
+    ) -> RiskLevel { /* ... */ }
+}
+```
+
+**Risk factors:**
+- Command type (read vs write vs execute)
+- Target path sensitivity
+- Network access
+- Privilege escalation
+
+### Approval Manager
+
+Manages the approval workflow:
+
+```rust
+pub struct ApprovalManager {
+    allowlist: Allowlist,
+    escalation: EscalationPolicy,
+}
+
+impl ApprovalManager {
+    pub async fn request_approval(
+        &self,
+        request: ApprovalRequest,
+    ) -> Result<ApprovalDecision> { /* ... */ }
+}
+```
+
+**Decision types:**
+- `Allow` — Execute immediately
+- `Deny` — Block execution
+- `Ask` — Prompt user for confirmation
+- `Escalate` — Escalate to higher authority
+
+**Escalation reasons:**
+- `FirstExecution` — Never seen this command before
+- `HighRisk` — Command is classified as dangerous
+- `PathSensitive` — Target is a sensitive directory
+
+### Sandbox
+
+Platform-specific sandbox enforcement:
+
+**macOS (Seatbelt):**
+```rust
+pub struct SeatbeltProfile {
+    rules: Vec<SeatbeltRule>,
+}
+
+impl SeatbeltProfile {
+    pub fn generate(
+        &self,
+        request: &ExecutionRequest,
+    ) -> String { /* ... */ }
+}
+```
+
+**Profile rules:**
+- Read-only access to workspace
+- No network access (unless requested)
+- No access to sensitive paths (`~/.ssh`, `~/.config`, etc.)
+- Temporary directory access for output
+
+**Security:**
+- Domain character whitelist (`[a-zA-Z0-9._-]`) prevents profile injection
+- Path quotes escaped to prevent expression injection
+
+### Executor
+
+Executes approved commands:
+
+```rust
+pub struct SandboxExecutor;
+
+impl SandboxExecutor {
+    pub async fn execute(
+        &self,
+        request: ExecutionRequest,
+    ) -> Result<ExecutionResult> { /* ... */ }
+}
+```
+
+**Features:**
+- Timeout enforcement (configurable, default 30s)
+- Output capture (stdout + stderr)
+- Exit code tracking
+- Cleanup on completion (temp files, sandbox profile)
+
+**Safety:** Cleanup errors are logged via `tracing::warn` but don't override the execution result.
+
+---
+
+## Audit Logging
+
+All executions are logged:
+
+```rust
+pub struct ExecutionAudit {
+    pub command: String,
+    pub decision: ApprovalDecision,
+    pub executor: String,
+    pub timestamp: DateTime<Utc>,
+    pub exit_code: Option<i32>,
+}
+```
+
+---
+
+## Safety Properties
+
+- **Path scope validation** — Uses `Path::starts_with` (component-level) not `str::starts_with`
+- **HMAC timing-safe** — `hmac::verify_slice()` for constant-time comparison
+- **No panic in async** — `compute_hmac` returns `Result`, not `expect`
+- **Saturating arithmetic** — Timeout calculations use `saturating_mul`
+- **No cleanup override** — Cleanup failures don't mask execution results
+
+---
+
+## Code Location
+
+- `src/exec/mod.rs` — Module entry point
+- `src/exec/parser.rs` — Command parsing
+- `src/exec/risk.rs` — Risk analysis
+- `src/exec/approval/` — Approval workflow
+- `src/exec/sandbox/` — Sandbox profiles and execution
+- `src/exec/manager.rs` — Approval manager
+- `src/exec/audit.rs` — Execution audit log
+
+## See Also
+
+- [Security Primitives](./security-primitives) — Security layers
+- [Builtin Tools](./builtin-tools) — Code execution tool
+- [Approval](./approval) — Desktop/browser approval system

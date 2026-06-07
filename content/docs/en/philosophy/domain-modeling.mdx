@@ -1,0 +1,345 @@
+---
+title: Domain Modeling
+description: How Aleph uses Domain-Driven Design (DDD) in Rust — Entity, AggregateRoot, ValueObject, bounded contexts, and the trait-based architecture that organizes the codebase.
+---
+
+Aleph's codebase is organized using Domain-Driven Design (DDD) principles, implemented through Rust's trait system. Rather than relying on a heavyweight DDD framework, Aleph uses lightweight trait contracts to enforce domain rules at compile time. This page describes the modeling approach, the core domain primitives, and how bounded contexts partition the system into cohesive modules.
+
+DDD in Aleph is not ceremonial — it serves a practical purpose. By making domain concepts explicit in the type system, the codebase communicates its intent clearly and prevents entire categories of bugs through compile-time guarantees.
+
+## Why DDD in Aleph
+
+A personal AI assistant is a complex domain. It involves conversations, memory, task orchestration, tool execution, security policies, and multi-channel communication. Without explicit modeling, these concerns blur together, creating a codebase where everything depends on everything.
+
+DDD provides the organizational backbone:
+
+- **Bounded contexts** prevent cross-domain coupling. The Memory system does not know about the Dispatcher's task graph, and the Dispatcher does not know about the Gateway's session management.
+- **Aggregate roots** enforce consistency boundaries. Modifications to related objects go through a single entry point, preventing inconsistent state.
+- **Value objects** eliminate identity confusion. When two objects are equal if and only if their attributes match, making them value objects prevents bugs where identity is accidentally assumed.
+- **Entities** make identity explicit. When an object needs to persist across operations and be referenced by other objects, marking it as an entity makes this contract visible in the code.
+
+## Core Primitives
+
+Aleph defines three foundational DDD traits in its domain module. These are minimal by design — they enforce contracts without adding runtime overhead.
+
+### Entity
+
+An **Entity** is an object with a unique identity that persists across state changes. Two entities are equal if and only if they share the same ID, regardless of their other attributes.
+
+```rust
+pub trait Entity {
+    type Id: Eq + Clone + std::fmt::Display;
+    fn id(&self) -> &Self::Id;
+}
+```
+
+**Characteristics**:
+- Has a unique identifier accessible via `id()`.
+- Identity is stable — the same entity retains its ID across all modifications.
+- State can change, but identity cannot.
+- Equality is determined solely by ID comparison.
+
+**When to use Entity**: When an object needs to be tracked across operations, referenced by other objects, or has a lifecycle (created, updated, deleted).
+
+**Example**:
+
+```rust
+pub struct Task {
+    id: String,
+    name: String,
+    status: TaskStatus,
+    dependencies: Vec<String>,
+}
+
+impl Entity for Task {
+    type Id = String;
+    fn id(&self) -> &Self::Id { &self.id }
+}
+```
+
+A `Task` is an entity because it has a lifecycle — it is created, its status changes, dependencies are updated, and eventually it completes or fails. Two tasks with the same data but different IDs are different tasks. Two tasks with the same ID but different statuses are the same task in different states.
+
+### AggregateRoot
+
+An **AggregateRoot** is the entry point of an aggregate — a cluster of related objects that are treated as a unit for consistency purposes. All modifications to objects within the aggregate must go through the aggregate root.
+
+```rust
+pub trait AggregateRoot: Entity {}
+```
+
+**Characteristics**:
+- Inherits all Entity properties (has identity, stable across changes).
+- Serves as the transactional boundary — external code interacts with the aggregate only through the root.
+- Responsible for maintaining consistency of all objects within the aggregate.
+- External references to objects inside the aggregate go through the root.
+
+**When to use AggregateRoot**: When an object manages a group of related objects and needs to enforce consistency rules across them.
+
+**Example**:
+
+```rust
+pub struct TaskGraph {
+    id: String,
+    tasks: Vec<Task>,
+    edges: Vec<(String, String)>,
+}
+
+impl Entity for TaskGraph {
+    type Id = String;
+    fn id(&self) -> &Self::Id { &self.id }
+}
+
+impl AggregateRoot for TaskGraph {}
+```
+
+A `TaskGraph` is an aggregate root because it manages a collection of `Task` entities and their dependency edges. Adding a task, removing a task, or modifying dependencies must go through the `TaskGraph` to ensure the graph remains valid (no cycles, no dangling references, proper ordering).
+
+External code should never modify a `Task` directly — it should call methods on `TaskGraph` that maintain invariants:
+
+```rust
+impl TaskGraph {
+    pub fn add_task(&mut self, task: Task) -> Result<(), GraphError> {
+        // Validate no duplicate IDs
+        // Validate dependencies exist
+        // Maintain topological order
+        self.tasks.push(task);
+        Ok(())
+    }
+
+    pub fn update_status(&mut self, task_id: &str, status: TaskStatus) -> Result<(), GraphError> {
+        // Validate task exists
+        // Validate state transition is legal
+        // Propagate status changes to dependents
+        // ...
+        Ok(())
+    }
+}
+```
+
+### ValueObject
+
+A **ValueObject** is an immutable object defined entirely by its attributes. It has no identity — two value objects are equal if and only if all their attributes are equal.
+
+```rust
+pub trait ValueObject: Eq + Clone {}
+```
+
+**Characteristics**:
+- Immutable — once created, a value object never changes.
+- No identity — equality is determined by comparing all attributes.
+- Freely copyable and replaceable.
+- Side-effect free — operations on value objects return new value objects.
+
+**When to use ValueObject**: When an object represents a measurement, a classification, a status, or any concept where identity does not matter — only the value.
+
+**Example**:
+
+```rust
+#[derive(Eq, PartialEq, Clone)]
+pub struct TaskStatus {
+    pub state: TaskState,
+    pub progress: f32,
+}
+
+impl ValueObject for TaskStatus {}
+```
+
+A `TaskStatus` is a value object because we only care about what the status *is*, not which specific instance it is. A status of "Running at 50%" is the same as any other status of "Running at 50%", regardless of when or where it was created.
+
+## Bounded Contexts
+
+Aleph's domain is partitioned into bounded contexts — cohesive areas of the domain that have their own ubiquitous language, their own models, and their own rules. Objects in different contexts may share names but have different meanings.
+
+### Dispatcher Context
+
+**Responsibility**: DAG scheduling, tool orchestration, task state management.
+
+The Dispatcher context handles the execution side of the agent — breaking requests into task graphs, managing dependencies, and tracking progress.
+
+| Type | DDD Role | Location |
+|------|----------|----------|
+| `TaskGraph` | AggregateRoot | `dispatcher/agent_types/graph.rs` |
+| `Task` | Entity | `dispatcher/agent_types/task.rs` |
+| `TaskStatus` | ValueObject | `dispatcher/agent_types/status.rs` |
+
+The `TaskGraph` aggregate root ensures that:
+- Tasks are executed in dependency order.
+- No circular dependencies exist.
+- Status propagation is consistent (a parent task cannot be "complete" while a child is still "running").
+
+### Memory Context
+
+**Responsibility**: Fact storage, RAG retrieval, knowledge compression.
+
+The Memory context manages the agent's persistent knowledge — storing facts, retrieving relevant context, and compressing old memories to maintain efficiency.
+
+| Type | DDD Role | Location |
+|------|----------|----------|
+| `MemoryFact` | AggregateRoot | `memory/context.rs` |
+| `ContextAnchor` | ValueObject | `memory/context.rs` |
+| `FactType` | ValueObject | `memory/context.rs` |
+
+The `MemoryFact` aggregate root ensures that:
+- Facts are properly anchored to their context (conversation, topic, domain).
+- Fact types are consistent and valid.
+- Compression operations preserve essential information.
+
+### Intent Context
+
+**Responsibility**: Intent detection, L1-L3 layered filtering.
+
+The Intent context handles the perception side of the agent — analyzing user input and classifying it into actionable intents.
+
+| Type | DDD Role | Location |
+|------|----------|----------|
+| `AggregatedIntent` | ValueObject | `intent/types.rs` |
+| `IntentSignal` | ValueObject | `intent/types.rs` |
+
+Note that the Intent context uses only value objects — intents are classified, not tracked. An intent does not have a lifecycle; it is a snapshot of the agent's understanding at a point in time.
+
+### POE Context
+
+**Responsibility**: Success contracts, validation rules, evaluation results.
+
+The POE context handles the evaluation side of the agent — defining what success looks like and validating whether it was achieved.
+
+| Type | DDD Role | Location |
+|------|----------|----------|
+| `SuccessManifest` | AggregateRoot | `poe/types.rs` |
+| `ValidationRule` | ValueObject | `poe/types.rs` |
+| `Verdict` | ValueObject | `poe/types.rs` |
+
+The `SuccessManifest` aggregate root ensures that:
+- Validation rules are consistent and complete.
+- Verdicts are produced by evaluating all rules against the actual output.
+- The manifest cannot be modified after evaluation begins (immutable during assessment).
+
+## Context Relationships
+
+The bounded contexts interact through well-defined interfaces, not direct dependencies:
+
+```
+                 ┌────────────────┐
+                 │  Intent Context │
+                 │  (Perception)   │
+                 └───────┬────────┘
+                         │ classified intent
+                         v
+┌────────────────┐   ┌────────────────┐   ┌────────────────┐
+│  POE Context   │<──│  Dispatcher    │──>│  Memory Context│
+│  (Evaluation)  │   │  Context       │   │  (Knowledge)   │
+│                │   │  (Execution)   │   │                │
+└────────────────┘   └────────────────┘   └────────────────┘
+        │                                         ^
+        │          experience crystallization      │
+        └─────────────────────────────────────────┘
+```
+
+- **Intent --> Dispatcher**: Classified intents are passed to the Dispatcher for task graph construction.
+- **Dispatcher --> Memory**: The Dispatcher queries Memory for relevant context during execution.
+- **Dispatcher --> POE**: Completed tasks are evaluated against the Success Manifest.
+- **POE --> Memory**: Successful evaluations trigger experience crystallization into Memory.
+
+Each context owns its models and does not import types from other contexts. Communication happens through shared interfaces (traits, message types) defined at the boundary.
+
+## Implementing New Domain Types
+
+When adding a new concept to Aleph's domain model, follow this decision process:
+
+### Step 1: Determine the Role
+
+Ask these questions:
+
+1. **Does this object need a unique identity?** Does it need to be tracked, referenced, or have a lifecycle?
+   - Yes --> It is an **Entity**.
+2. **Does it manage a group of related objects with consistency requirements?**
+   - Yes --> It is an **AggregateRoot** (which is also an Entity).
+3. **Is it just a container of attributes where identity does not matter?**
+   - Yes --> It is a **ValueObject**.
+
+### Step 2: Implement the Trait
+
+```rust
+use crate::domain::{Entity, AggregateRoot, ValueObject};
+
+// Entity
+impl Entity for MyEntity {
+    type Id = String;
+    fn id(&self) -> &Self::Id { &self.id }
+}
+
+// AggregateRoot (also implement Entity first)
+impl AggregateRoot for MyAggregate {}
+
+// ValueObject (derive Eq and Clone)
+#[derive(Eq, PartialEq, Clone)]
+pub struct MyValue { /* fields */ }
+impl ValueObject for MyValue {}
+```
+
+### Step 3: Place in the Right Context
+
+Determine which bounded context the new type belongs to. If it does not fit any existing context, consider whether a new context is warranted.
+
+### Step 4: Add Tests
+
+Aleph uses a dual testing strategy for domain types:
+
+**Gherkin tests** (in `core/tests/features/domain/`) for deterministic behavior:
+
+```gherkin
+Feature: TaskGraph consistency
+  Scenario: Cannot add task with duplicate ID
+    Given a task graph with task "task-001"
+    When I add another task with ID "task-001"
+    Then the operation should fail with "duplicate ID"
+```
+
+**YAML spec tests** (in `core/tests/specs/`) for AI-related semantic behavior:
+
+```yaml
+scenarios:
+  - name: "SuccessManifest validates correctly"
+    given:
+      - success_manifest: { id: "sm-001" }
+    then:
+      - assertion_type: "deterministic"
+        check: "has_identity"
+        expected: true
+```
+
+This dual approach ensures both correctness (Gherkin) and semantic validity (YAML specs evaluated by LLM judge).
+
+## Design Principles
+
+### Keep Aggregates Small
+
+Large aggregates create performance bottlenecks and contention. Each aggregate should contain only the objects that must be consistent with each other at all times. If two objects can be temporarily inconsistent, they belong in separate aggregates.
+
+### Prefer Value Objects
+
+Value objects are simpler, safer, and more efficient than entities. If an object does not need identity or a lifecycle, make it a value object. This eliminates an entire class of bugs related to identity confusion and reference management.
+
+### Enforce Invariants at the Boundary
+
+Aggregate roots are responsible for enforcing all business rules within their boundary. External code should never be able to put an aggregate into an invalid state. This means:
+
+- Constructors validate initial state.
+- Mutation methods validate state transitions.
+- The type system prevents illegal operations where possible.
+
+### Use Rust's Type System
+
+Rust's ownership model, trait system, and type-level programming align naturally with DDD:
+
+- **Ownership** enforces aggregate boundaries — if the aggregate root owns its children, external code cannot hold mutable references to them.
+- **Traits** express domain contracts without runtime cost.
+- **Enums** model discriminated unions (like `FactType` or `TaskState`) with exhaustive matching.
+- **Lifetimes** prevent dangling references across context boundaries.
+
+## Further Reading
+
+- [Design Philosophy](./overview) — The foundational principles that DDD serves
+- [Agent Thinking Model](./agent-thinking) — How the POE context drives agent evaluation
+- [Five Layers of Emergence](./five-layers) — How bounded contexts map to the L1-L5 model
+- [Architecture](/docs/en/architecture) — Technical system architecture

@@ -1,0 +1,178 @@
+---
+title: "Configuration"
+description: "Configure your Aleph setup"
+---
+
+Aleph uses a TOML configuration file at `~/.aleph/config.toml`.
+
+## Basic Structure
+
+```toml
+# Agent configuration
+[agent]
+default_model = "anthropic/claude-sonnet-4"
+thinking = "medium"
+
+# Gateway configuration
+[gateway]
+port = 18790
+bind = "127.0.0.1"
+require_auth = false
+
+# Channel configuration
+[channel.telegram]
+enabled = false
+token = "BOT_TOKEN"
+
+[channel.discord]
+enabled = false
+token = "BOT_TOKEN"
+
+# Session configuration
+[session]
+auto_reset_hour = 4
+expiry_days = 30
+```
+
+## Agent Configuration
+
+### Model Selection
+
+```toml
+[agent]
+# Primary model
+model = "anthropic/claude-opus-4-20250514"
+
+# Fallback models (failover chain)
+models = [
+  "anthropic/claude-opus-4-20250514",
+  "openai/gpt-4o",
+  "google/gemini-pro"
+]
+```
+
+### Thinking Levels
+
+| Level | Description |
+|-------|-------------|
+| `off` | No extended thinking |
+| `minimal` | Brief reasoning |
+| `low` | Quick analysis |
+| `medium` | Balanced (default) |
+| `high` | Deep analysis |
+| `xhigh` | Maximum depth |
+
+### Identity
+
+```toml
+[agent]
+identity = "You are Aleph, a personal AI assistant. Be helpful, concise, and accurate."
+
+# Group chat behavior
+[agent.group_chat]
+require_mention = true
+prefix = "@aleph"
+```
+
+## Gateway Configuration
+
+```toml
+[gateway]
+# Port to listen on
+port = 18790
+
+# Bind address
+bind = "127.0.0.1"    # localhost only
+# bind = "0.0.0.0"    # all interfaces
+
+# Authentication
+require_auth = true
+
+# TLS (optional)
+[gateway.tls]
+cert = "/path/to/cert.pem"
+key = "/path/to/key.pem"
+```
+
+## Channel Configuration
+
+### Telegram
+
+```toml
+[channel.telegram]
+enabled = true
+token = "123456:ABC..."
+
+# Allowlist (optional)
+allow_from = ["+1234567890"]
+
+# Group behavior
+[channel.telegram.groups]
+"*" = { require_mention = true }
+```
+
+### Discord
+
+```toml
+[channel.discord]
+enabled = true
+token = "YOUR_BOT_TOKEN"
+
+# Guild/server restrictions
+allow_guilds = ["guild-id-1", "guild-id-2"]
+```
+
+## Provider Configuration
+
+Aleph supports multiple LLM providers. Each provider is configured under the `[provider]` table:
+
+```toml
+[provider.claude]
+protocol = "anthropic"
+model = "claude-opus-4-20250514"
+api_key = "sk-ant-..."
+
+[provider.openai]
+protocol = "openai"
+model = "gpt-4o"
+api_key = "sk-..."
+```
+
+See [Providers](/docs/en/architecture/providers) for the full list of supported providers.
+
+## Session Configuration
+
+```toml
+[session]
+# Auto-reset hour (0-23, local time)
+auto_reset_hour = 4
+
+# Session expiry
+expiry_days = 30
+
+# Compaction
+[session.compaction]
+enabled = true
+threshold = 50000  # tokens
+```
+
+## Environment Variables
+
+Configuration values can use environment variables:
+
+```toml
+[channel.telegram]
+token = "${TELEGRAM_BOT_TOKEN}"
+```
+
+## Hot Reload
+
+Configuration changes are automatically detected and applied. The gateway watches `config.toml` for changes and reloads without restart.
+
+## Configuration Locations
+
+| File | Purpose |
+|------|---------|
+| `~/.aleph/config.toml` | Main configuration file |
+| `~/.aleph/defaults.toml` | Default value overrides |
+| `~/.aleph/config.toml.bak` | Automatic backup before migrations |

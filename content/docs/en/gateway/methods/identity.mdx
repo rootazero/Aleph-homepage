@@ -1,0 +1,161 @@
+---
+title: "identity.*"
+description: "Identity and soul management RPC methods"
+---
+
+Identity methods manage the AI's identity (soul) during sessions. Get the effective identity, set session-level overrides, and list available identity sources.
+
+## Methods
+
+### identity.get
+
+Returns the effective SoulManifest for the current session, including whether a session override is active.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "identity.get"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "soul": {
+      "identity": "I am Aleph, your AI assistant.",
+      "directives": ["Be helpful", "Be concise"]
+    },
+    "has_session_override": false
+  }
+}
+```
+
+### identity.set
+
+Sets a session-level identity override. This temporarily changes the AI's behavior for the current session without modifying the global identity file.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "identity.set",
+  "params": {
+    "soul": {
+      "identity": "I am a specialized coding assistant.",
+      "directives": ["Focus on code quality", "Explain concisely"]
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "success": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `soul` | object | Yes | SoulManifest to apply |
+| `soul.identity` | string | Yes | Identity statement |
+| `soul.directives` | string[] | No | Behavioral directives |
+
+### identity.clear
+
+Clears the session-level identity override, reverting to the global identity.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "identity.clear"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "success": true,
+    "had_override": true
+  }
+}
+```
+
+### identity.list
+
+Lists all available identity sources and their load status.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "identity.list"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "sources": [
+      {
+        "source_type": "global",
+        "path": "/Users/user/.aleph/soul.md",
+        "loaded": true
+      },
+      {
+        "source_type": "session",
+        "path": "<session>",
+        "loaded": true
+      }
+    ]
+  }
+}
+```
+
+**Source Types:**
+
+| Type | Description |
+|------|-------------|
+| `global` | Loaded from `~/.aleph/soul.md` |
+| `session` | Session-level override (set via `identity.set`) |
+
+## Identity File
+
+The global identity is loaded from `~/.aleph/soul.md`. This is a markdown file containing:
+
+```markdown
+# Soul
+
+I am Aleph, a polymorphic AI assistant.
+
+## Directives
+
+- Be helpful and accurate
+- Be concise unless asked for detail
+- Respect user privacy
+```
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

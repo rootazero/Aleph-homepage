@@ -1,0 +1,328 @@
+---
+title: "Gateway Management"
+description: "Start, stop, and monitor the Aleph Gateway server from the command line"
+---
+
+The `aleph-server` binary manages the Aleph Gateway lifecycle. This page covers all commands related to starting, stopping, monitoring, and querying the server.
+
+## Starting the Gateway
+
+### Foreground Mode
+
+```bash
+aleph-server
+# or explicitly:
+aleph-server start
+```
+
+The server starts listening on the configured bind address and port (default `127.0.0.1:18790`). Logs are printed to stdout.
+
+### Custom Bind Address and Port
+
+```bash
+aleph-server --bind 0.0.0.0 --port 9000
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--bind <ADDR>` | `127.0.0.1` | Network interface to bind to. Use `0.0.0.0` for all interfaces. |
+| `--port <PORT>` | `18790` | WebSocket listen port |
+| `--force` | `false` | Start even if the port appears to be in use |
+| `--max-connections <N>` | `1000` | Maximum number of concurrent WebSocket connections |
+
+### With Configuration File
+
+```bash
+aleph-server -c ~/.aleph/config.toml
+```
+
+The configuration file is TOML format and can specify agent, gateway, and control plane settings:
+
+```toml
+[agent.main]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+
+[gateway]
+bind = "127.0.0.1"
+port = 18790
+
+[control_plane]
+port = 18790
+```
+
+### With WebChat UI
+
+If you have a WebChat frontend built as static files, serve it alongside the Gateway:
+
+```bash
+aleph-server --webchat-dir ./webchat/dist --webchat-port 8080
+```
+
+| Flag | Description |
+|------|-------------|
+| `--webchat-dir <PATH>` | Directory containing static HTML/JS/CSS files |
+| `--webchat-port <PORT>` | HTTP port for the WebChat server (defaults to same as `--port`) |
+
+---
+
+## Daemon Mode
+
+Run the Gateway as a background process using the `--daemon` (`-d`) flag. This is useful for long-running deployments.
+
+### Starting a Daemon
+
+```bash
+aleph-server -d --log-file ~/.aleph/gateway.log
+```
+
+```
+$ aleph-server -d --log-file ~/.aleph/gateway.log
+# (process forks into background, parent exits immediately)
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--daemon` / `-d` | `false` | Fork into background |
+| `--pid-file <PATH>` | `~/.aleph/gateway.pid` | Location of the PID file |
+| `--log-file <PATH>` | — | Redirect stdout/stderr to this file. If omitted, output goes to `/dev/null`. |
+
+The daemon writes its PID to the PID file. All subsequent `stop` and `status` commands use this file to locate the process.
+
+### Stopping a Daemon
+
+```bash
+aleph-server stop
+```
+
+Expected output:
+
+```
+Sending SIGTERM to gateway process (PID 54321)
+Gateway stopped successfully
+```
+
+The `stop` command sends `SIGTERM` and waits up to 5 seconds for a graceful shutdown. If the process does not exit, it escalates to `SIGKILL`.
+
+### Checking Status
+
+```bash
+aleph-server status
+```
+
+Possible outputs:
+
+```
+Gateway is running (PID 54321)
+```
+
+```
+Gateway is not running (stale PID file for PID 54321)
+```
+
+```
+Gateway is not running (no PID file)
+```
+
+For machine-readable output:
+
+```bash
+aleph-server status --json
+```
+
+```json
+{
+  "running": true,
+  "pid": 54321
+}
+```
+
+---
+
+## Health Check
+
+From the client CLI, verify that the Gateway is reachable:
+
+```bash
+aleph health
+```
+
+```
+Server Status: ok
+Timestamp: 2026-02-25T10:30:00Z
+```
+
+This sends a `health` JSON-RPC call over WebSocket. If the server is unreachable, you will see a connection error:
+
+```
+Error: Connection error: Connection refused (os error 61)
+```
+
+To check a remote server:
+
+```bash
+aleph -s ws://192.168.1.50:18790 health
+```
+
+---
+
+## Server Information
+
+Get detailed information about a running Gateway:
+
+```bash
+aleph info
+```
+
+```
+=== Aleph Gateway Server ===
+
+Version: 0.1.0
+Status: ok
+Uptime: 2h 15m 30s
+
+Available Providers:
+  ✓ anthropic
+  ✗ openai
+```
+
+The `info` command queries both the `health` and `providers.list` RPC methods.
+
+---
+
+## Gateway RPC Tool
+
+The `aleph-server gateway call` command lets you invoke arbitrary JSON-RPC methods on a running Gateway. This is useful for debugging and scripting.
+
+```bash
+aleph-server gateway call <METHOD> [OPTIONS]
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--params <JSON>` | `-p` | — | JSON parameters to pass with the RPC call |
+| `--url <URL>` | — | `ws://127.0.0.1:18790` | Gateway WebSocket URL |
+| `--timeout <MS>` | — | `30000` | Request timeout in milliseconds |
+
+### Examples
+
+```bash
+# Health check via raw RPC
+aleph-server gateway call health
+
+# Get full config as JSON
+aleph-server gateway call config.get
+
+# Call a method with parameters
+aleph-server gateway call config.get -p '{"path": "general.language"}'
+
+# Call with custom timeout
+aleph-server gateway call agent.run \
+  -p '{"input": "Hello"}' \
+  --timeout 60000
+```
+
+---
+
+## System Service Integration
+
+### macOS (launchd)
+
+Create `~/Library/LaunchAgents/com.aleph.server.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aleph.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/aleph-server</string>
+        <string>--daemon</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.aleph.server.plist
+launchctl start com.aleph.server
+```
+
+### Linux (systemd)
+
+Create `/etc/systemd/system/aleph-server.service`:
+
+```ini
+[Unit]
+Description=Aleph AI Server
+After=network.target
+
+[Service]
+Type=simple
+User=aleph
+ExecStart=/usr/local/bin/aleph-server
+Restart=on-failure
+Environment="ANTHROPIC_API_KEY=your-api-key"
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now aleph-server
+sudo systemctl status aleph-server
+```
+
+---
+
+## Troubleshooting
+
+### Port Already in Use
+
+```bash
+# Find the process using the port
+lsof -i :18790
+
+# Kill it, then retry
+kill <PID>
+aleph-server start
+```
+
+Or use `--force` to attempt binding anyway, and `--port` to choose a different port:
+
+```bash
+aleph-server --port 18790
+```
+
+### Stale PID File
+
+If `aleph-server status` reports a stale PID file, the previous process exited without cleanup. Run `stop` to clear it:
+
+```bash
+aleph-server stop
+# "Gateway is not running (stale PID file)"
+# PID file is automatically removed
+```
+
+### Connection Refused from Client
+
+Ensure the server is running and the URL matches:
+
+```bash
+# Check server status
+aleph-server status
+
+# Verify the port
+aleph -s ws://127.0.0.1:18790 health
+```
+
+If the server is binding to `127.0.0.1` and you are connecting from another machine, restart with `--bind 0.0.0.0`.

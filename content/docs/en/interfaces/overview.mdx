@@ -1,0 +1,205 @@
+---
+title: "Interfaces Overview"
+description: "Multi-channel messaging architecture powering Aleph's polymorphic communication"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Aleph communicates with users through **interfaces** (also called channels) -- pluggable adapters that bridge messaging platforms to the Gateway's unified message bus. A single Aleph instance can simultaneously serve Telegram, Discord, iMessage, WebChat, and the CLI, all sharing the same agent brain, memory, and tool ecosystem.
+
+## Architecture
+
+Every interface follows the same data flow:
+
+```
+Platform API ──> Interface Adapter ──> InboundMessage ──> Gateway Router
+                                                              │
+                                                         Session Key
+                                                              │
+                                                          Harness
+                                                               │
+Platform API <── Interface Adapter <── OutboundMessage <── Response
+```
+
+The Gateway's **ChannelRegistry** manages the lifecycle of all active interfaces. When Aleph starts, it reads the channel configuration, instantiates each enabled interface via its **ChannelFactory**, and calls `start()`. From that point, inbound messages flow through an `mpsc` channel to the Gateway, and outbound responses are dispatched back through the same adapter.
+
+## The Channel Trait
+
+All interfaces implement the `Channel` trait, which provides a uniform API regardless of the underlying platform:
+
+```rust
+#[async_trait]
+pub trait Channel: Send + Sync {
+    /// Channel metadata (id, name, type, status, capabilities)
+    fn info(&self) -> &ChannelInfo;
+
+    /// Start the channel (connect, authenticate, begin polling/listening)
+    async fn start(&mut self) -> ChannelResult<()>;
+
+    /// Stop the channel (disconnect, cleanup)
+    async fn stop(&mut self) -> ChannelResult<()>;
+
+    /// Send a message through this channel
+    async fn send(&self, message: OutboundMessage) -> ChannelResult<SendResult>;
+
+    /// Get the inbound message receiver
+    fn inbound_receiver(&self) -> Option<mpsc::Receiver<InboundMessage>>;
+
+    /// Send a typing indicator
+    async fn send_typing(&self, conversation_id: &ConversationId) -> ChannelResult<()>;
+
+    /// React to a message
+    async fn react(&self, message_id: &MessageId, reaction: &str) -> ChannelResult<()>;
+
+    /// Edit a previously sent message
+    async fn edit(&self, message_id: &MessageId, new_text: &str) -> ChannelResult<()>;
+
+    /// Delete a message
+    async fn delete(&self, message_id: &MessageId) -> ChannelResult<()>;
+}
+```
+
+Each interface also has a **ChannelFactory** that creates instances from JSON/TOML configuration at runtime, enabling hot-reload when the config file changes.
+
+## Channel Capabilities
+
+Not every platform supports every feature. Each channel declares a `ChannelCapabilities` struct so the agent can adapt its behavior:
+
+```rust
+pub struct ChannelCapabilities {
+    pub attachments: bool,
+    pub images: bool,
+    pub audio: bool,
+    pub video: bool,
+    pub reactions: bool,
+    pub replies: bool,
+    pub editing: bool,
+    pub deletion: bool,
+    pub typing_indicator: bool,
+    pub read_receipts: bool,
+    pub rich_text: bool,
+    pub max_message_length: usize,
+    pub max_attachment_size: u64,
+}
+```
+
+### Channel Comparison Table
+
+| Feature | Telegram | Discord | iMessage | WebChat | CLI |
+|---------|:--------:|:-------:|:--------:|:-------:|:---:|
+| **Rich text (Markdown)** | Yes | Yes | No | Yes | Yes |
+| **Attachments** | Yes | Yes | Yes | Yes | No |
+| **Images** | Yes | Yes | Yes | Yes | No |
+| **Audio/Video** | Yes | Yes | Yes | No | No |
+| **Reactions** | Limited | Yes | Tapbacks | No | No |
+| **Reply threading** | Yes | Yes | No | No | No |
+| **Message editing** | Yes | Yes | No | No | No |
+| **Message deletion** | Yes | Yes | No | No | No |
+| **Typing indicator** | Yes | Yes | No | No | No |
+| **Inline keyboards** | Yes | No | No | No | No |
+| **Max message length** | 4,096 | 2,000 | ~20,000 | Unlimited | Unlimited |
+| **Max attachment size** | 50 MB | 25 MB | 100 MB | Configurable | N/A |
+| **Config key** | `telegram` | `discord` | macOS only | `gateway` | `cli` |
+| **Setup difficulty** | Easy | Medium | Medium | Included | Included |
+
+## InteractionManifest
+
+Beyond raw capabilities, Aleph uses an **InteractionManifest** system to inform the AI about what the current channel can do. Each channel belongs to an `InteractionParadigm`:
+
+| Paradigm | Channels | Capabilities |
+|----------|----------|-------------|
+| **CLI** | Terminal | Rich text, code highlighting, streaming |
+| **WebRich** | WebChat, Desktop apps | Full interactive UI, canvas, mermaid charts, streaming |
+| **Messaging** | Telegram, Discord, iMessage | Rich text, inline images |
+| **Background** | Cron jobs, webhooks | Silent reply only |
+| **Embedded** | Minimal UI contexts | No special capabilities |
+
+The manifest tells the AI whether it can use Mermaid diagrams, interactive buttons, canvas drawing, or streaming -- so it tailors its output format to what actually renders on the user's screen.
+
+## Session Key Resolution
+
+When a message arrives on any interface, the Gateway resolves a **SessionKey** that determines which conversation history to load. Session keys encode the full context:
+
+| Session Type | Key Format | Example |
+|-------------|-----------|---------|
+| **Main** | `agent:{id}:main` | `agent:main:main` |
+| **DM (per-peer)** | `agent:{id}:dm:{peer}` | `agent:main:dm:user123` |
+| **DM (per-channel-peer)** | `agent:{id}:{channel}:dm:{peer}` | `agent:main:telegram:dm:user123` |
+| **Group** | `agent:{id}:{channel}:group:{peer}` | `agent:main:discord:group:guild456` |
+| **Task** | `agent:{id}:{type}:{task}` | `agent:main:cron:daily-summary` |
+| **Ephemeral** | `agent:{id}:ephemeral:{uuid}` | `agent:main:ephemeral:a1b2c3` |
+
+The **DmScope** strategy controls how direct messages are isolated:
+
+- **`Main`** -- All DMs share the main session (conversation merges across users)
+- **`PerPeer`** -- Each user gets their own session, shared across channels (default)
+- **`PerChannelPeer`** -- Each user on each channel gets a separate session
+
+<Callout type="info">
+**Identity Links** allow you to map the same person across channels. If user `123` on Telegram and user `456` on Discord are both "john", their DM sessions can be unified under `agent:main:dm:john`.
+</Callout>
+
+## Route Binding
+
+You can bind specific channels, users, or guilds to different agents using route bindings. The resolution follows a priority chain:
+
+1. **Peer** -- Specific user/chat match (highest priority)
+2. **Guild** -- Discord guild or Slack workspace match
+3. **Team** -- Team-level match
+4. **Account** -- Specific account match
+5. **Channel** -- Channel-type match (e.g., all Telegram to one agent)
+6. **Default** -- Falls back to the default agent
+
+```toml
+# Route all Telegram messages to the "personal" agent
+[[bindings]]
+agent_id = "personal"
+[bindings.match_rule]
+channel = "telegram"
+account_id = "*"
+
+# Route a specific Discord guild to the "work" agent
+[[bindings]]
+agent_id = "work"
+[bindings.match_rule]
+channel = "discord"
+guild_id = "123456789"
+```
+
+## Feature Compilation
+
+Aleph compiles all production features by default. Interfaces are enabled via configuration (not compile-time features). Simply enable the channels you need in `~/.aleph/config.toml`.
+
+The iMessage interface is conditionally compiled for macOS only (`#[cfg(target_os = "macos")]`).
+
+## Channel Configuration
+
+All channels are configured through the Aleph config file (`~/.aleph/config.toml`). Changes are detected by the file watcher and applied via hot-reload within 600ms:
+
+```toml
+[channels.telegram]
+enabled = true
+token = "${TELEGRAM_BOT_TOKEN}"
+allowed_chats = []
+
+[channels.discord]
+enabled = true
+token = "${DISCORD_BOT_TOKEN}"
+allowed_guilds = [123456789]
+
+[channels.webchat]
+enabled = true
+port = 18790
+cors_origins = ["http://localhost:*"]
+```
+
+Configuration supports `${ENV_VAR}` expansion for secrets, so tokens never need to be stored in plaintext.
+
+## What's Next
+
+Dive into the individual interface guides:
+
+- [Telegram](/docs/interfaces/telegram) -- Bot setup, allowlists, media handling
+- [Discord](/docs/interfaces/discord) -- Guild permissions, slash commands, embeds
+- [iMessage](/docs/interfaces/imessage) -- macOS-native integration via Messages.app
+- [WebChat](/docs/interfaces/webchat) -- Embedded web chat with WebSocket streaming

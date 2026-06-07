@@ -1,0 +1,482 @@
+---
+title: Providers
+description: Aleph's LLM provider system — protocol adapters, failover with circuit breakers, hot-reloadable YAML protocols, and 28 built-in presets spanning OpenAI, Anthropic, Gemini, and 20+ OpenAI-compatible vendors.
+---
+
+Aleph's provider architecture decouples **vendors** from **protocols**. Instead of one-off integrations per provider, Aleph groups providers by protocol family. A single OpenAI protocol adapter handles OpenAI, DeepSeek, Moonshot, and any other OpenAI-compatible API. Adding a new vendor typically requires only a preset entry — no new code.
+
+## Provider Architecture
+
+The system is organized into three protocol layers:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Provider Stack                         │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 1 — Built-in Protocols (compiled Rust)               │
+│    ├─ openai         → HttpProvider + OpenAiProtocol        │
+│    ├─ anthropic      → HttpProvider + AnthropicProtocol     │
+│    ├─ gemini         → HttpProvider + GeminiProtocol        │
+│    ├─ openai-responses → HttpProvider + OpenAiResponsesProtocol │
+│    ├─ codex / chatgpt → HttpProvider + Codex variant        │
+│    └─ ollama         → OllamaProvider (native)              │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 2 — Configurable Protocols (YAML, hot-reloadable)    │
+│    ├─ Minimal mode: extend base protocol + differences      │
+│    └─ Custom mode: full template rendering                  │
+├─────────────────────────────────────────────────────────────┤
+│  Layer 3 — Extension Protocols (future)                     │
+│    └─ Plugin-provided adapters (WASM / Node.js)             │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                    ProtocolRegistry
+                              │
+                   create_provider(name, config)
+```
+
+### Provider Resolution Flow
+
+1. **Preset lookup** — `create_provider("deepseek", config)` checks `presets::get_preset("deepseek")`
+2. **Preset defaults applied** — `base_url`, `protocol`, `color` auto-populated if missing
+3. **Protocol resolution** — `config.protocol()` determines the adapter (defaults to `"openai"`)
+4. **Special cases** — `ollama` and `mock` use native implementations
+5. **Adapter lookup** — `ProtocolRegistry::global().get(protocol_name)` returns the adapter
+6. **Provider instantiation** — `HttpProvider::new(name, config, adapter)` wraps the adapter
+
+## AiProvider Trait
+
+All AI backends implement `AiProvider`, providing a unified async interface:
+
+```rust
+pub trait AiProvider: Send + Sync {
+    /// Core method — process a request and return structured response
+    fn process<'a>(
+        &'a self,
+        payload: adapter::RequestPayload<'a>,
+    ) -> Pin<Box<dyn Future<Output = Result<ProviderResponse>> + Send + 'a>>;
+
+    /// Provider name (e.g., "deepseek", "claude")
+    fn name(&self) -> &str;
+
+    /// Provider brand color for UI (hex string)
+    fn color(&self) -> &str;
+
+    /// Whether this provider supports native tool_use
+    fn supports_native_tools(&self) -> bool { false }
+
+    /// Whether this provider supports extended thinking
+    fn supports_thinking(&self) -> bool { false }
+
+    /// Protocol identifier for model behavior resolution
+    fn protocol(&self) -> &str { "unknown" }
+
+    /// Model behavior override (e.g., "anthropic" for OpenRouter routing to Claude)
+    fn model_behavior_override(&self) -> Option<&str> { None }
+}
+```
+
+Providers are thread-safe (`Send + Sync`) and shared via `Arc<dyn AiProvider>`. The single `process()` method accepts a `RequestPayload` containing structured `UnifiedMessage` history, and protocol adapters convert these to native API formats.
+
+## Protocol Adapters
+
+The `ProtocolRegistry` maps protocol names to `ProtocolAdapter` implementations. Built-in protocols are registered at init time via `Lazy` static initialization.
+
+```rust
+pub struct ProtocolRegistry {
+    dynamic: RwLock<HashMap<String, Arc<dyn ProtocolAdapter>>>,  // YAML-loaded
+    builtin: RwLock<HashMap<String, ProtocolFactory>>,           // Compiled Rust
+}
+```
+
+Lookup order:
+1. **Dynamic protocols first** — loaded from `~/.aleph/protocols/*.yaml`
+2. **Built-in protocols fallback** — factory functions instantiate adapters on demand
+
+Built-in protocols registered at startup:
+
+| Protocol | Adapter | Use Case |
+|----------|---------|----------|
+| `openai` | `OpenAiProtocol` | OpenAI and OpenAI-compatible APIs |
+| `anthropic` | `AnthropicProtocol` | Claude API (native Messages API) |
+| `gemini` | `GeminiProtocol` | Google Gemini API |
+| `codex` / `chatgpt` | `OpenAiResponsesProtocol` (Codex variant) | ChatGPT subscription via OAuth |
+| `openai-responses` | `OpenAiResponsesProtocol` | OpenAI /v1/responses API, OpenRouter |
+
+Each `ProtocolAdapter` implements two methods:
+- `build_request(payload, config)` — constructs an HTTP request builder (stream-first: always sets `stream: true`)
+- `stream_deltas(response)` — parses SSE/streaming response into fine-grained `ProviderDelta` events
+
+## Supported Providers
+
+Aleph ships with **28 presets** covering major vendors and aliases. Each preset auto-configures `base_url`, `protocol`, and `color`.
+
+### Primary Protocols (Native Adapters)
+
+| Provider | Protocol | Default Model | Base URL |
+|----------|----------|---------------|----------|
+| **openai** | `openai` | `gpt-4o` | `api.openai.com/v1` |
+| **claude** | `anthropic` | `claude-sonnet-4-5-20250514` | `api.anthropic.com` |
+| **gemini** | `gemini` | `gemini-2.5-flash` | `generativelanguage.googleapis.com` |
+| **chatgpt** | `codex` | `gpt-5.4` | `chatgpt.com` |
+
+### OpenAI-Compatible Providers
+
+These use the `openai` protocol adapter with vendor-specific `base_url`:
+
+| Provider | Base URL | Default Model | Specialty |
+|----------|----------|---------------|-----------|
+| **deepseek** | `api.deepseek.com` | `deepseek-chat` | Cost-effective coding models |
+| **moonshot** / **kimi** | `api.moonshot.ai/v1` | `kimi-k2-0905-preview` | Chinese language models |
+| **kimi-for-coding** / **kimi-coding** | `api.kimi.com/coding/v1` | `Kimi-K2.6` | Anthropic-compatible IDE/agent endpoint |
+| **doubao** / **volcengine** / **ark** | `ark.cn-beijing.volces.com/api/v3` | `doubao-1.5-pro-256k` | ByteDance models |
+| **siliconflow** | `api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | Chinese AI cloud platform |
+| **zhipu** / **glm** | `open.bigmodel.cn/api/paas/v4` | `GLM-5` | Chinese AI research lab |
+| **minimax** | `api.minimax.io/v1` | `MiniMax-M2.5` | Chinese multimodal AI |
+| **t8star** | `api.t8star.cn/v1` | *(none)* | Regional provider |
+| **groq** | `api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | Ultra-fast inference |
+| **together** | `api.together.xyz/v1` | *(none)* | Open-source model hosting |
+| **perplexity** | `api.perplexity.ai` | *(none)* | Search-augmented LLMs |
+| **mistral** | `api.mistral.ai/v1` | *(none)* | European AI leader |
+| **cohere** | `api.cohere.ai/v1` | *(none)* | Enterprise focus |
+| **fireworks** | `api.fireworks.ai/inference/v1` | *(none)* | Fast API |
+| **anyscale** | `api.endpoints.anyscale.com/v1` | *(none)* | Ray ecosystem |
+| **replicate** | `api.replicate.com/v1` | *(none)* | OSS model hosting |
+| **openrouter** | `openrouter.ai/api` | `openai/gpt-4o` | Multi-model router (Responses API) |
+| **lepton** | `api.lepton.ai/api/v1` | *(none)* | Model deployment |
+| **hyperbolic** | `api.hyperbolic.xyz/v1` | *(none)* | GPU marketplace |
+
+**Note:** `kimi-for-coding` uses the `anthropic` protocol (not `openai`), designed for IDE/agent tool-use scenarios like Claude Code and Cline. For general chat, use the `moonshot` / `kimi` preset.
+
+## Provider Configuration
+
+Each provider is configured via `ProviderConfig` in `config.toml`:
+
+```toml
+[providers.claude]
+protocol = "anthropic"
+models = ["claude-sonnet-4-5-20250514"]
+api_key = "sk-ant-..."
+max_tokens = 8192
+temperature = 0.7
+enabled = true
+```
+
+### ProviderConfig Fields
+
+```rust
+pub struct ProviderConfig {
+    /// Protocol: "openai", "anthropic", "gemini", "ollama", etc.
+    pub protocol: Option<String>,
+
+    /// API key (runtime-only, never persisted to config.toml)
+    #[serde(skip_serializing)]
+    pub api_key: Option<String>,
+
+    /// Model list. First model is the default.
+    /// Accepts both `model = "xxx"` (backward compat) and `models = ["xxx", ...]`.
+    pub models: Vec<String>,
+
+    /// Custom API endpoint (optional)
+    pub base_url: Option<String>,
+
+    /// Brand color for UI (default: "#808080")
+    pub color: String,
+
+    /// Request timeout in seconds (default: 300)
+    pub timeout_seconds: u64,
+
+    /// Whether the provider is enabled (default: false)
+    pub enabled: bool,
+
+    // --- Generation parameters ---
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    pub top_k: Option<u32>,
+
+    // --- OpenAI-specific ---
+    pub frequency_penalty: Option<f32>,
+    pub presence_penalty: Option<f32>,
+
+    // --- Claude / Gemini / Ollama ---
+    pub stop_sequences: Option<String>,
+
+    // --- Gemini-specific ---
+    pub thinking_level: Option<String>,      // "LOW" or "HIGH"
+    pub media_resolution: Option<String>,    // "LOW", "MEDIUM", "HIGH"
+
+    // --- Ollama-specific ---
+    pub repeat_penalty: Option<f32>,
+
+    // --- System prompt handling ---
+    /// "prepend" (default): prepend to user message
+    /// "standard": use separate system message
+    pub system_prompt_mode: Option<String>,
+
+    // --- Model behavior override ---
+    /// Overrides protocol-based auto-mapping.
+    /// Example: "anthropic" for an OpenRouter provider routing to Claude.
+    pub model_behavior: Option<String>,
+
+    /// Whether provider passed a test connection
+    pub verified: bool,
+}
+```
+
+### Preset-Based Configuration
+
+For known providers, presets fill in defaults automatically:
+
+```toml
+[providers.deepseek]
+# No need to specify protocol or base_url — preset handles it
+models = ["deepseek-chat"]
+api_key = "sk-..."
+enabled = true
+```
+
+The `create_provider` factory applies preset defaults before routing to the protocol adapter:
+
+```rust
+// Preset: base_url, protocol, and color auto-configured
+let provider = create_provider("deepseek", config)?;
+
+// Custom endpoint: specify base_url manually
+config.base_url = Some("https://my-proxy.example.com/v1".to_string());
+let provider = create_provider("my-provider", config)?;
+```
+
+## Failover and Health
+
+The `FailoverProvider` wraps multiple providers and automatically routes around failures. It implements the same `AiProvider` trait, so callers see a single unified provider.
+
+```
+┌─────────────────────────────────────────┐
+│         FailoverProvider                │
+├─────────────────────────────────────────┤
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐  │
+│  │ Claude  │ │ OpenAI  │ │ Gemini  │  │
+│  │ (pri=1) │ │ (pri=2) │ │ (pri=3) │  │
+│  └────┬────┘ └────┬────┘ └────┬────┘  │
+│       │           │          │         │
+│       └───────────┼──────────┘         │
+│                   ▼                     │
+│     Circuit Breaker + Health Monitor    │
+│         (per-provider state)            │
+└─────────────────────────────────────────┘
+```
+
+### FailoverConfig
+
+```rust
+pub struct FailoverConfig {
+    pub providers: Vec<ProviderEntry>,
+    pub max_retries: u32,                      // default: 2
+    pub health_check_interval_secs: u64,       // default: 60
+    pub unhealthy_cooldown_secs: u64,          // default: 300 (5 min)
+    pub health_monitoring_enabled: bool,       // default: true
+}
+
+pub struct ProviderEntry {
+    pub name: String,
+    pub priority: u32,    // lower = higher priority
+    pub config: ProviderConfig,
+}
+```
+
+### Circuit Breaker State Machine
+
+Each provider has a `HealthState` with a three-state circuit breaker:
+
+```
+                    ┌─────────────┐
+         success    │             │    failure count < 3
+         ┌──────────│   Closed    │◄─────────────────┐
+         │          │  (healthy)  │                  │
+         │          └──────┬──────┘                  │
+         │                 │ failure count >= 3      │
+         │                 ▼                         │
+         │          ┌─────────────┐                  │
+         │          │             │  cooldown expired │
+         │          │    Open     │──────────────────┤
+         │          │  (blocked)  │                   │
+         │          └──────┬──────┘                   │
+         │                 │ probe request allowed    │
+         │                 ▼                          │
+         │          ┌─────────────┐   probe failed    │
+         └──────────│  HalfOpen   │───────────────────┘
+                    │  (testing)  │   (cooldown × 2)
+                    └─────────────┘
+```
+
+**State transitions:**
+
+| From | To | Trigger |
+|------|----|---------|
+| `Closed` | `Open` | 3 consecutive failures (threshold) |
+| `Open` | `HalfOpen` | Cooldown period elapsed (default 5 min) |
+| `HalfOpen` | `Closed` | Probe request succeeds |
+| `HalfOpen` | `Open` | Probe request fails — cooldown doubles (max 10 min) |
+
+**Error classification:**
+- **Non-retryable** (immediate failover): `AuthenticationError`, `InvalidConfig`
+- **Retryable** (retried with backoff): rate limits, timeouts, network errors
+- **Rate limits** (special): trigger immediate failover after marking provider unhealthy
+
+### Health Tracking
+
+The `health.rs` module provides a separate `ProviderHealth` enum used by the auth profile system:
+
+```rust
+pub enum ProviderHealth {
+    Healthy,
+    Degraded { since: Instant, cooldown_until: Instant, consecutive_failures: u32 },
+    Unavailable { since: Instant, reason: String },
+}
+```
+
+Cooldown uses exponential backoff: base 30s, doubles each failure, capped at 5 minutes. Rate-limited responses with `retry_after` headers use `max(retry_after, base_cooldown)` for the first failure.
+
+### Metrics
+
+Each provider tracks real-time metrics via atomic counters:
+
+```rust
+pub struct ProviderMetrics {
+    pub total_requests: AtomicU64,
+    pub success_count: AtomicU64,
+    pub failure_count: AtomicU64,
+    pub total_latency_ms: AtomicU64,
+}
+```
+
+Query via `get_metrics()` for success rate and average latency per provider.
+
+### Example Failover Configuration
+
+```toml
+[failover]
+max_retries = 2
+unhealthy_cooldown_secs = 300
+
+[[failover.providers]]
+name = "claude"
+priority = 1
+
+[[failover.providers]]
+name = "openai"
+priority = 2
+
+[[failover.providers]]
+name = "gemini"
+priority = 3
+```
+
+## Hot-Reloadable Protocols
+
+Beyond built-in protocols, you can define custom protocols in YAML and place them in `~/.aleph/protocols/`. The system watches this directory and reloads definitions automatically.
+
+### How It Works
+
+1. **File watcher** detects Create / Modify / Delete events (500ms debounce)
+2. **YAML parsed** into a `ProtocolDefinition`
+3. **`ConfigurableProtocol` adapter** created — supports two modes:
+   - **Minimal mode** (`extends: openai`): reuse base protocol, override auth/header differences
+   - **Custom mode** (`custom:` block): full template rendering with JSONPath response mapping
+4. **Registry updated** atomically via `ProtocolRegistry::register()`
+5. **New requests** use the updated protocol immediately
+
+### Minimal Mode Example
+
+```yaml
+# ~/.aleph/protocols/my-proxy.yaml
+name: my-proxy
+extends: openai
+base_url: https://proxy.example.com/v1
+differences:
+  auth:
+    header: X-API-Key
+    prefix: "Bearer "
+```
+
+### Custom Mode Example
+
+```yaml
+# ~/.aleph/protocols/exotic-ai.yaml
+name: exotic-ai
+base_url: https://api.exotic.ai
+custom:
+  auth:
+    type: header
+    header: Authorization
+    prefix: "Bearer "
+  endpoints:
+    chat: /v2/completions
+    stream: /v2/completions/stream
+  request_template: |
+    {"model": "{{config.model}}", "messages": [{"role": "user", "content": "{{input}}"}]}
+  response_mapping:
+    content: "$.choices[0].message.content"
+    error: "$.error.message"
+```
+
+**Reload latency:** ~600ms from file change to active (500ms debounce + parse/register overhead).
+
+## Creating a Custom Provider
+
+To add a new provider that uses an existing protocol:
+
+### Step 1: Add a Preset
+
+Edit `src/providers/presets.rs` and add an entry to the `PRESETS` HashMap:
+
+```rust
+m.insert(
+    "my-provider",
+    ProviderPreset {
+        base_url: "https://api.my-provider.com/v1",
+        protocol: "openai",
+        color: "#ff6600",
+        default_model: "my-model-v1",
+    },
+);
+```
+
+### Step 2: Implement Adapter (Only for New Protocols)
+
+If the vendor uses a protocol not yet supported, implement `ProtocolAdapter`:
+
+```rust
+#[async_trait]
+impl ProtocolAdapter for MyProtocol {
+    fn build_request(&self, payload: &RequestPayload, config: &ProviderConfig) 
+        -> Result<reqwest::RequestBuilder> { ... }
+    
+    async fn stream_deltas(&self, response: reqwest::Response)
+        -> Result<BoxStream<'static, Result<ProviderDelta>>> { ... }
+    
+    fn name(&self) -> &'static str { "my-protocol" }
+}
+```
+
+Register it in `ProtocolRegistry::register_builtin()`.
+
+### Step 3: Register and Use
+
+For preset-only additions (existing protocol), no registration step is needed. The factory resolves automatically:
+
+```rust
+let provider = create_provider("my-provider", config)?;
+```
+
+For new protocols, register in `ProtocolRegistry`:
+
+```rust
+registry.register("my-protocol", Arc::new(MyProtocol::new(client)))?;
+```
+
+## Related Pages
+
+- [Architecture Overview](./overview) — System-level view of the execution layer
+- [Gateway](./gateway) — How the Gateway routes requests to providers
+- [Thinker](./thinker) — How the Thinker selects and orchestrates providers

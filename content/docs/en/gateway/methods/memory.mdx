@@ -1,0 +1,153 @@
+---
+title: "Memory Methods"
+description: "Gateway builtin tools for memory operations."
+---
+
+Gateway builtin tools for interacting with Aleph's memory system.
+
+---
+
+## memory_search
+
+Search the knowledge base for relevant facts.
+
+```
+<builtin_tool>memory_search</builtin_tool>
+<parameter name="query">What database did we decide on?</parameter>
+<parameter name="limit">5</parameter>
+```
+
+**Parameters:**
+- `query` (required) — Search query
+- `limit` (optional) — Max results, default 5
+- `agent_id` (optional) — Target agent namespace
+- `mode` (optional) — `context` | `tools` | `hybrid`, default `hybrid`
+
+**Returns:** Ranked list of `MemoryFact` with scores.
+
+---
+
+## memory_reflect
+
+**Spec 2.** Synthesise a coherent answer from memory instead of returning raw facts.
+
+```
+<builtin_tool>memory_reflect</builtin_tool>
+<parameter name="query">Summarise what we know about the user's project requirements</parameter>
+<parameter name="depth">comprehensive</parameter>
+```
+
+**Parameters:**
+- `query` (required) — Question to answer
+- `depth` (optional) — `brief` | `standard` | `comprehensive`, default `standard`
+- `agent_id` (optional) — Target agent namespace
+
+**Returns:** Synthesised answer with cited sources.
+
+---
+
+## session_search
+
+**Spec B.** Search across session transcripts.
+
+```
+<builtin_tool>session_search</builtin_tool>
+<parameter name="query">When did we discuss authentication?</parameter>
+<parameter name="limit">5</parameter>
+```
+
+**Parameters:**
+- `query` (required) — Search query
+- `limit` (optional) — Max sessions to return, default 5
+- `summarise` (optional) — `true` | `false`, default `true`
+
+**Returns:** Matching sessions + AI-generated summary (if `summarise=true`).
+
+---
+
+## remember
+
+**Spec A.** Pin a fact to curated hot memory.
+
+```
+<builtin_tool>remember</builtin_tool>
+<parameter name="content">User prefers dark mode in all applications</parameter>
+<parameter name="priority">8</parameter>
+```
+
+**Parameters:**
+- `content` (required) — Fact to remember
+- `priority` (optional) — 1-10, higher = more important, default 5
+- `category` (optional) — e.g. `preference`, `fact`, `warning`
+
+**Returns:** Confirmation with fact ID.
+
+**Note:** Curated memory is a **frozen snapshot**. Changes require explicit re-curation.
+
+---
+
+## forget
+
+Remove a fact from memory.
+
+```
+<builtin_tool>forget</builtin_tool>
+<parameter name="query">The user's old email address</parameter>
+```
+
+**Parameters:**
+- `query` (required) — Description of fact to remove
+- `confirm` (optional) — `true` | `false`, default `false`
+
+**Returns:** List of candidate facts + confirmation prompt (if `confirm=false`).
+
+---
+
+## memory_status
+
+Check memory system health and statistics.
+
+```
+<builtin_tool>memory_status</builtin_tool>
+```
+
+**Returns:**
+- Total notes count
+- Raw memory count (unprocessed)
+- Index health (FTS + vector)
+- Last dream run timestamp
+- Curated memory count
+
+---
+
+## Method Comparison
+
+| Method | Use When | Returns |
+|---|---|---|
+| `memory_search` | Need specific facts | Ranked facts |
+| `memory_reflect` | Need synthesis / answer | Coherent answer + sources |
+| `session_search` | Looking for past conversations | Sessions + summary |
+| `remember` | Critical fact must not be missed | Confirmation |
+| `forget` | Remove outdated information | Confirmation |
+| `memory_status` | Debug memory issues | Statistics |
+
+---
+
+## Error Handling
+
+All memory methods return structured errors:
+
+| Error | Meaning |
+|---|---|
+| `MemoryNotFound` | No matching facts/sessions |
+| `IndexCorrupted` | SQLite index needs rebuild |
+| `QuotaExceeded` | Token budget exhausted |
+| `LockTimeout` | Cross-process contention (Spec C) |
+
+---
+
+## See Also
+
+- [Memory System](../../concepts/memory) — Overview
+- [Memory Architecture](../../architecture/memory) — Implementation
+- [Memory Evolution](../../architecture/memory-evolution) — Spec history

@@ -1,0 +1,222 @@
+---
+title: "skills.*"
+description: "技能系统 v2 管理 RPC 方法"
+---
+
+技能方法管理技能系统 v2 —— 一个统一的技能发现、注册和生命周期管理框架。技能为代理添加工具、提示和能力。
+
+## 方法
+
+### skills.status
+
+返回所有已注册技能的完整状态，包括启用状态、作用域和依赖项。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "skills.status",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "skills": [
+      {
+        "id": "builtin:shell",
+        "name": "Shell Execution",
+        "enabled": true,
+        "scope": "tool",
+        "version": "1.0.0",
+        "dependencies": []
+      },
+      {
+        "id": "user:web_search",
+        "name": "Web Search",
+        "enabled": true,
+        "scope": "tool",
+        "version": "2.1.0",
+        "dependencies": ["builtin:http"]
+      }
+    ]
+  }
+}
+```
+
+### skills.update
+
+更新技能配置（启用状态和/或提示作用域）。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "skills.update",
+  "params": {
+    "skill_id": "user:web_search",
+    "enabled": false,
+    "scope": "disabled"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "skill": {
+      "id": "user:web_search",
+      "name": "Web Search",
+      "enabled": false,
+      "scope": "disabled",
+      "version": "2.1.0"
+    }
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `skill_id` | string | 是 | 要更新的技能 ID |
+| `enabled` | boolean | 否 | 启用或禁用技能 |
+| `scope` | string | 否 | 提示作用域：`"system"`、`"tool"`、`"standalone"`、`"disabled"` |
+
+**作用域值：**
+
+| 作用域 | 描述 |
+|-------|-------------|
+| `system` | 注入系统提示 |
+| `tool` | 作为可调用工具 |
+| `standalone` | 独立于代理使用 |
+| `disabled` | 不加载 |
+
+### skills.install_dep
+
+为技能安装依赖项（例如，技能所需的系统包）。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "skills.install_dep",
+  "params": {
+    "skill_id": "user:web_search",
+    "spec_id": "curl"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "result": "installed",
+    "skill": {
+      "id": "user:web_search",
+      "name": "Web Search",
+      "enabled": true
+    }
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `skill_id` | string | 是 | 技能 ID |
+| `spec_id` | string | 否 | 依赖规范 ID（例如，包名） |
+
+### skills.remove
+
+从系统中移除技能。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "skills.remove",
+  "params": {
+    "skill_id": "user:web_search"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "ok": true
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `skill_id` | string | 是 | 要移除的技能 ID |
+
+### skills.install
+
+从 Markdown 技能文件或目录安装技能。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "skills.install",
+  "params": {
+    "path": "~/.aleph/skills/custom_skill.md"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "installed": true,
+    "skill_id": "user:custom_skill"
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `path` | string | 是 | 技能文件或目录的路径 |
+
+## 技能目录
+
+技能从以下目录加载（按顺序）：
+
+1. `~/.aleph/skills/` —— 用户安装的技能
+2. `./skills/` —— 项目本地技能
+3. Aleph 内置技能
+
+## 参见
+
+- [概念：技能](/docs/zh/concepts/skills) -- 技能系统 v2 的工作原理
+- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间

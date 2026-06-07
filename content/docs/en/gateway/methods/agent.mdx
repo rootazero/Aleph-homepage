@@ -1,0 +1,261 @@
+---
+title: "agent.*"
+description: "Agent execution and control RPC methods"
+---
+
+Agent methods control the core AI execution loop. Use these methods to start agent runs, stream responses, check execution status, retrieve conversation history, and clear sessions.
+
+## Methods
+
+### agent.run
+
+Start an agent run with a user message. The agent will process the message through the Think→Act loop (Orchestrator → Harness → Thinker) and stream back the response via events.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "agent.run",
+  "params": {
+    "message": "Summarize today's news",
+    "session_key": "agent:main:main",
+    "thinking": "medium",
+    "model": null
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "run_id": "run-uuid-123",
+    "status": "running",
+    "session_key": "agent:main:main"
+  }
+}
+```
+
+The response is returned immediately when the run starts. The actual output is delivered as streaming events -- subscribe to `stream.*` and `agent.*` topics to receive them.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | Yes | The user message to process |
+| `session_key` | string | No | Session key for context. Defaults to `"agent:main:main"` |
+| `thinking` | string | No | Thinking level: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`. Default: `"medium"` |
+| `model` | string | No | Override the model for this run (e.g. `"claude-sonnet-4-20250514"`) |
+
+**Stream Events:**
+
+After calling `agent.run`, the following events are emitted (if subscribed):
+
+| Topic | Description |
+|-------|-------------|
+| `agent.started` | Run has been queued and started |
+| `stream.start` | Streaming output is beginning |
+| `stream.chunk` | Text chunk from the agent response |
+| `stream.tool_start` | Agent is calling a tool |
+| `stream.tool_end` | Tool execution completed |
+| `stream.end` | Streaming output is complete |
+| `agent.completed` | Run finished successfully |
+| `agent.error` | Run encountered an error |
+
+### agent.cancel
+
+Cancel a running agent. The agent will stop at the next safe checkpoint and return a partial response.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "agent.cancel",
+  "params": {
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "cancelled": true,
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | Yes | The run ID returned by `agent.run` |
+
+### agent.status
+
+Get the current status of an agent run. Useful for polling-based clients that do not use event subscriptions.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "agent.status",
+  "params": {
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "run_id": "run-uuid-123",
+    "status": "completed",
+    "started_at": 1706400000000,
+    "completed_at": 1706400005000,
+    "iterations": 3,
+    "tokens_used": 1247,
+    "tools_called": ["shell:exec", "file:read"]
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | Yes | The run ID to query |
+
+**Status Values:**
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Queued, not yet started |
+| `running` | Currently executing |
+| `completed` | Finished successfully |
+| `cancelled` | Cancelled by user |
+| `failed` | Encountered an error |
+
+### agent.respondToInput
+
+Send a response to an agent that is waiting for human input (human-in-the-loop). Used when the agent has paused execution pending user approval or additional information.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "agent.respondToInput",
+  "params": {
+    "run_id": "run-uuid-123",
+    "response": "Yes, proceed with the deletion"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "accepted": true,
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | Yes | The run ID waiting for input |
+| `response` | string | Yes | The user's response text |
+
+### agent.list
+
+List all available agents configured in the system.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "agent.list",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "agents": [
+      {
+        "id": "main",
+        "name": "Main Agent",
+        "description": "General-purpose assistant",
+        "model": "claude-sonnet-4-20250514",
+        "enabled": true
+      },
+      {
+        "id": "coder",
+        "name": "Code Assistant",
+        "description": "Specialized for programming tasks",
+        "model": "gpt-4o",
+        "enabled": true
+      }
+    ],
+    "total": 2
+  }
+}
+```
+
+**Parameters:**
+
+None.
+
+## Session Key Formats
+
+Agent methods accept a `session_key` parameter that determines context isolation. See the [Protocol](/docs/en/gateway/protocol) page for WebSocket transport details.
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| Main | `agent:main:main` | Shared cross-channel session |
+| DM | `agent:main:telegram:dm:user123` | Per-user direct message |
+| Group | `agent:main:discord:group:guild-id` | Group/channel chat |
+| Task | `agent:main:cron:daily-summary` | Cron job or webhook task |
+| Ephemeral | `agent:main:ephemeral:uuid` | Temporary, no persistence |
+
+## Thinking Levels
+
+The `thinking` parameter controls how much reasoning the agent performs before responding.
+
+| Level | Token Budget | Use Case |
+|-------|-------------|----------|
+| `off` | 0 | Fast, direct answers |
+| `minimal` | 1,024 | Simple queries |
+| `low` | 2,048 | Standard conversation |
+| `medium` | 4,096 | Complex tasks (default) |
+| `high` | 8,192 | Multi-step reasoning |
+| `xhigh` | 16,384 | Deep analysis |
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [events.*](/docs/en/gateway/methods/events) -- Subscribe to agent events
+- [session.*](/docs/en/gateway/methods/session) -- Session management

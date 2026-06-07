@@ -1,0 +1,209 @@
+---
+title: "Thinker"
+description: "LLM interaction layer, PromptBuilder with 29 layers, section caching, and thinking levels."
+---
+
+# Thinker
+
+The Thinker is responsible for all LLM interactions and decision making. It is the brain of the Think→Act loop.
+
+**Location**: `src/thinker/`
+
+The sole public entry point is `thinker::PromptBuilder`, which wraps a `PromptPipeline`. The old `agent_loop::PromptBuilder` was removed during the Harness migration (Phase 6/7).
+
+---
+
+## Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `ProviderRegistry` | `mod.rs` | Model routing and provider resolution |
+| `PromptBuilder` | `prompt_builder/` | Construct prompts from context |
+| `PromptPipeline` | `prompt_pipeline.rs` | Composable prompt assembly engine |
+| `PromptLayer` | `prompt_layer.rs` | Trait for individual prompt layers |
+| `InteractionManifest` | `interaction.rs` | Channel capability awareness |
+| `SecurityContext` | `security_context.rs` | Policy-driven permissions |
+| `ContextAggregator` | `context.rs` | Reconcile interaction and security |
+| `SoulManifest` | `soul.rs` | Identity/personality definition |
+| `IdentityResolver` | `identity.rs` | Layered identity resolution |
+| `MemoryContextProvider` | `memory_context_provider.rs` | Memory retrieval for context injection |
+| `TokenBudget` | `prompt_budget.rs` | Prompt budget enforcement |
+
+---
+
+## PromptBuilder
+
+```rust
+// Standard usage
+let builder = PromptBuilder::new(config);
+let prompt = builder.build_system_prompt(&tools);
+
+// With soul identity
+let prompt = builder.build_system_prompt_with_soul(&tools, &soul, profile);
+
+// Sub-agent usage (replaces old prompt_sections::resolve())
+let prompt = builder.build_for_agent(&agent_def, &tools, &soul);
+
+// Mode + budget control
+let result = builder.build_with_budget(&tools, &soul, profile, PromptMode::Compact, &budget);
+```
+
+---
+
+## 33 Layers
+
+The prompt system assembles prompts from 33 ordered layers. Layers are split into two zones based on caching eligibility.
+
+### Stable Zone (Priorities 50–1600)
+
+Content rarely changes — eligible for section-level caching.
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 50 | `SoulLayer` | Identity / personality |
+| 55 | `AgentRoleLayer` | Sub-agent role header + protocol blocks |
+| 75 | `ProfileLayer` | Workspace profile overlay |
+| 100 | `RoleLayer` | Base assistant role |
+| 300 | `EnvironmentLayer` | OS, date, working directory |
+| 400 | `RuntimeCapabilitiesLayer` | Python, Node.js, FFmpeg, etc. |
+| 500 | `ToolsLayer` | Tool definitions (text schema) |
+| 501 | `HydratedToolsLayer` | Semantic-retrieval tool definitions |
+| 550 | `ToolUsageGrammarLayer` | Data-driven tool usage conventions |
+| 600 | `SecurityLayer` | Safety / security guidelines |
+| 700 | `ProtocolTokensLayer` | JSON-RPC protocol tokens |
+| 710 | `HeartbeatLayer` | Session keep-alive instructions |
+| 800 | `OperationalGuidelinesLayer` | Operational rules |
+| 900 | `CitationStandardsLayer` | Citation formatting |
+| 1000 | `GenerationModelsLayer` | Available image/video/audio models |
+| 1050 | `SkillInstructionsLayer` | Active skill instructions |
+| 1100 | `SpecialActionsLayer` | Special action syntax |
+| 1200 | `ResponseFormatLayer` | Response structure |
+| 1300 | `GuidelinesLayer` | General guidelines |
+| 1350 | `ThinkingGuidanceLayer` | Structured reasoning guidance |
+| 1400 | `SkillModeLayer` | Strict skill workflow enforcement |
+| 1500 | `CustomInstructionsLayer` | User custom instructions |
+| 1600 | `LanguageLayer` | Response language |
+
+### Dynamic Zone (Priorities 1700–1760)
+
+Per-request, never cached.
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 1700 | `InboundContextLayer` | Sender, channel, session metadata |
+| 1704 | `AgentCatalogLayer` | Available sub-agent catalog |
+| 1705 | `McpInstructionsLayer` | MCP server instructions |
+| 1706 | `McpToolIndexLayer` | MCP tool index entries |
+| 1710 | `VoiceModeLayer` | Voice-specific response instructions |
+| 1720 | `RuntimeContextLayer` | Current time, session info |
+| 1730 | `IdentityFilesLayer` | SOUL.md, IDENTITY.md workspace files |
+| 1740 | `MemoryAugmentationLayer` | Dual-path memory injection |
+| 1750 | `SessionContextGuideLayer` | Compressed session context guidance |
+| 1760 | `SessionResumeLayer` | Session resume context |
+
+---
+
+## Assembly Paths
+
+Each layer declares which paths it participates in. The pipeline filters by path at assembly time.
+
+| Path | Description |
+|------|-------------|
+| `Basic` | Minimal — config + tool list only |
+| `Hydration` | Tools come from semantic retrieval (`HydrationResult`) |
+| `Soul` | Soul-enriched — includes identity / personality |
+| `Context` | Context-aware — uses `ResolvedContext` |
+| `Cached` | Pre-cached stable prefix |
+
+---
+
+## Prompt Modes
+
+| Mode | Behavior |
+|------|----------|
+| `Full` (default) | All 33 layers participate |
+| `Compact` | Excludes 13 heavy layers (`RuntimeContextLayer`, `EnvironmentLayer`, `RuntimeCapabilitiesLayer`, `ProtocolTokensLayer`, `HeartbeatLayer`, `OperationalGuidelinesLayer`, `CitationStandardsLayer`, `GenerationModelsLayer`, `SkillInstructionsLayer`, `SpecialActionsLayer`, `GuidelinesLayer`, `ThinkingGuidanceLayer`, `SkillModeLayer`) |
+| `Minimal` | Only 5 core layers: `SoulLayer`, `ToolsLayer`, `HydratedToolsLayer`, `ResponseFormatLayer`, `LanguageLayer` |
+
+---
+
+## Section-Level Caching
+
+`execute_cached()` caches the output of every `LayerStability::Stable` layer after the first call. Dynamic layers always recompute. ~23 of 33 layers are Stable.
+
+```rust
+pipeline.invalidate("soul");    // Invalidate one layer by name
+pipeline.invalidate_all();      // Clear all cached sections
+pipeline.cache_stats();         // CacheStats { hits, misses, entries }
+```
+
+---
+
+## Thinking Levels
+
+```rust
+pub enum ThinkingLevel {
+    Off,        // No extended thinking
+    Minimal,    // budget_tokens: 1024
+    Low,        // budget_tokens: 2048
+    Medium,     // budget_tokens: 4096 (default)
+    High,       // budget_tokens: 8192
+    XHigh,      // budget_tokens: 16384
+}
+```
+
+---
+
+## Provider Fallback
+
+When a provider doesn't support extended thinking, Aleph falls back gracefully:
+
+```
+User requests: thinking = High
+    │
+    ├─▶ Claude Opus → ✓ Native extended thinking
+    │
+    ├─▶ GPT-4o → ✗ No support → Fallback to o1
+    │
+    └─▶ Gemini → ✗ No support → Use thinkingPreface prompt
+```
+
+---
+
+## Streaming Architecture
+
+```
+LLM Response Stream
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ BlockStateManager                        │
+│   • Track current block type             │
+│   • Detect block boundaries              │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ BlockReplyChunker                        │
+│   • Split into semantic chunks           │
+│   • Handle code blocks, lists, etc.      │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ BlockCoalescer                           │
+│   • Merge small chunks                   │
+│   • Emit complete blocks                 │
+└─────────────────────────────────────────┘
+    │
+    ▼
+Event: StreamChunk { content, block_type }
+```
+
+---
+
+## See Also
+
+- [Harness](./harness) — Think→Act loop
+- [Dispatcher](./dispatcher) — Task orchestration
+- [Memory System](./memory) — Context augmentation

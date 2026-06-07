@@ -1,0 +1,222 @@
+---
+title: "skills.*"
+description: "Skill System v2 management RPC methods"
+---
+
+Skill methods manage the Skill System v2 — a unified framework for skill discovery, registration, and lifecycle management. Skills add tools, prompts, and capabilities to agents.
+
+## Methods
+
+### skills.status
+
+Return the full status of all registered skills, including their enabled state, scope, and dependencies.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "skills.status",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "skills": [
+      {
+        "id": "builtin:shell",
+        "name": "Shell Execution",
+        "enabled": true,
+        "scope": "tool",
+        "version": "1.0.0",
+        "dependencies": []
+      },
+      {
+        "id": "user:web_search",
+        "name": "Web Search",
+        "enabled": true,
+        "scope": "tool",
+        "version": "2.1.0",
+        "dependencies": ["builtin:http"]
+      }
+    ]
+  }
+}
+```
+
+### skills.update
+
+Update a skill's configuration (enabled state and/or prompt scope).
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "skills.update",
+  "params": {
+    "skill_id": "user:web_search",
+    "enabled": false,
+    "scope": "disabled"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "skill": {
+      "id": "user:web_search",
+      "name": "Web Search",
+      "enabled": false,
+      "scope": "disabled",
+      "version": "2.1.0"
+    }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `skill_id` | string | Yes | Skill ID to update |
+| `enabled` | boolean | No | Enable or disable the skill |
+| `scope` | string | No | Prompt scope: `"system"`, `"tool"`, `"standalone"`, `"disabled"` |
+
+**Scope Values:**
+
+| Scope | Description |
+|-------|-------------|
+| `system` | Injected into system prompt |
+| `tool` | Available as callable tool |
+| `standalone` | Used independently of agents |
+| `disabled` | Not loaded |
+
+### skills.install_dep
+
+Install a dependency for a skill (e.g., a system package required by the skill).
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "skills.install_dep",
+  "params": {
+    "skill_id": "user:web_search",
+    "spec_id": "curl"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "result": "installed",
+    "skill": {
+      "id": "user:web_search",
+      "name": "Web Search",
+      "enabled": true
+    }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `skill_id` | string | Yes | Skill ID |
+| `spec_id` | string | No | Dependency specification ID (e.g., package name) |
+
+### skills.remove
+
+Remove a skill from the system.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "skills.remove",
+  "params": {
+    "skill_id": "user:web_search"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "ok": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `skill_id` | string | Yes | Skill ID to remove |
+
+### skills.install
+
+Install a skill from a markdown skill file or directory.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "skills.install",
+  "params": {
+    "path": "~/.aleph/skills/custom_skill.md"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "installed": true,
+    "skill_id": "user:custom_skill"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | Yes | Path to the skill file or directory |
+
+## Skill Directories
+
+Skills are loaded from the following directories (in order):
+
+1. `~/.aleph/skills/` — User-installed skills
+2. `./skills/` — Project-local skills
+3. Built-in skills bundled with Aleph
+
+## See Also
+
+- [Concepts: Skills](/docs/en/concepts/skills) -- How the Skill System v2 works
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

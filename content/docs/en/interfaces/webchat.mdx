@@ -1,0 +1,345 @@
+---
+title: "WebChat"
+description: "Built-in web chat interface with WebSocket streaming and static file serving"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+WebChat is Aleph's built-in web-based chat interface. It is served directly by the Gateway's HTTP server alongside the WebSocket endpoint, requiring no external dependencies or third-party APIs. WebChat uses the same JSON-RPC 2.0 protocol as all other Gateway clients.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     Browser / Embedded                        │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │                   WebChat UI                            │  │
+│  │  ┌──────────┐  ┌───────────┐  ┌──────────────────┐    │  │
+│  │  │ Message  │  │  Input    │  │  Streaming       │    │  │
+│  │  │ History  │  │  Area     │  │  Response Panel  │    │  │
+│  │  └──────────┘  └───────────┘  └──────────────────┘    │  │
+│  └──────────┬─────────────────────────────────────────────┘  │
+│             │ WebSocket (JSON-RPC 2.0)                        │
+└─────────────┼────────────────────────────────────────────────┘
+              │
+┌─────────────┼────────────────────────────────────────────────┐
+│             ▼                                                  │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │              Gateway HTTP Server                        │  │
+│  │                                                         │  │
+│  │  /              → Static files (WebChat UI)            │  │
+│  │  /ws            → WebSocket endpoint                   │  │
+│  │  /health        → Health check                         │  │
+│  │  /metrics       → Metrics endpoint                     │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                        Aleph Server                           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+WebChat is served as a single-page application (SPA) from the Gateway's static file directory. The WebSocket connection to the Gateway provides real-time bidirectional communication using the same JSON-RPC protocol used by the macOS app, Tauri desktop app, and CLI.
+
+## Capabilities
+
+| Feature | Status |
+|---------|--------|
+| Text messages | Supported |
+| Markdown rendering | Supported (full CommonMark) |
+| Code syntax highlighting | Supported |
+| Mermaid diagrams | Supported |
+| Real-time streaming | Supported |
+| Image display | Supported (inline) |
+| File upload | Supported |
+| Canvas interaction | Supported |
+| Typing indicator | Visual (client-side) |
+| Multi-tab UI | Supported |
+| Max message length | Unlimited |
+
+WebChat operates under the **WebRich** interaction paradigm, which gives the AI access to the full set of capabilities including Mermaid charts, canvas drawing, collapsible sections, and streaming output.
+
+## Prerequisites
+
+<Steps>
+<Step>
+
+### No Additional Setup Required
+
+WebChat is included with the base `gateway` feature flag. If you can start the Aleph server, WebChat is available.
+
+```bash
+cargo build --release --features gateway
+```
+
+</Step>
+<Step>
+
+### Start the Gateway
+
+```bash
+aleph server start
+```
+
+The server starts on `ws://127.0.0.1:18790` by default. The HTTP server serves both the WebSocket endpoint and the WebChat static files.
+
+</Step>
+</Steps>
+
+## Configuration
+
+### Gateway Config (Implicit)
+
+WebChat uses the Gateway's HTTP server, which is always available when the gateway is running:
+
+```toml
+[gateway]
+host = "127.0.0.1"
+port = 18790
+max_connections = 100
+```
+
+### Explicit WebChat Config
+
+For advanced scenarios, you can configure WebChat separately:
+
+```toml
+[channels.webchat]
+# Enable WebChat (default: false in config, but HTTP server always serves static files)
+enabled = true
+
+# Port for the WebChat HTTP server (if separate from gateway)
+port = 18790
+
+# CORS origins for cross-origin embedding
+cors_origins = ["http://localhost:*", "https://your-app.example.com"]
+```
+
+### Static File Directory
+
+The Gateway serves static files from a configurable directory:
+
+```rust
+HttpServerConfig {
+    addr: ([127, 0, 0, 1], 18790).into(),
+    static_dir: Some(PathBuf::from("/path/to/webchat/dist")),
+    fallback_file: Some("index.html".to_string()),
+    enable_cors: true,
+}
+```
+
+The `fallback_file` enables SPA routing -- any path that does not match a static file serves `index.html`, letting the frontend router handle the URL.
+
+## WebSocket Protocol
+
+WebChat communicates with the Gateway using the standard JSON-RPC 2.0 protocol over WebSocket.
+
+### Connecting
+
+```javascript
+const ws = new WebSocket("ws://127.0.0.1:18790/ws");
+```
+
+If authentication is enabled, the first message must be a `connect` request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "connect",
+  "params": {
+    "minProtocol": 1,
+    "maxProtocol": 1,
+    "client": {
+      "id": "webchat",
+      "version": "1.0.0",
+      "platform": "web"
+    },
+    "role": "operator"
+  }
+}
+```
+
+### Sending a Message
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "msg-001",
+  "method": "agent.run",
+  "params": {
+    "message": "What is the weather today?",
+    "session_key": "agent:main:main"
+  }
+}
+```
+
+### Receiving Streaming Events
+
+Subscribe to streaming events to receive the response in real-time:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "sub-001",
+  "method": "events.subscribe",
+  "params": { "pattern": "stream.*" }
+}
+```
+
+Events arrive as JSON-RPC notifications:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "stream.chunk",
+    "data": {
+      "run_id": "run-123",
+      "content": "Based on the current conditions..."
+    }
+  }
+}
+```
+
+### Event Types
+
+| Topic | Description |
+|-------|-------------|
+| `stream.chunk` | Text content chunk (partial response) |
+| `stream.tool_start` | Tool execution has started |
+| `stream.tool_end` | Tool execution completed |
+| `agent.started` | Agent run has begun |
+| `agent.completed` | Agent run finished |
+| `agent.error` | Agent run encountered an error |
+
+## Static File Serving
+
+The Gateway's HTTP server handles static file requests based on file extensions and path patterns:
+
+| Pattern | Behavior |
+|---------|----------|
+| `/` | Serves `index.html` |
+| `/assets/*`, `/static/*` | Serves static assets |
+| `*.html`, `*.css`, `*.js` | Serves matching files |
+| `*.png`, `*.jpg`, `*.svg` | Serves image files |
+| `/favicon.ico` | Serves favicon |
+| Any other path | Falls back to `index.html` (SPA routing) |
+
+Files are served with appropriate MIME types (auto-detected via `mime_guess`) and a `Cache-Control: public, max-age=3600` header.
+
+## Embedding in Websites
+
+WebChat can be embedded in external websites using an iframe or by loading the WebChat JavaScript bundle directly.
+
+### iframe Embedding
+
+```html
+<iframe
+  src="http://localhost:18790"
+  width="400"
+  height="600"
+  style="border: none; border-radius: 12px;"
+></iframe>
+```
+
+### CORS Configuration
+
+To allow cross-origin access from your website, configure the CORS origins:
+
+```toml
+[channels.webchat]
+cors_origins = [
+  "https://your-website.com",
+  "https://app.your-website.com",
+  "http://localhost:3000"  # For development
+]
+```
+
+Wildcard patterns are supported (e.g., `http://localhost:*` matches any port).
+
+## Authentication
+
+When `require_auth` is enabled on the Gateway, WebChat users must authenticate:
+
+1. **Token-based** -- Pass a bearer token in the `connect` request
+2. **Device pairing** -- Use the pairing flow to register the browser as a trusted device
+3. **No auth** (default) -- When `require_auth` is `false`, all WebSocket connections are accepted
+
+```toml
+[gateway]
+require_auth = false  # Set to true for production deployments
+```
+
+<Callout type="warn">
+If you expose the Gateway to the network (changing `host` from `127.0.0.1` to `0.0.0.0`), strongly consider enabling authentication.
+</Callout>
+
+## Session Management
+
+WebChat sessions use the main session key by default:
+
+```
+agent:main:main
+```
+
+The WebChat UI can specify custom session keys to support multiple conversations:
+
+```json
+{
+  "method": "agent.run",
+  "params": {
+    "message": "Hello",
+    "session_key": "agent:main:webchat:session-1"
+  }
+}
+```
+
+Session history, compaction, and persistence work identically to all other interfaces -- backed by the SQLite session store.
+
+## InteractionManifest
+
+WebChat uses the **WebRich** paradigm, which provides the most complete set of capabilities:
+
+```rust
+InteractionManifest {
+    paradigm: InteractionParadigm::WebRich,
+    capabilities: {
+        RichText,        // Full Markdown support
+        CodeHighlight,   // Syntax highlighting in code blocks
+        MultiGroupUI,    // Tabs, accordions, collapsible sections
+        Streaming,       // Real-time token streaming
+        MermaidCharts,   // Mermaid diagram rendering
+        ImageInline,     // Inline image display
+        Canvas,          // Interactive canvas for drawing/editing
+    },
+    constraints: InteractionConstraints {
+        max_output_chars: None,  // Unlimited
+        supports_streaming: true,
+        prefer_compact: false,
+    },
+}
+```
+
+This means the agent can use its full range of output formats when responding through WebChat, including Mermaid diagrams, interactive canvases, and structured multi-section layouts.
+
+## Health Check
+
+The HTTP server provides a health endpoint:
+
+```bash
+curl http://127.0.0.1:18790/health
+```
+
+This can be used for monitoring and load balancer health checks.
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| WebChat page is blank | Verify the `static_dir` path contains the built WebChat UI files |
+| WebSocket connection refused | Ensure the Gateway is running and the port matches your URL |
+| CORS errors in browser console | Add your origin to `cors_origins` in the WebChat config |
+| "Authentication required" | Either disable `require_auth` or provide a valid token in the `connect` request |
+| Streaming not working | Subscribe to `stream.*` events before sending `agent.run` |
+| Static assets return 404 | Check that the file exists in the static directory and has the correct extension |
+| SPA routing broken | Ensure `fallback_file` is set to `"index.html"` in the HTTP server config |

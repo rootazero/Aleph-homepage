@@ -1,0 +1,87 @@
+---
+title: "Bundled Content"
+description: "Compile-time embedded official skills and plugins, extracted to disk on startup with version-based update detection."
+---
+
+The `bundled` module manages official skills and plugins that are embedded in the Aleph binary at compile time. On startup, these are extracted to `~/.aleph/` if the bundled version is newer than what's already installed.
+
+## Design Philosophy
+
+1. **Self-contained distribution** — Official content ships with the binary, no external downloads
+2. **Version-aware updates** — Extraction only occurs when the binary's bundled version is newer
+3. **User content protection** — Bundled extraction skips files that would overwrite user customizations
+4. **Idempotent extraction** — Safe to run multiple times; partial failures don't update version
+
+## How It Works
+
+```
+Compile Time                          Startup
+───────────                           ───────
+skills/ ──► include_dir! ──► binary ──► extract_bundled_content()
+plugins/                                │
+                                        ▼
+                                  ~/.aleph/skills/
+                                  ~/.aleph/plugins/
+```
+
+## Embedded Content
+
+```rust
+/// Official skills directory tree, embedded at compile time
+pub static BUNDLED_SKILLS: Dir = include_dir!("$CARGO_MANIFEST_DIR/skills");
+
+/// Official plugins (marketplace), embedded at compile time
+pub static BUNDLED_PLUGINS: Dir = include_dir!("$CARGO_MANIFEST_DIR/plugins");
+
+/// Version tied to the server release
+pub const BUNDLED_VERSION: &str = env!("ALEPH_VERSION");
+```
+
+## Extraction Logic
+
+1. **Check manifest** — Read `manifest.json` from `~/.aleph/skills/`
+2. **Compare versions** — Skip extraction if `manifest.bundled_version == BUNDLED_VERSION`
+3. **Extract skills** — Copy embedded skills to `~/.aleph/skills/`
+4. **Extract plugins** — Copy embedded plugins to `~/.aleph/plugins/cache/aleph-official/`
+5. **Update manifest** — Write new version only after successful extraction
+
+### User Content Protection
+
+When extracting skills, the system checks `SkillOrigin`:
+
+- **Official** — Can be updated by bundled extraction
+- **Custom/User** — Skipped to prevent overwriting user modifications
+
+## Manifest Format
+
+```json
+{
+  "bundled_version": "0.9.1",
+  "skills": [
+    {
+      "name": "git-commit",
+      "version": "1.0.0",
+      "origin": "official"
+    }
+  ]
+}
+```
+
+## Safety
+
+- **Zero unwrap** — All errors handled via `if let Err` / `match` / `?`
+- **Directory creation** — `create_dir_all` with error logging
+- **BTreeMap** — Deterministic JSON output (no HashMap ordering issues)
+- **No locks** — Pure filesystem operations, no concurrency concerns
+
+## Key Source Files
+
+- `src/bundled/mod.rs` — Embedded content declarations
+- `src/bundled/extractor.rs` — Extraction logic
+- `src/bundled/manifest.rs` — Manifest parsing and serialization
+
+## See Also
+
+- [Skill System](/docs/concepts/skill-system) — Skill architecture
+- [Extension System](/docs/concepts/extension-system) — Plugin architecture
+- [Configuration](/docs/concepts/configuration) — Config file locations

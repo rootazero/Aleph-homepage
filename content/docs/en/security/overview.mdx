@@ -1,0 +1,158 @@
+---
+title: Security Overview
+description: Defense in depth -- authentication, authorization, sandboxing, and audit logging.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Security Architecture
+
+Aleph's security model is built on four defensive layers. Each layer operates independently -- a failure in one layer does not collapse the others.
+
+```
+Layer 1: Authentication
+├─ Device pairing (8-char codes, Ed25519 keys)
+├─ Bearer token verification
+└─ Session establishment
+
+Layer 2: Authorization
+├─ IdentityContext (immutable identity snapshot)
+├─ PolicyEngine (stateless permission checker)
+├─ Role-based access (Owner / Guest / Anonymous)
+└─ GuestScope (tool-level restrictions)
+
+Layer 3: Sandbox
+├─ WorkspaceSandbox (filesystem isolation)
+├─ OsSandboxDriver (platform-native enforcement)
+├─ Capability-based profiles
+└─ Trust stages (Draft → Trial → Verified)
+
+Layer 4: Audit
+├─ capability_ledger (structured audit log)
+├─ SandboxAuditLog (execution traces)
+└─ ExecAuditEntry (approval decisions)
+```
+
+## Identity and Access Control
+
+Every request that reaches Aleph carries an [IdentityContext](/docs/en/concepts/identity-context) -- an immutable snapshot of who the caller is and what they are allowed to do.
+
+The identity system supports three roles:
+
+| Role | Behavior |
+|------|----------|
+| **Owner** | Full access; bypasses all permission checks |
+| **Guest** | Scope-limited; restricted to allowed tools with optional expiry |
+| **Anonymous** | Denied unless authentication is disabled |
+
+Guest access is granted through [invitations](/docs/en/concepts/identity-context) with fine-grained `GuestScope`:
+
+```rust
+pub struct GuestScope {
+    pub allowed_tools: Vec<String>,
+    pub expires_at: Option<i64>,
+    pub display_name: Option<String>,
+}
+```
+
+## PolicyEngine
+
+The PolicyEngine is a **stateless** permission checker with no mutable state. It evaluates every tool invocation against the caller's IdentityContext:
+
+- **Owner** -- Always allowed
+- **Guest** -- Checks scope presence, expiration, and tool membership
+- **Anonymous** -- Always denied (in production)
+
+Because it is stateless, the PolicyEngine can be instantiated anywhere in the execution chain without lifecycle or synchronization concerns.
+
+## Sandboxing
+
+Aleph enforces capability-based sandboxing at the operating system level. Each tool declares the permissions it needs (filesystem paths, network access, memory limits), and the system generates a platform-native sandbox profile that enforces exactly those boundaries.
+
+Key features:
+- **Capability presets** -- `file_processor`, `web_scraper`, `code_analyzer`, `data_transformer`
+- **Trust stages** -- Draft → Trial → Verified with progressive approval
+- **Escalation detection** -- Sensitive directory access triggers re-approval
+- **Platform enforcement** -- macOS `sandbox-exec` with Seatbelt profiles
+
+See [Sandboxing](/docs/en/security/sandboxing) for the full reference.
+
+## Execution Approval
+
+Before any shell command runs, it passes through a human-in-the-loop approval pipeline:
+
+1. **Risk analysis** -- Commands are scored Low / Medium / High / Critical
+2. **Allowlist check** -- Known-safe commands auto-approve
+3. **Human prompt** -- Unknown commands are routed to the owner via CLI, macOS app, or chat
+4. **Decision persistence** -- "Allow Always" adds the command to the permanent allowlist
+
+See [Execution Approval](/docs/en/security/exec-approval) for the full reference.
+
+## Device Pairing
+
+New devices and chat senders must complete a pairing flow before they can interact with Aleph:
+
+1. Device requests pairing and receives an 8-character Base32 code
+2. Owner receives a notification with the code
+3. Owner approves via `aleph pairing approve <code>`
+4. Device receives a signed token for future authentication
+
+Pairing uses Ed25519 key exchange, HMAC-SHA256 token signing, and 5-minute code expiration.
+
+See [Device Pairing](/docs/en/security/pairing) for the full reference.
+
+## IPC Security
+
+The Gateway communicates with local desktop clients (e.g., the macOS app) over a Unix domain socket at `~/.aleph/exec-approvals.sock`. The IPC protocol provides:
+
+- **HMAC-SHA256 challenge-response** authentication on every connection
+- **0600 file permissions** on the socket (owner-only access)
+- **Independent connection handling** -- each client runs in its own task
+- **Stale socket cleanup** on Gateway restart
+
+See [IPC Protocol](/docs/en/security/ipc) for the full reference.
+
+## Audit Logging
+
+Every security-relevant event is recorded in structured audit logs:
+
+### capability_ledger
+
+Traces target for sandbox execution events:
+
+```rust
+pub struct SandboxAuditLog {
+    pub skill_id: String,
+    pub capabilities: Capabilities,
+    pub status: ExecutionStatus,
+    pub platform: String,
+    pub timestamp: DateTime<Utc>,
+}
+```
+
+### Exec Audit Entry
+
+Records approval decisions for shell commands:
+
+```rust
+pub struct AuditEntry {
+    pub timestamp: DateTime<Utc>,
+    pub command: String,
+    pub risk_level: RiskLevel,
+    pub decision: ApprovalDecision,
+    pub executor: String,
+    pub session_key: String,
+    pub duration_ms: u64,
+    pub exit_code: Option<i32>,
+}
+```
+
+These logs provide a complete trail of who executed what, when, and with what permissions.
+
+## See Also
+
+- [Identity Context](/docs/en/concepts/identity-context) -- Immutable identity snapshot and permission flow
+- [Sandboxing](/docs/en/security/sandboxing) -- Capability-based execution sandboxing
+- [Device Pairing](/docs/en/security/pairing) -- Trust establishment for new devices
+- [IPC Protocol](/docs/en/security/ipc) -- Secure local communication protocol
+- [Execution Approval](/docs/en/security/exec-approval) -- Human-in-the-loop command approval

@@ -1,0 +1,272 @@
+---
+title: "Sandbox"
+description: "Per-session workspace provisioning, capability enforcement, and OS-level isolation for exec-class tools."
+---
+
+The Sandbox is where exec-class tools actually run. It provides the execution boundary between Aleph and the operating system — ensuring every subprocess runs inside a scoped workspace with restricted filesystem, network, and process capabilities.
+
+For the broader security model, see [Security Overview](./security/overview). For how tools consume the sandbox, see [Tool Architecture](./tools).
+
+---
+
+## Overview
+
+The `Sandbox` trait is the one-method seam between an exec-class tool and the operating system:
+
+```rust
+#[async_trait]
+pub trait Sandbox: Send + Sync + 'static {
+    async fn execute(
+        &self,
+        command: SandboxCommand,
+    ) -> Result<SandboxOutput, SandboxError>;
+}
+```
+
+**Location**: `src/sandbox/mod.rs`
+
+Production boot wires an `Arc<dyn Sandbox>` pointing at `WorkspaceSandbox`. `WorkspaceSandbox` owns three concerns:
+
+1. **Workspace provisioning** — materialize `~/.aleph/workspaces/{hash(session_id)}/` on first exec, keep it alive for the session, reuse on subsequent calls.
+2. **Capability enforcement** — classify every `SandboxCommand` against the session's baseline `SandboxCapabilities`, escalate out-of-baseline requests through `ApprovalGate`, cache per-session grants.
+3. **OS isolation** — delegate the actual subprocess launch to an `OsSandboxDriverTrait` implementation (macOS `sandbox-exec` or Linux `bwrap`).
+
+---
+
+## Architecture
+
+```
+exec-class tool (code_exec, bash_exec)
+        │   Arc<dyn Sandbox>
+        ▼
+WorkspaceSandbox   ──► ApprovalGate
+        │
+        │   OsSandboxDriverTrait
+        ▼
+OsSandboxDriver    ──► macOS sandbox-exec / Linux bwrap
+```
+
+The exec-class tool (`code_exec`, `bash_exec`, etc.) holds an `Arc<dyn Sandbox>` injected at boot. When the tool's `execute` method is called, it builds a `SandboxCommand` and passes it through the sandbox seam. `WorkspaceSandbox` handles workspace resolution, capability checking, and approval gating before delegating the actual subprocess launch to the OS-specific driver.
+
+---
+
+## Lifecycle — Per-Session Workspace
+
+`WorkspaceSandbox` keeps a `HashMap<SessionId, Arc<SessionWorkspace>>` behind an `RwLock`. `for_session(&sid)` is the entry point:
+
+- **Fast path**: `read().await` → cache hit → return the existing `Arc<SessionWorkspace>`.
+- **Slow path**: `write().await` → double-check (another task may have created it) → `tokio::fs::create_dir_all(cwd)` → insert into the map.
+
+The on-disk path is deterministic:
+
+```
+~/.aleph/workspaces/{hash(session_id)}/
+```
+
+The directory name is derived by SHA-256 hashing the JSON-serialized `SessionId`, truncated to 16 bytes (32 hex characters). This keeps the path short and safe across every `SessionKey` variant regardless of the characters those variants may carry.
+
+Each `SessionWorkspace` carries:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `cwd` | `PathBuf` | The materialized workspace directory |
+| `baseline` | `SandboxCapabilities` | Policy ceiling (default: `::strict()`) |
+| `granted_elevations` | `RwLock<HashSet<SandboxCapabilities>>` | Cache of user-approved capability grants |
+
+---
+
+## Six-Step Execute Pipeline
+
+`WorkspaceSandbox::execute` implements the full pipeline:
+
+### 1. Session Resolve
+
+`self.for_session(&cmd.session_id)` → lazy directory creation if first call; cached `Arc<SessionWorkspace>` otherwise.
+
+### 2. cwd Validate
+
+`cmd.cwd` is either `None` (defaults to workspace root) or a path that must `starts_with(&ws.cwd)`. Anything else returns:
+
+```rust
+SandboxError::CapabilityDenied {
+    reason: "cwd outside workspace root".into(),
+}
+```
+
+### 3. Capability Check
+
+`cmd.capabilities.is_within(&ws.baseline)` is the fast path (no approval needed). Otherwise:
+
+1. Consult `granted_elevations` — if the request is within a prior grant, pass.
+2. Otherwise ask `ApprovalGate::request_approval_for_tool`.
+   - `ApprovalOutcome::Approved` → insert `cmd.capabilities` into `granted_elevations` (future same-or-narrower requests are cached).
+   - `ApprovalOutcome::Denied` or `Timeout` → `SandboxError::CapabilityDenied`.
+
+`SandboxCapabilities::is_within` enforces four monotonic checks:
+- `fs_read` ⊆ (prefix containment)
+- `fs_write` ⊆ (prefix containment)
+- `network`: `None` ⊆ `AllowHosts` ⊆ `AllowAll`
+- `spawn_subprocess`: `false` ⊆ any
+
+### 4. Profile Generate
+
+`os_driver.profile_for(&caps, &cwd)` returns an opaque `OsSandboxProfile`. On macOS, this is SBPL profile text; on Linux, it is a bubblewrap argument list.
+
+### 5. Run
+
+`os_driver.run(program, args, env, stdin, cwd, profile, timeout, max_output_bytes)`.
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `timeout` | 60s | Per-command time limit |
+| `max_output_bytes` | 1 MB | Combined stdout + stderr budget (split evenly) |
+
+Both are overrideable on the `WorkspaceSandbox` via `with_timeout` / `with_max_output_bytes`.
+
+### 6. Audit
+
+Emit a `tracing::info!(target: "capability_ledger", ...)` record carrying:
+- `session_id`
+- `program`
+- `caps`
+- `exit_code`
+- `signal`
+- `duration_ms`
+
+This is the capability-ledger hook; downstream tracing subscribers can sink it to any store.
+
+---
+
+## Capability Model
+
+`SandboxCapabilities` is a plain struct:
+
+```rust
+pub struct SandboxCapabilities {
+    pub fs_read: Vec<PathBuf>,
+    pub fs_write: Vec<PathBuf>,
+    pub network: NetworkPolicy,
+    pub spawn_subprocess: bool,
+}
+
+pub enum NetworkPolicy {
+    None,
+    AllowAll,
+    AllowHosts { hosts: Vec<String> },
+}
+```
+
+**Location**: `src/sandbox/capabilities.rs`
+
+The baseline is `SandboxCapabilities::strict()` (equivalent to `::default()`):
+
+- No filesystem access outside the workspace cwd (auto-granted by the OS driver profile)
+- No network access
+- No subprocess spawning
+
+Any command that needs more must escalate via `ApprovalGate`. The `granted_elevations` cache ensures a user only approves a capability pattern once per session.
+
+---
+
+## ApprovalGate
+
+`ApprovalGate` handles escalation for out-of-baseline capability requests. When a tool requests capabilities beyond `strict()`, the sandbox:
+
+1. Checks the session's `granted_elevations` cache
+2. If not cached, calls `ApprovalGate::request_approval_for_tool(tool_name, reason)`
+3. On approval, inserts the granted capabilities into the cache
+4. On denial or timeout, returns `SandboxError::CapabilityDenied`
+
+The same `ApprovalGate` instance is shared with the `PermissionLayer` so that Ask-tier tool confirmations and sandbox capability escalations use a single gate.
+
+**Location**: `src/sandbox/exec_approval/gate.rs`
+
+---
+
+## OsSandboxDriver
+
+The `OsSandboxDriverTrait` is the platform abstraction for OS-level sandboxing:
+
+```rust
+pub trait OsSandboxDriverTrait: Send + Sync {
+    fn profile_for(
+        &self,
+        capabilities: &SandboxCapabilities,
+        cwd: &Path,
+    ) -> Result<OsSandboxProfile, SandboxError>;
+
+    async fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+        stdin: Option<&[u8]>,
+        cwd: &Path,
+        profile: &OsSandboxProfile,
+        timeout: Duration,
+        max_output_bytes: usize,
+    ) -> Result<SandboxOutput, SandboxError>;
+}
+```
+
+**Location**: `src/sandbox/driver.rs`
+
+| Platform | Implementation | Mechanism |
+|----------|---------------|-----------|
+| macOS | `OsSandboxDriver` in `src/exec/sandbox/executor.rs` | `sandbox-exec` seatbelt profiles |
+| Linux | Bubblewrap driver | `bwrap` namespaces + seccomp |
+
+---
+
+## Configuration
+
+Boot-time tuning lives on `SandboxConfig`:
+
+```rust
+pub struct SandboxConfig {
+    pub workspace_root: PathBuf,       // default: ~/.aleph/workspaces
+    pub enabled: bool,                 // default: true
+    pub default_timeout_seconds: u64,  // default: 60
+    pub max_output_bytes: usize,       // default: 1 MiB
+}
+```
+
+**Location**: `src/sandbox/config.rs`
+
+Serde reads the `[sandbox]` TOML section with defaults so existing configs keep working. Tests and CI can set `enabled = false` to disable the subsystem; `build_sandbox` will then return a `NoopSandbox` whose `execute` always errors with `SandboxError::Other("sandbox disabled: ...")` — a deliberate fail-fast, not a silent bypass.
+
+---
+
+## Task-Local Session Context
+
+Exec-class tools don't know the current session id — their `AlephTool::execute` signature doesn't carry it. The sandbox subsystem uses a tokio `task_local!` to thread the id without touching every tool trait:
+
+- `crate::sandbox::context::SESSION_ID` — declared in `src/sandbox/context.rs`
+- `current_session() -> Option<SessionId>` — the read helper
+- **Writer**: `crate::session::invoke_with_session_trace` (`src/session/tool_trace.rs`) wraps `tool_svc.execute(...)` in a `SESSION_ID.scope(session_id.clone(), async move { ... })`.
+
+Tools that need a workspace but are called outside a session can choose their fallback policy (today they rely on the caller having passed a `SandboxCommand { session_id, ... }` explicitly).
+
+---
+
+## Factory — build_sandbox
+
+`src/sandbox/factory.rs` composes the `Arc<dyn Sandbox>` at boot:
+
+```rust
+pub fn build_sandbox(
+    cfg: &SandboxConfig,
+    driver: Arc<dyn OsSandboxDriverTrait>,
+    approval: Arc<ApprovalGate>,
+) -> Arc<dyn Sandbox>;
+```
+
+The resulting `Arc<dyn Sandbox>` is threaded through tool registration into every exec-class tool constructor (`CodeExecTool::with_sandbox`, `BashExecTool::with_sandbox`, etc.). A tool constructed without a sandbox returns a structured "sandbox not configured" error instead of falling back to unscoped execution — the default is safe, not permissive.
+
+---
+
+## Related Pages
+
+- [Tool Architecture](./tools) — How exec-class tools consume the sandbox
+- [Security Overview](./security/overview) — The broader security model
+- [Sandboxing Deep Dive](./security/sandboxing) — OS-level sandboxing mechanisms

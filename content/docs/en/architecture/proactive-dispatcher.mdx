@@ -1,0 +1,183 @@
+---
+title: "Proactive Dispatcher"
+description: "Proactive dispatcher for background task execution, action planning, and risk assessment within the daemon."
+---
+
+The `daemon::dispatcher` module provides proactive action dispatching for the Aleph daemon, enabling autonomous background task execution with risk assessment and policy enforcement.
+
+## Overview
+
+The Proactive Dispatcher enables:
+- **Autonomous actions** — Execute tasks without direct user prompting
+- **Risk assessment** — Evaluate action risk before execution
+- **Policy enforcement** — Apply configurable policies to actions
+- **Notification management** — Prioritize and batch notifications
+- **Resource-aware scheduling** — Respect system resource limits
+
+## Architecture
+
+```
+ProactiveDispatcher
+  ├── PolicyEngine — Risk evaluation and policy checks
+  ├── ActionExecutor — Task execution
+  ├── RiskAssessment — Risk scoring
+  └── NotificationQueue — Priority-based notifications
+```
+
+## Core Components
+
+### ProactiveDispatcher
+
+Central dispatch coordinator:
+
+```rust
+// src/daemon/dispatcher/mod.rs
+pub struct Dispatcher {
+    config: DispatcherConfig,
+    policy_engine: PolicyEngine,
+    executor: ActionExecutor,
+}
+
+impl Dispatcher {
+    pub async fn dispatch(
+        &self,
+        action: ProposedAction,
+    ) -> Result<ActionResult>;
+    
+    pub async fn evaluate_risk(
+        &self,
+        action: &ProposedAction,
+    ) -> RiskLevel;
+    
+    pub async fn queue_notification(
+        &self,
+        notification: Notification,
+    ) -> Result<()>;
+}
+```
+
+### PolicyEngine
+
+Evaluates actions against policies:
+
+```rust
+// src/daemon/dispatcher/policy.rs
+pub struct PolicyEngine {
+    policies: Vec<Policy>,
+}
+
+impl PolicyEngine {
+    pub fn check(
+        &self,
+        action: &ProposedAction,
+    ) -> PolicyResult;
+}
+
+pub enum PolicyResult {
+    Allow,
+    Deny { reason: String },
+    RequireApproval { approver: Role },
+}
+```
+
+### ProposedAction
+
+Actions submitted for dispatch:
+
+```rust
+// src/daemon/dispatcher/mod.rs
+pub struct ProposedAction {
+    pub id: ActionId,
+    pub action_type: ActionType,
+    pub payload: serde_json::Value,
+    pub proposed_by: AgentId,
+    pub urgency: Urgency,
+}
+
+pub enum ActionType {
+    NotifyUser,
+    ExecuteTool,
+    ScheduleTask,
+    DelegateToAgent,
+}
+```
+
+### Risk Levels
+
+```rust
+pub enum RiskLevel {
+    Safe,      // No risk, execute immediately
+    Low,       // Minor risk, log and execute
+    Medium,    // Moderate risk, notify user
+    High,      // Significant risk, require approval
+    Critical,  // Severe risk, deny unless emergency
+}
+```
+
+### Notification Priority
+
+```rust
+pub enum NotificationPriority {
+    Background,  // No immediate notification
+    Normal,      // Standard notification
+    Urgent,      // Immediate notification
+    Emergency,   // Interrupt user
+}
+```
+
+## Action Flow
+
+```
+ProposedAction
+     │
+     ▼
+PolicyEngine.check()
+     │
+     ├──▶ Deny → Log + Notify (if required)
+     │
+     ├──▶ RequireApproval → Queue for approval
+     │
+     └──▶ Allow → RiskAssessment
+                          │
+                          ├──▶ Safe → Execute immediately
+                          │
+                          └──▶ Risky → Notify user + Execute
+```
+
+## Dispatcher Modes
+
+```rust
+pub enum DispatcherMode {
+    Passive,    // Only react to explicit requests
+    Assistive,  // Suggest actions, wait for approval
+    Proactive,  // Execute low-risk actions autonomously
+    Autonomous, // Execute all allowed actions
+}
+```
+
+## Configuration
+
+```toml
+[daemon.dispatcher]
+mode = "assistive"
+max_concurrent_actions = 5
+notification_batch_interval = 300  # seconds
+
+[daemon.dispatcher.risk]
+default_level = "medium"
+auto_execute_below = "low"
+require_approval_above = "high"
+```
+
+## Code Location
+
+- `src/daemon/dispatcher/mod.rs` — Dispatcher and types
+- `src/daemon/dispatcher/policy.rs` — Policy engine
+- `src/daemon/mod.rs` — Daemon module entry
+
+## See Also
+
+- [World Model](./worldmodel) — Context inference and action prediction
+- [Task Dispatcher](./dispatcher) — Task scheduling DAG (different component)
+- [Daemon](../concepts/daemon) — Background service management
+- [Security](../security/overview) — Policy and permission system

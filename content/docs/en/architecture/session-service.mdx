@@ -1,0 +1,229 @@
+---
+title: "Session Service"
+description: "Append-only event log per session, with an in-process tokio actor."
+---
+
+The Session Service provides durable, append-only event storage for every Aleph session. It replaces the legacy `messages` table with a structured event log backed by SQLite, enabling crash recovery, live subscriptions, and precise state reconstruction.
+
+For the gateway's session management, see [Gateway Architecture](./gateway). For how the agent harness consumes events, see [Agent Harness](./harness).
+
+---
+
+## Overview
+
+`InProcessActorSessionService` is the default implementation. It spawns one tokio task per session. Each task (`SessionActor`) replays events from SQLite on start, then serves commands until its inbox closes or an idle timeout fires.
+
+**Location**: `src/session/in_process.rs`
+
+Key properties:
+
+- **Append-only**: Events are never modified or deleted — only appended to the log.
+- **Durable**: All events are persisted to SQLite before acknowledgment.
+- **Actor-per-session**: Each session gets its own tokio task for ordering and isolation.
+- **Live subscriptions**: Consumers can subscribe to real-time event streams.
+
+---
+
+## Public Surface
+
+The `SessionService` trait is the public interface:
+
+```rust
+#[async_trait]
+pub trait SessionService: Send + Sync + 'static {
+    /// Ensure actor is running; returns current head seq.
+    async fn attach(&self, id: SessionId) -> Result<SessionHandle, SessionError>;
+
+    /// Append + sync persist; returns the new seq.
+    async fn emit_event(&self, id: &SessionId, event: SessionEvent) -> Result<EventSeq, SessionError>;
+
+    /// Half-open read range [from, to).
+    async fn get_events(
+        &self,
+        id: &SessionId,
+        from: Option<EventSeq>,
+        to: Option<EventSeq>,
+    ) -> Result<Vec<SessionEventRecord>, SessionError>;
+
+    /// Live fan-out of events.
+    async fn subscribe(
+        &self,
+        id: &SessionId,
+    ) -> Result<broadcast::Receiver<SessionEventRecord>, SessionError>;
+
+    /// Force-replace actor (crash recovery).
+    async fn wake(&self, id: &SessionId) -> Result<SessionHandle, SessionError>;
+
+    /// Stop actor, keep events.
+    async fn detach(&self, id: &SessionId) -> Result<(), SessionError>;
+}
+```
+
+**Location**: `src/session/service.rs`
+
+`SessionId` is an alias for `crate::routing::session_key::SessionKey` — sessions are identified by the same key used everywhere else in the gateway.
+
+---
+
+## Implementation
+
+`InProcessActorSessionService` owns a router map from `SessionId` to the mpsc inbox of that session's actor:
+
+```rust
+pub struct InProcessActorSessionService {
+    store: Arc<dyn SessionEventStore>,
+    senders: RwLock<HashMap<SessionId, mpsc::Sender<ActorCommand>>>,
+    broadcasters: RwLock<HashMap<SessionId, broadcast::Sender<SessionEventRecord>>>,
+    idle_timeout: Duration,
+}
+```
+
+**Location**: `src/session/in_process.rs`
+
+Each `SessionActor` (defined in `src/session/actor.rs`) replays events from SQLite on startup, maintains in-memory state (`src/session/state.rs`), and processes commands until shutdown. Per-actor state lives in `src/session/state.rs`; event types live in `src/session/events.rs`.
+
+---
+
+## Storage
+
+Events are stored in a SQLite table:
+
+```sql
+CREATE TABLE session_events (
+    session_id   TEXT    NOT NULL,
+    seq          INTEGER NOT NULL,
+    turn_id      TEXT,
+    event_type   TEXT    NOT NULL,
+    payload_json TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (session_id, seq)
+);
+```
+
+**Location**: `src/session/store.rs`
+
+Plus two supporting indexes (`idx_session_events_session_turn`, `idx_session_events_session_type`).
+
+| Property | Value |
+|----------|-------|
+| Write mode | Synchronous (fsync before ack) |
+| SQLite mode | WAL (Write-Ahead Logging) |
+| Ordering | `(session_id, seq)` primary key enforces monotonic ordering per session |
+
+---
+
+## Event Schema
+
+`SessionEvent` is a `#[non_exhaustive]` enum covering:
+
+| Category | Variants |
+|----------|----------|
+| Lifecycle | `SessionStarted`, `SessionWoken`, `SessionEnded` |
+| Turn boundaries | `TurnStarted`, `TurnEnded` |
+| Messages | `UserMessage`, `AssistantMessage`, `SystemMessage` |
+| LLM interaction | `LlmRequested`, `LlmResponded`, `LlmError` |
+| Tool calls | `ToolCalled`, `ToolResponded`, `ToolError` |
+| Subagent delegation | `SubagentSpawned`, `SubagentResult` |
+| Budget / compaction | `BudgetUpdated`, `Compacted` |
+| Errors | `Error` |
+
+**Location**: `src/session/events.rs`
+
+Helper types: `EventSeq`, `TurnId`, `MessageContent`, `ToolOutput`, `TurnOutcome`, `TurnTrigger`, `ApprovalSource`, `ErrorKind`, `Timestamp`.
+
+---
+
+## Projection
+
+Not all consumers want raw events. The `project_messages` helper turns an event range into a classic message-history view:
+
+```rust
+pub fn project_messages(
+    events: &[SessionEventRecord],
+) -> Vec<ProjectedMessage>;
+```
+
+**Location**: `src/session/projection.rs`
+
+This collapses `TurnStarted`, `UserMessage`, `AssistantMessage`, `ToolCalled`, `ToolResponded`, and `TurnEnded` into a linear `Vec<ProjectedMessage>` that looks like the old `messages` table — useful for LLM context windows and UI rendering.
+
+---
+
+## wake() Semantics
+
+`wake(session_id)` is the crash recovery mechanism:
+
+1. **Shutdown old actor** (if any) with a 5-second grace period.
+2. **Capture `prior_head`** before spawning the new actor.
+3. **Spawn fresh actor** — it replays all persisted events from SQLite.
+4. **Emit `SessionWoken { prior_head }`** marker into the log.
+5. **Return new `SessionHandle`**.
+
+A Harness that crashed mid-turn will surface as a `TurnStarted` with no matching `TurnEnded` — the replacement Harness decides whether to retry, abandon, or close the turn with an `Error` event.
+
+| Parameter | Value |
+|-----------|-------|
+| Idle timeout | 30 minutes |
+| Grace period for shutdown | 5 seconds |
+
+**Integration test**: `tests/session_wake_recovery.rs`
+
+---
+
+## Gateway RPC Relationship
+
+Gateway `session.*` RPC methods remain on `SessionManager` (`src/gateway/session_manager/`). A dual-write shim (`src/session/shim.rs`) mirrors each `SessionManager` append into `SessionService` so `session_events` stays populated in parallel with the legacy `messages` table.
+
+```
+Gateway RPC (session.append, session.get, etc.)
+        │
+        ▼
+┌─────────────────┐     ┌──────────────────┐
+│  SessionManager │────►│  Legacy messages │
+│                 │     │  table           │
+└────────┬────────┘     └──────────────────┘
+         │
+         │ dual-write shim (src/session/shim.rs)
+         ▼
+┌─────────────────┐     ┌──────────────────┐
+│  SessionService │────►│  session_events  │
+│                 │     │  table           │
+└─────────────────┘     └──────────────────┘
+```
+
+A future phase will migrate Gateway RPC directly to `SessionService` and remove the shim.
+
+---
+
+## Consumer Migration Status
+
+| Consumer | Status | Notes |
+|----------|--------|-------|
+| `AgentHarness` | Ready | Uses `SessionService` exclusively for history read/write |
+| `SubagentTool` | Ready | Uses `SessionService` for ephemeral child sessions |
+| Gateway `session.*` RPC | On `SessionManager` | Dual-write shim mirrors to `SessionService` |
+| Memory / Dream / other | Read-only adoption | `SessionService::get_events` available; adoption on case-by-case basis |
+
+---
+
+## Source Map
+
+| File | Role |
+|------|------|
+| `src/session/service.rs` | `SessionService` trait definition |
+| `src/session/in_process.rs` | `InProcessActorSessionService` implementation |
+| `src/session/actor.rs` | `SessionActor` — per-session tokio task |
+| `src/session/state.rs` | Per-actor in-memory state |
+| `src/session/events.rs` | `SessionEvent` enum and helper types |
+| `src/session/store.rs` | SQLite schema and `SessionEventStore` trait |
+| `src/session/projection.rs` | `project_messages` and other read-side projections |
+| `src/session/shim.rs` | Dual-write shim from `SessionManager` to `SessionService` |
+| `tests/session_wake_recovery.rs` | Crash recovery integration test |
+
+---
+
+## Related Pages
+
+- [Gateway Architecture](./gateway) — RPC layer and session routing
+- [Agent Harness](./harness) — How the agent consumes session events
+- [Memory System](./memory) — Memory tools and persistence

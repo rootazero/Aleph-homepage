@@ -1,0 +1,160 @@
+---
+title: "ACP Protocol"
+description: "Agent Client Protocol for integrating external CLI tools (Claude Code, Codex, Gemini) as agent adapters."
+---
+
+The `acp` module implements the Agent Client Protocol (ACP), enabling Aleph to integrate external CLI tools as first-class agent adapters.
+
+## Overview
+
+ACP manages external CLI tools as agent adapters, supporting two modes:
+- **Tool Mode** — LLM-dispatched tool calls (read-only operations)
+- **Agent Mode** — Direct conversation with full read/write capabilities
+
+Supported adapters:
+- Claude Code
+- Codex (OpenAI)
+- Gemini CLI
+
+## Architecture
+
+```
+ACP Manager
+  ├── Adapter — Protocol abstraction
+  ├── Adapters — Concrete implementations
+  │     ├── ClaudeCodeAdapter
+  │     ├── CodexAdapter
+  │     └── GeminiAdapter
+  ├── Session — ACP session lifecycle
+  ├── Transport — Communication layer
+  └── Protocol — Message protocol definitions
+```
+
+## Core Components
+
+### ACP Manager
+
+Central coordinator for all ACP sessions:
+
+```rust
+// src/acp/manager.rs
+pub struct AcpManager {
+    sessions: HashMap<String, AcpSession>,
+    persistence_hook: Option<PersistenceHook>,
+}
+
+impl AcpManager {
+    pub async fn create_session(
+        &mut self,
+        harness_id: String,
+        cwd: String,
+        adapter_type: AdapterType,
+    ) -> Result<String>;  // Returns acp_session_id
+    
+    pub async fn send_message(
+        &self,
+        acp_session_id: String,
+        message: String,
+    ) -> Result<()>;
+    
+    pub async fn stream_response(
+        &self,
+        acp_session_id: String,
+        callback: AcpChunkCallback,
+    ) -> Result<()>;
+}
+```
+
+### Adapter Trait
+
+Abstract interface for all ACP adapters:
+
+```rust
+// src/acp/adapter.rs
+pub trait AcpAdapter: Send + Sync {
+    fn name(&self) -> &str;
+    fn is_available(&self) -> bool;
+    async fn execute(
+        &self, 
+        cwd: &str, 
+        args: &[String]
+    ) -> Result<AcpOutput>;
+}
+```
+
+### Session
+
+Represents a single ACP conversation:
+
+```rust
+// src/acp/session.rs
+pub struct AcpSession {
+    harness_id: String,
+    acp_session_id: String,
+    cwd: String,
+    adapter: Box<dyn AcpAdapter>,
+}
+```
+
+## Session Events
+
+The ACP manager emits events for session persistence:
+
+```rust
+pub enum AcpSessionEvent {
+    Created { harness_id, acp_session_id, cwd },
+    Updated { harness_id, acp_session_id },
+    Removed { harness_id, cwd },
+}
+```
+
+## Modes of Operation
+
+### Tool Mode
+
+In Tool Mode, the LLM dispatches read-only operations through ACP:
+
+```
+LLM ──> Tool Call ──> ACP Adapter ──> External CLI
+         (read-only)       (claude code read)
+```
+
+### Agent Mode
+
+In Agent Mode, the user converses directly with the external tool:
+
+```
+User ──> Aleph ──> ACP Manager ──> External CLI
+              (full read/write)
+```
+
+## Configuration
+
+```toml
+[acp]
+enabled = true
+default_adapter = "claude-code"
+
+[acp.adapters.claude-code]
+command = "claude"
+args = ["--output", "json"]
+
+[acp.adapters.codex]
+command = "codex"
+args = []
+```
+
+## Code Location
+
+- `src/acp/mod.rs` — Module entry point
+- `src/acp/manager.rs` — ACP session management
+- `src/acp/adapter.rs` — Adapter trait
+- `src/acp/adapters/` — Concrete adapters
+- `src/acp/session.rs` — Session lifecycle
+- `src/acp/transport.rs` — Communication layer
+- `src/acp/protocol.rs` — Message protocol
+
+## See Also
+
+- [A2A](./a2a) — Agent-to-Agent protocol for internal agents
+- [Tools](../tools/overview) — Built-in tool system

@@ -1,0 +1,324 @@
+---
+title: "Routing System"
+description: "Session key resolution and channel-aware message routing"
+---
+
+The routing system determines how incoming messages are mapped to agents and sessions. It answers two questions: **which agent should handle this message?** and **which conversation session does it belong to?** The answers depend on the channel (Telegram, Discord, CLI), the peer (user or group), and the configured routing rules.
+
+## Session Keys
+
+A `SessionKey` is a channel-aware identifier that uniquely identifies a conversation session. It encodes the agent identity, channel, peer, and scope information into a single hierarchical key.
+
+### The Six Variants
+
+```rust
+pub enum SessionKey {
+    /// Cross-channel shared session
+    Main {
+        agent_id: String,
+        main_key: String,  // default: "main"
+    },
+
+    /// Direct message session with scope strategy
+    DirectMessage {
+        agent_id: String,
+        channel: String,    // "telegram", "discord", etc.
+        peer_id: String,    // user identifier
+        dm_scope: DmScope,
+    },
+
+    /// Group or channel session
+    Group {
+        agent_id: String,
+        channel: String,
+        peer_kind: PeerKind,  // Group | Channel | Thread
+        peer_id: String,
+        thread_id: Option<String>,
+    },
+
+    /// Scheduled task session (cron, webhook)
+    Task {
+        agent_id: String,
+        task_type: String,  // "cron" | "webhook" | "scheduled"
+        task_id: String,
+    },
+
+    /// Nested subagent session
+    Subagent {
+        parent_key: Box<SessionKey>,
+        subagent_id: String,
+    },
+
+    /// Temporary session (no persistence)
+    Ephemeral {
+        agent_id: String,
+        ephemeral_id: String,  // UUID
+    },
+}
+```
+
+### String Serialization
+
+Session keys serialize to human-readable colon-separated strings for storage and lookup:
+
+| Variant | Format | Example |
+|---------|--------|---------|
+| Main | `agent:{id}:{key}` | `agent:main:main` |
+| DM (PerPeer) | `agent:{id}:dm:{peer}` | `agent:main:dm:user123` |
+| DM (PerChannelPeer) | `agent:{id}:{channel}:dm:{peer}` | `agent:main:telegram:dm:user123` |
+| Group | `agent:{id}:{channel}:{kind}:{peer}` | `agent:main:discord:group:guild456` |
+| Group (threaded) | `...:{kind}:{peer}:thread:{tid}` | `agent:main:telegram:group:chat789:thread:t1` |
+| Task | `agent:{id}:{type}:{task_id}` | `agent:main:cron:daily-summary` |
+| Subagent | `{parent}:subagent:{id}` | `agent:main:main:subagent:coding` |
+| Ephemeral | `agent:{id}:ephemeral:{uuid}` | `agent:main:ephemeral:abc-123` |
+
+All keys are normalized: lowercased, trimmed, and the agent ID is restricted to alphanumeric characters plus dashes and underscores (max 64 chars).
+
+## DM Scope Strategies
+
+Direct message sessions support three isolation strategies that control how conversation context is shared:
+
+```rust
+pub enum DmScope {
+    /// All DMs collapse into the main session
+    Main,
+
+    /// Each user gets their own session (cross-channel)
+    PerPeer,      // default
+
+    /// Each user gets a separate session per channel
+    PerChannelPeer,
+}
+```
+
+### Comparison
+
+| Strategy | Key for Telegram user 123 | Key for Discord user 123 | Shared? |
+|----------|--------------------------|--------------------------|---------|
+| `Main` | `agent:main:main` | `agent:main:main` | Yes (all DMs share one session) |
+| `PerPeer` | `agent:main:dm:123` | `agent:main:dm:123` | Yes (same user, same session) |
+| `PerChannelPeer` | `agent:main:telegram:dm:123` | `agent:main:discord:dm:123` | No (separate per channel) |
+
+**PerPeer** is the default because it provides a natural "one person, one conversation" model across platforms. If user "john" messages from both Telegram and Discord, they share the same context.
+
+**PerChannelPeer** is useful when the same user has different roles on different platforms (e.g., personal Telegram vs. work Slack).
+
+**Main** collapses all DMs into the global session, useful for personal single-user setups.
+
+## Route Resolution
+
+When a message arrives, the routing system resolves it to an agent and session key through hierarchical matching:
+
+```
+Incoming Message
+    │
+    ├── channel: "telegram"
+    ├── account_id: "bot-123"
+    ├── peer: { kind: Dm, id: "user456" }
+    ├── guild_id: None
+    └── team_id: None
+         │
+         ▼
+    resolve_route(bindings, session_cfg, default_agent, input)
+         │
+         ▼
+    ResolvedRoute {
+        agent_id: "main",
+        channel: "telegram",
+        account_id: "bot-123",
+        session_key: SessionKey::DirectMessage { ... },
+        main_session_key: SessionKey::Main { ... },
+        matched_by: MatchedBy::Default,
+    }
+```
+
+### Match Priority
+
+Route bindings are evaluated in strict priority order. The first match wins:
+
+| Priority | Match Type | Example |
+|----------|-----------|---------|
+| **1 (highest)** | Peer | Specific user or group in a channel |
+| **2** | Guild | Discord guild ID |
+| **3** | Team | Slack team ID |
+| **4** | Account | Specific bot account (non-wildcard) |
+| **5** | Channel | Channel with wildcard account (`*`) |
+| **6 (lowest)** | Default | Fallback to default agent |
+
+This hierarchy ensures that specific bindings always take precedence over general ones. A VIP user can be routed to a dedicated agent even if a channel-level binding exists.
+
+## Route Bindings
+
+Route bindings are configured in TOML and map match rules to agent IDs:
+
+```rust
+pub struct RouteBinding {
+    pub agent_id: String,
+    pub match_rule: MatchRule,
+}
+
+pub struct MatchRule {
+    pub channel: Option<String>,     // "telegram", "discord", "slack"
+    pub account_id: Option<String>,  // Specific bot account or "*"
+    pub peer: Option<PeerMatchConfig>,
+    pub guild_id: Option<String>,    // Discord guild
+    pub team_id: Option<String>,     // Slack workspace
+}
+```
+
+### Configuration Examples
+
+Route all Telegram messages to a specific agent:
+
+```toml
+[[routing.bindings]]
+agent_id = "telegram-agent"
+[routing.bindings.match]
+channel = "telegram"
+account_id = "*"
+```
+
+Route a specific Slack workspace to a work agent:
+
+```toml
+[[routing.bindings]]
+agent_id = "work"
+[routing.bindings.match]
+channel = "slack"
+account_id = "*"
+team_id = "T12345"
+```
+
+Route a VIP user to a dedicated agent:
+
+```toml
+[[routing.bindings]]
+agent_id = "vip-agent"
+[routing.bindings.match]
+channel = "telegram"
+account_id = "*"
+[routing.bindings.match.peer]
+kind = "dm"
+id = "user-vip"
+```
+
+## Identity Links
+
+Identity links enable cross-channel user identity resolution. When a user is known across multiple platforms, their messages can be routed to the same session regardless of which platform they use.
+
+```rust
+pub struct SessionConfig {
+    pub dm_scope: DmScope,
+    pub identity_links: HashMap<String, Vec<String>>,
+}
+```
+
+### Configuration
+
+```toml
+[routing.session]
+dm_scope = "per-peer"
+
+[routing.session.identity_links]
+john = ["telegram:123456", "discord:789012", "slack:U345678"]
+alice = ["telegram:654321", "imessage:+1234567890"]
+```
+
+### Resolution Flow
+
+When a message arrives from Telegram user `123456`:
+
+```
+1. Look up "123456" in identity_links
+2. Found: "telegram:123456" maps to canonical name "john"
+3. Use "john" as the peer_id in the session key
+4. Result: agent:main:dm:john
+```
+
+Now when the same person messages from Discord as user `789012`:
+
+```
+1. Look up "789012" in identity_links
+2. Found: "discord:789012" maps to canonical name "john"
+3. Use "john" as the peer_id
+4. Result: agent:main:dm:john  (same session!)
+```
+
+The resolution function checks both bare peer IDs and channel-scoped IDs:
+
+```rust
+pub fn resolve_linked_peer_id(
+    identity_links: &HashMap<String, Vec<String>>,
+    channel: &str,
+    peer_id: &str,
+) -> Option<String> {
+    // Check each canonical name's linked IDs
+    // Match against "peer_id" (bare) or "channel:peer_id" (scoped)
+    // Return the canonical name if found
+}
+```
+
+## Peer Kinds
+
+Group sessions distinguish between different peer types:
+
+```rust
+pub enum PeerKind {
+    Group,    // Chat group (Telegram group, Discord server)
+    Channel,  // Broadcast channel (Slack channel, Telegram channel)
+    Thread,   // Thread within a group or channel
+}
+```
+
+Group sessions with threads use nested keys:
+
+```
+agent:main:telegram:group:chat789           (group session)
+agent:main:telegram:group:chat789:thread:t1 (thread within group)
+```
+
+This allows threads to have independent context while sharing the parent group's agent binding.
+
+## Full Resolution Example
+
+Consider this configuration:
+
+```toml
+[routing.session]
+dm_scope = "per-peer"
+
+[routing.session.identity_links]
+john = ["telegram:123", "discord:456"]
+
+[[routing.bindings]]
+agent_id = "work"
+[routing.bindings.match]
+channel = "slack"
+account_id = "*"
+team_id = "T12345"
+
+[[routing.bindings]]
+agent_id = "general"
+[routing.bindings.match]
+channel = "telegram"
+account_id = "*"
+```
+
+| Incoming Message | Matched By | Agent | Session Key |
+|------------------|-----------|-------|-------------|
+| Telegram DM from user `123` | Channel | `general` | `agent:general:dm:john` (identity linked) |
+| Telegram group `grp1` | Channel | `general` | `agent:general:telegram:group:grp1` |
+| Discord DM from user `456` | Default | `main` | `agent:main:dm:john` (identity linked) |
+| Slack DM in team `T12345` | Team | `work` | `agent:work:dm:user789` |
+| CLI local session | Default | `main` | `agent:main:main` |
+
+## Module Structure
+
+```
+src/routing/
+├── mod.rs              # Module entry, re-exports
+├── session_key.rs      # SessionKey enum, DmScope, PeerKind, serialization
+├── resolve.rs          # resolve_route(): hierarchical route matching
+├── config.rs           # RouteBinding, MatchRule, SessionConfig
+└── identity_links.rs   # Cross-channel identity resolution
+```

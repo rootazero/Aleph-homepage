@@ -1,0 +1,47 @@
+---
+title: Aleph 文档
+description: Aleph 技术文档 — 用 Rust 构建的自托管多态 AI 助手
+---
+
+> *"这是人类历史上第一次，机器的灵魂被赋予了身体。"*
+> — 攻壳机动队
+
+**Aleph** 是一个强大的个人 AI 助手，使用 Rust 构建，旨在赋予 AI 与世界交互的能力。它结合了高性能的 Gateway 控制平面和多渠道消息支持，使 AI 代理能够无缝地跨平台工作。
+
+## 核心特性
+
+- **多供应商 AI** — Claude、GPT、Gemini、Ollama，自动故障转移
+- **多渠道** — Telegram、Discord、iMessage、Slack、WebChat
+- **原生性能** — 100% Rust 核心，无解释型语言
+- **安全执行** — 三级安全模型
+- **可扩展** — MCP 集成、插件系统、自定义工具
+- **自托管** — 运行在你自己的硬件上，完全掌控
+
+## 文档章节
+
+| 章节 | 说明 |
+|------|------|
+| [快速开始](/zh/docs/getting-started/installation) | 安装和初始配置 |
+| [设计哲学](/zh/docs/philosophy/overview) | 设计理念、五层涌现、代理思维 |
+| [核心概念](/zh/docs/concepts/agent-runtime) | 代理运行时、消息、模型、技能、扩展 |
+| [架构](/zh/docs/architecture/overview) | 系统设计和组件 |
+| [网关 RPC](/zh/docs/gateway/protocol) | WebSocket API 参考 |
+| [接口](/zh/docs/interfaces/overview) | 消息平台集成 |
+| [工具与扩展](/zh/docs/tools/overview) | 工具系统和 MCP |
+| [安全](/zh/docs/security/exec-approval) | 安全模型和审批 |
+| [自动化](/zh/docs/automation/cron-jobs) | 定时任务、钩子、事件驱动 |
+| [CLI 参考](/zh/docs/cli/commands) | 命令行界面 |
+| [开发](/zh/docs/development/building) | 构建和贡献 |
+| [API 参考](/zh/docs/api/rust) | Rust 和 JSON-RPC API |
+
+## 哲学
+
+Aleph 基于五层涌现架构：
+
+1. **知识之海** — AI 的预训练基础
+2. **领域分类** — 组织化的专业知识
+3. **原子技能** — 从知其然到知其所以然
+4. **功能模块** — 可组合的能力
+5. **多态代理** — 灵魂获得身体
+
+目标不仅是构建一个工具，而是探索一条通往 AGI 的道路 — 当智能获得行动的能力。

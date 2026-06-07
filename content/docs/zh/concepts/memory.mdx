@@ -1,0 +1,262 @@
+---
+title: "记忆系统"
+description: "Aleph 的长期记忆系统，采用原始记忆(raw_memories) + 笔记(notes) 双层架构，支持混合检索与梦境守护进程。"
+---
+
+`memory` 模块为 Aleph 提供长期记忆能力。对话内容存储在临时的原始记忆缓冲区(L0)，并通过蒸馏转化为持久化的 Markdown 笔记(L1)，配合可重建的 SQLite 索引。
+
+## 设计哲学
+
+1. **Markdown 优先** — 笔记是磁盘上的 `.md` 文件；SQLite 索引可随时重建
+2. **混合检索** — FTS5 全文检索 + sqlite-vec 向量检索，通过 RRF 融合排序
+3. **LLM 主权** — 检索提供候选结果；由 LLM 决定哪些信息真正重要
+4. **事件溯源** — 每条笔记变更都被记录为不可变的 `MemoryEvent`
+
+---
+
+## 架构
+
+```
+Gateway / Agent 循环
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L0: raw_memories (SQLite)                                    │
+│   sessions · transcripts · attachment_text                   │
+│   由 CompressionService 消费 (is_processed 标记)              │
+└─────────────────────────────────────────────────────────────┘
+    │  CompressionService (实时)
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L1: notes (Markdown 文件 + SQLite 索引)                       │
+│   ~/.aleph/memory/note/{agent}/{category}/*.md               │
+│   notes_index · notes_links · notes_fts · notes_vec_{dim}    │
+└─────────────────────────────────────────────────────────────┘
+    │  Dream Daemon (离线，仅空闲时运行)
+    ▼
+   consolidate → drift → lint → decay → digest
+    │
+    ▼
+   查询: NoteFactRetrieval.retrieve() → ScoredFact<MemoryFact>
+```
+
+---
+
+## 核心组件
+
+### 存储层 (SQLite)
+
+存储层使用**四个独立的 trait** — 而非单一的 `MemoryStore`。每个调用者只依赖其所需的能力。
+
+| Trait | 文件 | 用途 | 主要调用者 |
+|---|---|---|---|
+| `NoteStore` | `src/memory/notes/store.rs` | 笔记索引、维基链接、FTS、向量搜索 | `NoteFactRetrieval`, `NoteIndexer` |
+| `RawMemoryStore` | `src/memory/store/raw_memory.rs` | 原始记忆 CRUD + `is_processed` 标记 | `CompressionService`, `SessionCompactor` |
+| `DreamStore` | `src/memory/store/mod.rs` | 梦境状态 + 每日洞察 | `DreamDaemon` |
+| `CompressionStore` | `src/memory/store/mod.rs` | 压缩运行审计元数据 | `CompressionService` |
+
+四个 trait 均由 `SqliteMemoryBackend` 实现，封装为：
+
+```rust
+pub type MemoryBackend = Arc<SqliteMemoryBackend>;
+```
+
+### sqlite-vec 集成
+
+使用 sqlite-vec 扩展进行向量存储，按维度创建虚拟表：
+
+| 表 | 维度 |
+|---|---|
+| `notes_vec_768` | 768 |
+| `notes_vec_1024` | 1024 |
+| `notes_vec_1536` | 1536 |
+
+`notes_vec_map` 表将 `(path, agent_id)` 对映射到 vec0 表所需的数字 rowid。
+
+### 知识笔记
+
+基于 Markdown 的笔记，支持维基链接：
+
+```rust
+// src/memory/notes/note.rs
+pub struct KnowledgeNote {
+    pub title: String,
+    pub category: String,
+    pub tags: Vec<String>,
+    pub facts: Vec<String>,
+    pub links: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub content_hash: String,
+}
+```
+
+**特性：**
+- 维基链接语法：`[[笔记标题]]`
+- 通过 `notes_links` 表追踪双向链接
+- 按标题或内容检索笔记
+- 图遍历发现关联概念
+
+### 对话索引器
+
+为会话对话建立精确回忆索引：
+
+```rust
+// src/memory/transcript_indexer/indexer.rs
+pub struct TranscriptIndexer;
+```
+
+配置：`max_tokens_per_chunk = 400`，`overlap_tokens = 80`，`enable_chunking = true`。
+
+### 梦境守护进程 (Dream Daemon)
+
+后台记忆处理，采用**5 阶段日常** / **6 阶段周度**流水线：
+
+**日常：** `[Consolidate] → [Drift] → [Lint] → [Decay] → [DailyDigest]`
+**周度：** `[Consolidate] → [Drift] → [Synthesis] → [Lint] → [Decay] → [DailyDigest]`
+
+```rust
+// src/memory/dreaming/mod.rs
+pub fn ensure_dream_daemon();
+pub fn record_activity();
+```
+
+### WorkingMemoryAssembler
+
+替代了传统的 `ContextComptroller::arbitrate` 路径。生成包含明确插槽的 `MemoryEnvelope`：
+
+```rust
+// src/memory/assembler/mod.rs
+#[async_trait]
+pub trait WorkingMemoryAssembler: Send + Sync {
+    async fn assemble(
+        &self,
+        query: &str,
+        agent_id: &str,
+        session_id: Option<&str>,
+        budget: AssemblyBudget,
+    ) -> Result<MemoryEnvelope, AlephError>;
+}
+```
+
+### MemoryReflector
+
+构建于 `HybridAssembler` (Spec 2) 之上的综合层：
+
+```rust
+// src/memory/reflector/mod.rs
+pub struct MemoryReflector;
+```
+
+通过 `memory_reflect` 内置工具返回连贯的、带引用来源的 LLM 综合答案。
+
+### 检索流水线
+
+```
+查询 → 向量搜索 (sqlite-vec) → FTS 搜索 (FTS5) → RRF 融合 → 评分流水线 → 上下文注入
+```
+
+评分阶段（6 个阶段）：
+1. `cosine_rerank` — 混合向量搜索得分与实时余弦相似度
+2. `recency_boost` — 为最近创建的事实添加增量 boost
+3. `length_normalization` — 惩罚过长的内容
+4. `time_decay` — 按年龄的指数衰减，下限 0.5
+5. `hard_min_score` — 丢弃低于阈值的候选（默认 0.35）
+6. `mmr_diversity` — 将接近重复的嵌入推迟到尾部
+
+---
+
+## 记忆演进规格
+
+Aleph 的记忆系统经历了一系列规格演进：
+
+| 规格 | 重点 | 状态 |
+|---|---|---|
+| **Spec 1** | 记忆捕获钩子 (PreCompress, Delegation, SessionEnd) | 已发布 |
+| **Spec 2** | MemoryReflector — HybridAssembler 之上的综合层 | 已发布 |
+| **Spec 3** | 上下文围栏 + 记忆模式 (Context/Tools/Hybrid) | 已发布 |
+| **Spec 4** | 可插拔记忆扩展 (`MemoryExtension` trait) | 已发布 |
+| **Spec A** | 精选热记忆 (`remember` 工具，冻结快照) | 已发布 |
+| **Spec B** | session_search 总结 | 已发布 |
+| **Spec C** | 跨进程安全 | 已发布 |
+
+详见 [记忆演进](../architecture/memory-evolution)。
+
+---
+
+## 已删除概念
+
+以下概念在 **记忆主权清理** (2026-04-12) 中被移除：
+
+- `MemoryTier` (ShortTerm/LongTerm/Core) — 被结构区分替代（原始记忆 vs 笔记）
+- `MemoryFact.strength` / `confidence` — 按 LLM 主权原则 (R8) 删除确定性启发式
+- `importance_weight` 评分阶段 — 已删除
+- `ValueEstimator` — 完全删除
+
+---
+
+## 模块结构
+
+| 模块 | 用途 |
+|--------|---------|
+| `ai_retrieval` | AI 驱动的记忆检索 |
+| `assembler` | 为上下文窗口组装记忆 (WorkingMemoryAssembler + HybridAssembler) |
+| `audit` | 记忆访问审计 |
+| `compression` | 记忆压缩与合并 |
+| `context` | 上下文锚点与事实元数据 |
+| `context_comptroller` | 上下文预算管理 |
+| `curated` | 精选热记忆 (Spec A) |
+| `dreaming` | 后台梦境守护进程 |
+| `embedding_manager` | 嵌入模型管理 |
+| `embedding_provider` | 远程嵌入提供商 |
+| `events` | 记忆事件溯源 |
+| `extensions` | 可插拔记忆扩展 (Spec 4) |
+| `ingestion` | 记忆摄取流水线 |
+| `namespace` | 有作用域的记忆命名空间 |
+| `noise_filter` | 过滤不相关记忆 |
+| `note_retrieval` | NoteFactRetrieval (混合搜索) |
+| `notes` | 知识笔记 (维基链接) |
+| `query_expander` | 检索查询扩展 |
+| `reembed` | 重新嵌入操作 |
+| `reflector` | 记忆反射 (Spec 2) |
+| `reranker` | 结果重排序 |
+| `ripple` | 涟漪搜索扩展 |
+| `scoring_pipeline` | 多因子评分 |
+| `scratchpad` | 临时工作记忆 |
+| `session_compactor` | 每会话压缩 |
+| `session_resume` | 会话恢复 |
+| `store` | SQLite 存储后端 |
+| `transcript_indexer` | 对话索引 |
+
+---
+
+## 安全属性
+
+- **UTF-8 安全** — `chars().take(n)` 截断
+- **锁恢复** — `unwrap_or_else(|e| e.into_inner())`
+- **无 SQL 注入** — 通过 rusqlite 参数化查询
+- **向量边界** — 余弦相似度限制在 `[-1.0, 1.0]`
+
+---
+
+## 代码位置
+
+- `src/memory/mod.rs` — 模块入口
+- `src/memory/assembler/` — WorkingMemoryAssembler + HybridAssembler
+- `src/memory/curated/` — 精选热记忆 (Spec A)
+- `src/memory/extensions/` — MemoryExtension trait + 注册表 (Spec 4)
+- `src/memory/note_retrieval/` — NoteFactRetrieval
+- `src/memory/reflector/` — MemoryReflector (Spec 2)
+- `src/memory/notes/` — 知识笔记
+- `src/memory/store/` — SQLite 存储后端
+- `src/memory/store/sqlite/` — SQLite + sqlite-vec 实现
+- `src/memory/retrieval/` — 搜索与排序
+- `src/memory/dreaming/` — 梦境守护进程
+- `src/memory/transcript_indexer/` — 对话索引
+- `src/memory/events/` — 事件溯源
+
+## 参见
+
+- [思考者](./thinker) — 记忆如何被注入提示词
+- [架构：记忆](../architecture/memory) — 存储实现深度解析
+- [记忆演进](../architecture/memory-evolution) — Spec 1-4 和 Spec A-C 详情

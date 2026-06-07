@@ -1,0 +1,259 @@
+---
+title: "Media Processing"
+description: "Multimodal media processing pipeline handling attachment download, caching, format detection, image injection, audio transcription, and vision-based understanding."
+---
+
+The `media` and `vision` modules form Aleph's multimodal processing pipeline. They handle attachments from any channel, detect formats, cache downloaded content, and convert media into LLM-compatible content blocks via vision understanding or audio transcription.
+
+## Design Philosophy
+
+The media pipeline follows three principles:
+
+1. **Unified entry point** — `MediaProcessor` handles all media types through a single interface
+2. **Provider fallback** — `MediaPipeline` tries providers in priority order until one succeeds
+3. **Capability-based routing** — `VisionPipeline` skips providers that don't support the requested operation
+
+---
+
+## Data Flow
+
+```
+Channel → InboundMessage.attachments
+    → RunRequest.attachments
+        → MediaProcessor.process()
+            ├─ Image + vision → ContentBlock::Image (native)
+            ├─ Image - vision → VisionPipeline → ContentBlock::Text
+            ├─ Audio + STT    → WhisperAPI → ContentBlock::Text
+            └─ Other          → ContentBlock::Text (placeholder)
+        → UnifiedMessage::User { content: [Text, Image, ...] }
+            → Provider adapter → LLM API call
+```
+
+---
+
+## Core Components
+
+### MediaProcessor
+
+The unified entry point, owned by `ExecutionEngine`:
+
+```rust
+pub struct MediaProcessor {
+    pipeline: MediaPipeline,
+    cache: MediaCache,
+    policy: MediaPolicy,
+}
+
+impl MediaProcessor {
+    pub async fn process(
+        &self,
+        attachments: Vec<Attachment>,
+    ) -> Result<Vec<ContentBlock>> { /* ... */ }
+}
+```
+
+### MediaPipeline
+
+Orchestrates providers with priority-based fallback:
+
+```rust
+pub struct MediaPipeline {
+    providers: Vec<Box<dyn MediaProvider>>,
+}
+
+impl MediaPipeline {
+    pub fn add_provider(
+        &mut self,
+        provider: Box<dyn MediaProvider>,
+    ) { /* ... */ }
+
+    pub async fn process(
+        &self,
+        input: &MediaInput,
+        media_type: &MediaType,
+        prompt: Option<&str>,
+    ) -> Result<MediaOutput> { /* ... */ }
+}
+```
+
+### MediaProvider Trait
+
+```rust
+pub trait MediaProvider: Send + Sync {
+    fn can_process(&self, media_type: &MediaType) -> bool;
+
+    async fn process(
+        &self,
+        input: &MediaInput,
+        media_type: &MediaType,
+        prompt: Option<&str>,
+    ) -> Result<MediaOutput>;
+}
+```
+
+**Built-in providers:**
+- `ImageMediaProvider` — Routes images to VisionPipeline
+- `TextDocumentProvider` — Extracts text from Markdown, TXT, PDF
+- `AudioStubProvider` — Placeholder for audio processing
+
+### Format Detection
+
+Detects media types from magic bytes and file extensions:
+
+```rust
+pub fn detect_by_extension(path: &str) -> Option<MediaType>;
+pub fn detect_by_magic(bytes: &[u8]) -> Option<MediaType>;
+pub fn detect_from_path(path: &Path) -> Option<MediaType>;
+```
+
+**Supported formats:**
+- Images: PNG, JPEG, WebP, GIF
+- Audio: MP3, WAV, OGG, M4A
+- Video: MP4, WebM, MOV
+- Documents: PDF, Markdown, TXT
+
+### MediaCache
+
+Caches downloaded media with smart cleanup:
+
+```rust
+pub struct MediaCache {
+    max_size: usize,
+    ttl: Duration,
+}
+```
+
+**Features:**
+- URL-based deduplication
+- `.created_at` marker pattern to avoid mtime drift
+- Stale entry cleanup
+
+**Safety:** Uses `chars().take(30)` for URL preview (not byte slicing) to handle multi-byte characters.
+
+### MediaPolicy
+
+Enforces size and lifecycle constraints:
+
+```rust
+pub struct MediaPolicy {
+    max_file_size: usize,
+    max_image_dimensions: (u32, u32),
+    allowed_types: Vec<MediaType>,
+}
+```
+
+---
+
+## Vision Pipeline
+
+The `vision` module provides image understanding, OCR, and object detection through a provider-based pipeline:
+
+```rust
+pub struct VisionPipeline {
+    providers: Vec<Box<dyn VisionProvider>,
+}
+```
+
+### VisionProvider Trait
+
+```rust
+#[async_trait]
+pub trait VisionProvider: Send + Sync {
+    async fn understand_image(
+        &self,
+        image: &ImageInput,
+        prompt: &str,
+    ) -> Result<VisionResult>;
+
+    async fn ocr(&self,
+        image: &ImageInput,
+    ) -> Result<OcrResult>;
+
+    fn capabilities(&self) -> VisionCapabilities;
+    fn name(&self) -> &str;
+}
+```
+
+### Fallback Behavior
+
+Providers are tried in registration order. The first successful result wins:
+
+```rust
+// Skip providers without the required capability
+if !provider.capabilities().image_understanding {
+    continue;
+}
+```
+
+**Current providers:**
+- `ClaudeVisionProvider` — Returns errors (pending API wiring)
+- `PlatformOcrProvider` — Delegates to Desktop Bridge for OCR
+
+### ImageInput
+
+```rust
+pub enum ImageInput {
+    Url { url: String },
+    Base64 { data: String, format: ImageFormat },
+}
+```
+
+### VisionResult
+
+```rust
+pub struct VisionResult {
+    pub description: String,
+    pub elements: Vec<VisualElement>,
+    pub confidence: f64,
+}
+```
+
+---
+
+## Audio Transcription
+
+Audio attachments are transcribed via the Whisper API:
+
+```rust
+pub struct WhisperTranscriber {
+    api_key: String,
+    model: String,
+}
+```
+
+**Flow:** Audio file → Whisper API → Text content block
+
+---
+
+## Safety Properties
+
+- **UTF-8 safe** — No byte slicing; uses `chars().take(n)` for truncation
+- **No lock issues** — No `Mutex`/`RwLock` in media module
+- **No SQL injection** — No database queries
+- **Path validation** — `is_hidden()` prevents scanning dot-directories
+
+---
+
+## Code Location
+
+**Media:**
+- `src/media/mod.rs` — Pipeline and data flow
+- `src/media/processor.rs` — MediaProcessor
+- `src/media/pipeline.rs` — MediaPipeline
+- `src/media/processors.rs` — Built-in providers
+- `src/media/detect.rs` — Format detection
+- `src/media/cache.rs` — Media cache
+- `src/media/policy.rs` — Size/lifecycle policy
+- `src/media/types.rs` — Core types
+- `src/media/whisper.rs` — Transcription
+
+**Vision:**
+- `src/vision/mod.rs` — VisionPipeline
+- `src/vision/provider.rs` — VisionProvider trait
+- `src/vision/providers/` — Provider implementations
+- `src/vision/types.rs` — ImageInput, VisionResult, etc.
+
+## See Also
+
+- [Generation](./generation) — How images/audio are generated
+- [Builtin Tools](./builtin-tools) — Tools that use media processing

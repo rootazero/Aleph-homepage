@@ -1,0 +1,133 @@
+---
+title: "Arena"
+description: "SharedArena — a structured workspace where multiple agents collaborate on a shared goal."
+---
+
+The `arena` module implements SharedArena, a structured workspace where multiple agents collaborate on a shared goal. It provides lifecycle management, state aggregation, event tracking, and persistent storage for collaborative agent sessions.
+
+## Design Philosophy
+
+SharedArena follows three principles:
+
+1. **Explicit lifecycle** — Arenas transition through well-defined states with validated transitions
+2. **Deterministic ordering** — All collections are sorted to ensure reproducible behavior
+3. **Permission isolation** — The Handle pattern restricts what each participant can access
+
+---
+
+## Core Components
+
+### Arena State Machine
+
+Arenas follow a strict lifecycle:
+
+```
+Created ──▶ Active ──▶ Settling ──▶ Archived
+```
+
+Each transition validates the current state before proceeding. Invalid transitions are rejected.
+
+### ArenaManager
+
+Central coordinator for all arenas:
+
+```rust
+pub struct ArenaManager {
+    arenas: RwLock<HashMap<ArenaId, Arena>>,
+}
+
+impl ArenaManager {
+    pub async fn create(
+        &self,
+        config: ArenaConfig,
+    ) -> Result<ArenaId> { /* ... */ }
+    
+    pub async fn active_arenas_for(
+        &self,
+        agent_id: &AgentId,
+    ) -> Vec<ArenaId> { /* ... */ }
+}
+```
+
+**Determinism:** `active_arenas_for` returns sorted `ArenaId` vectors (derived `Ord` on `ArenaId`).
+
+### ArenaHandle
+
+Restricted view of an arena for participants:
+
+```rust
+pub struct ArenaHandle {
+    arena_id: ArenaId,
+    permissions: HandlePermissions,
+}
+```
+
+The Handle pattern enforces P1 (low coupling) by isolating permissions — participants can only access what the handle allows.
+
+### Aggregate
+
+State aggregation for collaborative progress tracking:
+
+```rust
+pub struct ArenaAggregate {
+    completed_steps: u32,
+    total_steps: u32,
+    participants: Vec<AgentId>,
+}
+```
+
+Step counts use `saturating_add` to prevent integer overflow.
+
+---
+
+## Events
+
+Arena events track collaboration activity:
+
+```rust
+pub enum ArenaEvent {
+    AgentJoined { agent_id: AgentId, timestamp: DateTime<Utc> },
+    AgentLeft { agent_id: AgentId, timestamp: DateTime<Utc> },
+    StepCompleted { step: u32, agent_id: AgentId },
+    GoalUpdated { new_goal: String },
+}
+```
+
+Events are persisted to storage for audit and replay.
+
+---
+
+## Storage
+
+Arenas are persisted via `ArenaStorage`:
+
+- Uses parameterized SQL queries (no injection risk)
+- Lock-safe with `unwrap_or_else(|e| e.into_inner())` pattern
+- All queries use `params![]` for binding
+
+---
+
+## Safety Properties
+
+- **State machine validation** — Illegal transitions rejected at compile/runtime
+- **No lock poisoning** — All locks use recovery pattern
+- **No SQL injection** — Parameterized queries throughout
+- **No UTF-8 slicing** — No byte-level string operations
+- **Overflow protection** — `saturating_add` for all accumulations
+
+---
+
+## Code Location
+
+- `src/arena/mod.rs` — Module entry point
+- `src/arena/manager.rs` — Arena lifecycle and coordination
+- `src/arena/handle.rs` — Permission-restricted arena access
+- `src/arena/aggregate.rs` — State aggregation
+- `src/arena/types.rs` — Core types and state machine
+- `src/arena/events.rs` — Event definitions
+- `src/arena/storage.rs` — Persistence layer
+
+## See Also
+
+- [Agent Runtime](./agent-runtime) — How agents spawn and manage tasks
+- [Event System](./event-system) — Event distribution patterns

@@ -1,0 +1,140 @@
+---
+title: "A2A Protocol"
+description: "Agent-to-Agent protocol adapter for inter-agent communication and sub-agent spawning."
+---
+
+The `a2a` module provides the Agent-to-Agent (A2A) protocol adapter, enabling Aleph agents to communicate with each other and spawn sub-agents for collaborative task execution.
+
+## Overview
+
+A2A is a protocol for inter-agent communication that allows:
+- **Sub-agent spawning** — Create child agents for parallel task execution
+- **Agent-to-agent messaging** — Send messages between agents in the same system
+- **Task delegation** — Delegate sub-tasks to specialized agents
+- **Result aggregation** — Collect and merge results from multiple agents
+
+## Architecture
+
+```
+A2A Adapter
+  ├── Domain — Core A2A types and messages
+  ├── Port — Protocol interface definitions
+  ├── Service — Business logic for agent coordination
+  ├── Adapter — Concrete protocol implementations
+  ├── Config — A2A configuration
+  └── Sub-agent — Sub-agent lifecycle management
+```
+
+## Core Components
+
+### Domain
+
+Core types for A2A messaging:
+
+```rust
+// src/a2a/domain/mod.rs
+pub struct AgentMessage {
+    pub from: AgentId,
+    pub to: AgentId,
+    pub payload: MessagePayload,
+}
+
+pub enum MessagePayload {
+    TaskRequest { task: TaskSpec },
+    TaskResponse { result: TaskResult },
+    StatusUpdate { state: AgentState },
+}
+```
+
+### Service
+
+Orchestrates inter-agent communication:
+
+```rust
+// src/a2a/service/mod.rs
+pub struct A2AService {
+    adapter: Box<dyn A2AAdapter>,
+}
+
+impl A2AService {
+    pub async fn spawn_sub_agent(
+        &self,
+        spec: AgentSpec,
+    ) -> Result<AgentId>;
+    
+    pub async fn send_message(
+        &self,
+        msg: AgentMessage,
+    ) -> Result<()>;
+    
+    pub async fn collect_results(
+        &self,
+        task_id: TaskId,
+    ) -> Result<Vec<TaskResult>>;
+}
+```
+
+### Sub-Agent
+
+Manages sub-agent lifecycle:
+
+```rust
+// src/a2a/sub_agent/mod.rs
+pub struct SubAgentManager {
+    active: HashMap<AgentId, SubAgentHandle>,
+}
+
+impl SubAgentManager {
+    pub async fn spawn(
+        &mut self,
+        spec: AgentSpec,
+    ) -> Result<AgentId>;
+    
+    pub async fn terminate(
+        &mut self,
+        id: AgentId,
+    ) -> Result<()>;
+}
+```
+
+## Message Flow
+
+```
+Parent Agent                    A2A Service                    Sub-Agent
+     │                              │                              │
+     │── spawn(spec) ──────────────▶│                              │
+     │                              │── create ───────────────────▶│
+     │                              │◀─ AgentId ───────────────────│
+     │◀─ AgentId ───────────────────│                              │
+     │                              │                              │
+     │── send(task) ───────────────▶│── forward ──────────────────▶│
+     │                              │                              │
+     │                              │◀─ result ────────────────────│
+     │◀─ TaskResult ────────────────│                              │
+```
+
+## Configuration
+
+A2A is configured through `config.toml`:
+
+```toml
+[a2a]
+enabled = true
+max_sub_agents = 10
+sub_agent_timeout = 300  # seconds
+```
+
+## Code Location
+
+- `src/a2a/mod.rs` — Module entry point
+- `src/a2a/domain/` — Core types and messages
+- `src/a2a/service/` — Business logic
+- `src/a2a/adapter/` — Protocol implementations
+- `src/a2a/sub_agent/` — Sub-agent lifecycle
+- `src/a2a/config.rs` — Configuration
+
+## See Also
+
+- [Orchestrator](./orchestrator) — Parent agent orchestration
+- [Teams](./teams) — Multi-agent team management
+- [ACP](./acp) — Agent Client Protocol for external tools

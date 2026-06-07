@@ -1,0 +1,435 @@
+---
+title: "Testing"
+description: "Test framework, test categories, running tests, mocking patterns, and CI pipeline."
+---
+
+Aleph uses the standard Rust testing ecosystem — `cargo test` as the runner, with additional frameworks for BDD-style integration tests and benchmarks. This page covers how to run tests, how they are organized, and how to write new ones.
+
+## Test Framework Stack
+
+| Tool | Purpose |
+|------|---------|
+| `cargo test` | Built-in test runner for unit and integration tests |
+| `criterion` | Statistical benchmarking (with async Tokio support) |
+| `cucumber` | BDD-style feature tests (Gherkin syntax) |
+| `tempfile` | Temporary directories for test isolation |
+| `serial_test` | Serialize tests that share global state |
+| `filetime` | File timestamp manipulation for watcher tests |
+
+These are declared in the `core/Cargo.toml` dev-dependencies:
+
+```toml
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+cucumber = { version = "0.21", features = ["macros"] }
+tempfile = "3.8"
+filetime = "0.2"
+serial_test = "3.0"
+aleph-sdk = { path = "../apps/shared" }
+aleph-protocol = { path = "../shared/protocol" }
+```
+
+## Test Categories
+
+### Unit Tests
+
+Unit tests live **inside** the source file they test, in a `#[cfg(test)]` module:
+
+```rust
+// src/memory/context.rs
+
+pub fn normalize_fact(raw: &str) -> String {
+    raw.trim().to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_fact_trims_whitespace() {
+        assert_eq!(normalize_fact("  hello  "), "hello");
+    }
+
+    #[test]
+    fn test_normalize_fact_lowercases() {
+        assert_eq!(normalize_fact("Hello World"), "hello world");
+    }
+}
+```
+
+Async unit tests use the `tokio::test` macro:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_session_creation() {
+        let manager = SessionManager::new_test().await;
+        let session = manager.create("test-user").await.unwrap();
+        assert!(!session.id.is_empty());
+    }
+}
+```
+
+### Integration Tests
+
+Integration tests live in `core/tests/` and test interactions across modules. They compile as separate crates, so they can only use the public API of `alephcore`.
+
+```
+core/tests/
+├── cucumber.rs          # BDD test runner (Gherkin features)
+├── features/            # .feature files for Cucumber tests
+└── ...
+```
+
+The Cucumber test runner is configured as a custom test harness:
+
+```toml
+[[test]]
+name = "cucumber"
+harness = false
+```
+
+### Doc Tests
+
+Documentation examples in `///` comments are compiled and run as tests:
+
+```rust
+/// Parses a task status from a string.
+///
+/// # Examples
+///
+/// ```
+/// use alephcore::poe::types::TaskStatus;
+///
+/// let status: TaskStatus = "pending".parse().unwrap();
+/// assert_eq!(status, TaskStatus::Pending);
+/// ```
+impl FromStr for TaskStatus {
+    // ...
+}
+```
+
+### Benchmarks
+
+Criterion benchmarks live in `core/benches/` and are declared in `Cargo.toml`:
+
+```toml
+[[bench]]
+name = "memory_benchmarks_simple"
+harness = false
+
+[[bench]]
+name = "approval_performance"
+harness = false
+```
+
+## Running Tests
+
+### All Tests
+
+```bash
+# Run all tests in the workspace
+cargo test --workspace
+
+# Run only tests in the core crate
+cargo test -p alephcore
+
+# Run tests in the CLI crate
+cargo test -p aleph-cli
+```
+
+### Specific Tests
+
+```bash
+# Run a single test by name
+cargo test test_normalize_fact_trims_whitespace
+
+# Run all tests in a module
+cargo test memory::context::tests
+
+# Run tests matching a pattern
+cargo test session
+
+# Run a specific integration test file
+cargo test --test cucumber
+```
+
+### Test Options
+
+```bash
+# Show stdout from passing tests (normally suppressed)
+cargo test -- --nocapture
+
+# Run tests sequentially (useful for debugging)
+cargo test -- --test-threads=1
+
+# List all test names without running them
+cargo test -- --list
+
+# Run ignored tests (typically slow or requiring external services)
+cargo test -- --ignored
+```
+
+### Benchmarks
+
+```bash
+# Run all benchmarks
+cargo bench
+
+# Run a specific benchmark
+cargo bench --bench memory_benchmarks_simple
+
+# Benchmark with HTML report
+cargo bench -- --output-format=bencher
+```
+
+Criterion writes HTML reports to `target/criterion/`.
+
+### Feature-Gated Tests
+
+Some tests require specific features to be enabled:
+
+```bash
+# Run tests that need the test-helpers feature
+cargo test --features test-helpers
+
+# Run tests for the gateway feature
+cargo test --features gateway
+
+# Run the full test suite with all features
+cargo test --all-features
+```
+
+## Test Fixtures and Helpers
+
+### Temporary Directories
+
+Use `tempfile` for tests that create files or databases:
+
+```rust
+use tempfile::TempDir;
+
+#[tokio::test]
+async fn test_database_persistence() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("test.db");
+
+    let store = SqliteStore::open(&db_path).await.unwrap();
+    store.insert_fact("test fact").await.unwrap();
+
+    // tmp is dropped at the end, cleaning up automatically
+}
+```
+
+### Serial Tests
+
+Tests that share global state (environment variables, singleton registries) use the `serial_test` crate:
+
+```rust
+use serial_test::serial;
+
+#[test]
+#[serial]
+fn test_config_from_env() {
+    std::env::set_var("ANTHROPIC_API_KEY", "test-key");
+    let config = Config::from_env().unwrap();
+    assert_eq!(config.api_key, "test-key");
+    std::env::remove_var("ANTHROPIC_API_KEY");
+}
+```
+
+### Test Configuration
+
+Tests that need a valid `Config` object without real API keys:
+
+```rust
+fn test_config() -> Config {
+    Config {
+        api_key: "test-key-not-real".into(),
+        base_url: "http://localhost:9999".into(),
+        model: "test-model".into(),
+        ..Config::default()
+    }
+}
+```
+
+## Mocking Patterns
+
+Aleph primarily uses **trait-based mocking** — defining traits for external boundaries and providing test implementations.
+
+### Trait-Based Test Doubles
+
+```rust
+// Production trait
+#[async_trait]
+pub trait MemoryStore: Send + Sync {
+    async fn store_fact(&self, fact: MemoryFact) -> Result<()>;
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<MemoryFact>>;
+}
+
+// Test implementation
+#[cfg(test)]
+pub struct MockMemoryStore {
+    facts: std::sync::Mutex<Vec<MemoryFact>>,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl MemoryStore for MockMemoryStore {
+    async fn store_fact(&self, fact: MemoryFact) -> Result<()> {
+        self.facts.lock().unwrap().push(fact);
+        Ok(())
+    }
+
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<MemoryFact>> {
+        let facts = self.facts.lock().unwrap();
+        Ok(facts.iter()
+            .filter(|f| f.content.contains(query))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+}
+```
+
+### In-Process Server for Integration Tests
+
+For gateway integration tests, spin up a real server in the test process:
+
+```rust
+#[tokio::test]
+async fn test_gateway_roundtrip() {
+    // Start server on a random port
+    let server = TestServer::start().await;
+    let addr = server.addr();
+
+    // Connect a client
+    let client = AlephClient::connect(&format!("ws://{addr}")).await.unwrap();
+
+    // Send a request
+    let response = client.send_message("hello").await.unwrap();
+    assert!(response.is_ok());
+}
+```
+
+## CI Pipeline
+
+### Recommended CI Steps
+
+A typical CI workflow for Aleph:
+
+```yaml
+# .github/workflows/ci.yml
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Format check
+      - run: cargo fmt --all -- --check
+
+      # Lint
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Type check (faster than full build)
+      - run: cargo check --workspace
+
+      # Tests
+      - run: cargo test --workspace
+
+      # Doc tests
+      - run: cargo doc --workspace --no-deps
+```
+
+### Key CI Checks
+
+| Check | Command | Purpose |
+|-------|---------|---------|
+| Format | `cargo fmt --all -- --check` | Consistent code formatting |
+| Lint | `cargo clippy --workspace -- -D warnings` | Catch common mistakes |
+| Type check | `cargo check --workspace` | Fast compilation verification |
+| Unit tests | `cargo test --workspace` | Correctness verification |
+| Doc build | `cargo doc --workspace --no-deps` | Ensure doc comments compile |
+
+## Test Coverage
+
+### Generating Coverage Reports
+
+Use `cargo-llvm-cov` for coverage reports:
+
+```bash
+# Install
+cargo install cargo-llvm-cov
+
+# Generate HTML report
+cargo llvm-cov --workspace --html
+
+# Open the report
+open target/llvm-cov/html/index.html
+
+# Generate LCOV format (for CI integration)
+cargo llvm-cov --workspace --lcov --output-path coverage.lcov
+```
+
+### Coverage Guidelines
+
+Aleph does not enforce a strict coverage percentage, but follows these principles:
+
+- **Core logic** (agent loop, memory, tools) should have thorough unit tests
+- **Parsing and serialization** (FromStr, Serialize/Deserialize) should test round-trips
+- **Error paths** should be tested as thoroughly as happy paths
+- **Integration boundaries** (database, network) should have integration tests with real or in-process backends
+- **UI code** (Control Plane) is tested manually — WASM test tooling is limited
+
+## Writing Good Tests
+
+### Naming Convention
+
+Test names describe the scenario and expected outcome:
+
+```rust
+#[test]
+fn parse_task_status_returns_pending_for_lowercase_input() { ... }
+
+#[test]
+fn session_manager_rejects_expired_tokens() { ... }
+
+#[test]
+fn memory_search_returns_empty_vec_when_no_facts_match() { ... }
+```
+
+### Test Structure (Arrange-Act-Assert)
+
+```rust
+#[tokio::test]
+async fn memory_store_returns_facts_sorted_by_relevance() {
+    // Arrange
+    let store = setup_test_store().await;
+    store.insert(fact("Rust is a systems language")).await.unwrap();
+    store.insert(fact("Python is interpreted")).await.unwrap();
+
+    // Act
+    let results = store.search("Rust programming", 10).await.unwrap();
+
+    // Assert
+    assert!(!results.is_empty());
+    assert!(results[0].content.contains("Rust"));
+}
+```
+
+### Avoid Test Anti-Patterns
+
+- Do not assert on exact string equality for AI-generated output
+- Do not depend on network availability in unit tests
+- Do not share mutable state across tests without `serial_test`
+- Do not use `sleep` for synchronization — use channels or condition variables

@@ -1,0 +1,273 @@
+---
+title: "1-2-3-4 Architecture Model"
+description: "The engineering skeleton: 1 Core, 2 Faces, 3 Limbs, 4 Nerves"
+---
+
+The 1-2-3-4 model is the central organizing principle of Aleph's engineering architecture. It answers one question: **how does a self-hosted AI assistant bridge the gap between pure reasoning and physical/digital action?**
+
+The answer is a strict separation of concerns across four numbered layers:
+
+- **1** Core (the Brain) -- reasoning, state, routing
+- **2** Faces (the Interfaces) -- how users interact with Aleph
+- **3** Limbs (the Execution Systems) -- how Aleph acts on the world
+- **4** Nerves (the Communication Protocols) -- how each layer talks to the Core
+
+```
+                          ┌───────────────────────┐
+                          │     2. FACES           │
+                          │  ┌─────────────────┐   │
+                          │  │  Unified Panel   │   │
+    User ────────────────▶│  │ (Leptos / WASM)  │   │
+                          │  └────────┬────────┘   │
+                          │           │ WebSocket   │
+                          │  ┌────────┴────────┐   │
+    Social Platforms ────▶│  │  Social Gateway  │   │
+                          │  │ (Telegram, etc.) │   │
+                          │  └────────┬────────┘   │
+                          └───────────┼────────────┘
+                    gRPC/NATS ────────┤
+                    WebSocket/RPC ────┤
+                                      │
+                          ┌───────────┴────────────┐
+                          │      1. CORE            │
+                          │  ┌─────────────────┐   │
+                          │  │   Reasoning      │   │
+                          │  │   State Mgmt     │   │
+                          │  │   Routing         │   │
+                          │  └────────┬────────┘   │
+                          └───────────┼────────────┘
+                                      │
+              ┌───────────────────────┼───────────────────────┐
+              │                       │                       │
+    ┌─────────┴──────────┐  ┌────────┴────────┐  ┌──────────┴─────────┐
+    │  Native (Muscles)  │  │   MCP (Tools)   │  │  Skills (Expertise) │
+    │  Desktop Bridge    │  │  Playwright,    │  │  PPT Expert,       │
+    │  Shell, OCR        │  │  Google Maps    │  │  Code Review       │
+    └────────────────────┘  └─────────────────┘  └────────────────────┘
+              │                       │                       │
+              └───────────────────────┴───────────────────────┘
+                              3. LIMBS
+```
+
+## 1 Core -- The Brain
+
+The Rust Core is Aleph's soul. It is responsible for exactly three things and nothing else:
+
+| Responsibility | Description |
+|----------------|-------------|
+| **Reasoning** | Decide what to do next. The Core orchestrates the [Harness](./harness) (Observe-Think-Act-Feedback), invokes LLM providers, and runs the [Prompt System](./prompt-system) for goal-oriented execution. |
+| **State Management** | Maintain conversation context, task graphs, [session keys](./routing), and the [memory system](./memory). |
+| **Routing** | Dispatch work to the correct execution system -- native tools, MCP servers, or skill plugins -- based on task requirements. |
+
+### What the Core does NOT do
+
+The Core never renders UI, never calls platform-specific APIs (AppKit, Vision, CoreGraphics), and never bundles heavy third-party libraries for niche functionality. These are architectural redlines (R1, R3) that keep the Core lightweight and portable.
+
+```rust
+// The Core defines capability contracts as traits.
+// Physical implementations live in the Desktop Bridge.
+//
+// Example: the Core can request a screenshot, but the
+// actual CGWindowListCreateImage call happens in Tauri.
+pub trait DesktopCapability: Send + Sync {
+    async fn screenshot(&self, region: Option<ScreenRegion>) -> Result<Vec<u8>>;
+    async fn click(&self, x: f64, y: f64, button: MouseButton) -> Result<()>;
+    async fn type_text(&self, text: &str) -> Result<()>;
+}
+```
+
+## 2 Faces -- The Interfaces
+
+Aleph presents two faces to the world. Both are pure I/O layers -- they convert user input into JSON-RPC calls and render responses back to the user. Neither face contains business logic (redline R4).
+
+### Face 1: Unified Panel (Leptos/WASM)
+
+A single Leptos codebase compiled to WASM serves as the UI across all platforms:
+
+| Platform | Host | Notes |
+|----------|------|-------|
+| Web | Browser | Served by the Aleph server |
+| macOS | Tauri shell | Menu-bar-first, Halo floating window |
+| Windows | Tauri shell | System tray integration |
+| Linux | Tauri shell | Standard desktop window |
+
+The native shell (Tauri) provides only the window container, system tray, and native animations. All complex UI -- settings pages, conversation views, debug panels -- lives in the WASM layer (redline R2).
+
+### Face 2: Social Bot Gateway
+
+The [Gateway](./gateway) connects Aleph to messaging platforms as a persistent background intelligence:
+
+- **Telegram** -- bot interface via teloxide
+- **Discord** -- bot interface via serenity
+- **iMessage** -- bridged via AppleScript/Shortcuts
+
+The Gateway translates platform-specific message formats into Aleph's unified JSON-RPC protocol. A single Aleph Core can serve multiple social channels simultaneously, each with independent [session routing](./routing).
+
+## 3 Limbs -- The Execution Systems
+
+Limbs are how Aleph acts on the world. There are three categories, ordered by proximity to the system:
+
+### Limb 1: Native Capabilities (The Muscles)
+
+Direct system control through the [Desktop Bridge](./desktop-bridge) and shell execution:
+
+| Capability | Implementation | Protocol |
+|------------|---------------|----------|
+| Screenshots / OCR | Desktop Bridge (Tauri) | UDS JSON-RPC |
+| Mouse / Keyboard | Desktop Bridge (Tauri) | UDS JSON-RPC |
+| Window Management | Desktop Bridge (Tauri) | UDS JSON-RPC |
+| Canvas Overlay | Desktop Bridge (Tauri) | UDS JSON-RPC |
+| Shell Commands | Built-in Exec system | Direct |
+
+The Desktop Bridge runs as a separate Tauri process. The Core communicates with it over a Unix Domain Socket using JSON-RPC 2.0, maintaining the Brain-Limb separation principle.
+
+### Limb 2: MCP (The External Tools)
+
+The Model Context Protocol lets Aleph leverage the broader tool ecosystem:
+
+```
+Core ──JSON-RPC──▶ MCP Server (Playwright)
+Core ──JSON-RPC──▶ MCP Server (Google Maps)
+Core ──JSON-RPC──▶ MCP Server (GitHub)
+```
+
+MCP servers run as separate processes. Aleph's `mcp/` module handles server lifecycle, capability discovery, and JSON-RPC transport.
+
+### Limb 3: Skills and Plugins (The Expertise)
+
+Skills represent domain knowledge and specialized capabilities:
+
+| Skill Type | Runtime | Example |
+|------------|---------|---------|
+| WASM Plugin | Extism sandbox | Data transformation, custom logic |
+| Node.js Plugin | IPC subprocess | Complex integrations |
+| Python Skill | Managed subprocess | Data analysis, ML pipelines |
+| Bash Skill | Shell execution | System administration |
+
+Skills are the future growth vector for Aleph. The architecture is the skeleton; skills are the muscle and blood.
+
+## 4 Nerves -- The Communication Protocols
+
+Every interaction between the Core and its Faces or Limbs travels through one of four nerve channels:
+
+| Nerve | Channel | Protocol | Purpose |
+|-------|---------|----------|---------|
+| **N1** | Core -- UI | WebSocket + JSON-RPC | Drive the Unified Panel. Bidirectional: the UI sends user input, the Core streams responses and events. |
+| **N2** | Core -- Desktop Bridge | UDS + JSON-RPC 2.0 | Drive desktop control. One request-response per connection over `~/.aleph/run/desktop-bridge.sock`. |
+| **N3** | Core -- Gateway | gRPC / NATS | Drive social bots. High-throughput, supports fan-out for multi-channel delivery. |
+| **N4** | Core -- MCP | JSON-RPC over stdio/SSE | Drive external tools. Standard MCP transport, one server per tool domain. |
+
+### Protocol Selection Rationale
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        PROTOCOL MAP                                  │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  N1 (WebSocket)     Best for: real-time bidirectional streaming     │
+│  ────────────────   Why: UI needs live token streaming,             │
+│                     event-driven updates, low latency               │
+│                                                                      │
+│  N2 (UDS/IPC)       Best for: local high-frequency control          │
+│  ────────────────   Why: Desktop Bridge is co-located,              │
+│                     UDS avoids TCP overhead, sub-ms latency         │
+│                                                                      │
+│  N3 (gRPC/NATS)     Best for: structured service-to-service        │
+│  ────────────────   Why: Gateway may run on different host,         │
+│                     needs schema evolution, fan-out                  │
+│                                                                      │
+│  N4 (JSON-RPC)      Best for: standardized tool integration         │
+│  ────────────────   Why: MCP ecosystem uses JSON-RPC over           │
+│                     stdio or SSE, Aleph follows the standard        │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+## Architectural Redlines
+
+The 1-2-3-4 model is enforced by seven architectural redlines. Violations are not merged:
+
+| Redline | Rule | Consequence |
+|---------|------|-------------|
+| **R1** | Brain-Limb Separation | `core/src` never imports platform APIs. The Core defines traits; the Desktop Bridge implements them. |
+| **R2** | Single Source of UI Truth | Tauri shell has no business-logic UI. All complex views are in Leptos/WASM. |
+| **R3** | Core Minimalism | No heavy third-party crates for niche functionality. Prefer Skills or MCP. |
+| **R4** | I/O-Only Interfaces | Faces never persist data, retrieve memories, or plan tasks. |
+| **R5** | Menu Bar First | macOS defaults to menu-bar mode with Halo overlay. Full windows only when needed. |
+| **R6** | AI Comes to You | Reduce context switching. Halo, notifications, inline suggestions. |
+| **R7** | One Core, Many Shells | Rust Core is the single brain. UI is unified via WASM. Native shells only wrap. |
+
+## Data Flow: End-to-End Request
+
+Here is how a user message flows through the 1-2-3-4 model:
+
+```
+1. User sends message via Telegram
+   │
+   ▼
+2. Gateway (Face 2) receives message, resolves route
+   │  → SessionKey: agent:main:telegram:dm:user123
+   │
+   ▼
+3. Core (Brain) receives JSON-RPC request
+   │  → Agent Loop: Observe → Think → Act
+   │  → Thinker calls LLM provider
+   │  → LLM decides: "take a screenshot, then OCR it"
+   │
+   ▼
+4. Core dispatches to Desktop Bridge (Limb 1, Nerve N2)
+   │  → UDS JSON-RPC: desktop.screenshot → base64 image
+   │  → UDS JSON-RPC: desktop.ocr → extracted text
+   │
+   ▼
+5. Core continues reasoning with OCR results
+   │  → LLM generates final response
+   │
+   ▼
+6. Core sends response back through Gateway (Nerve N3)
+   │
+   ▼
+7. Gateway delivers response to Telegram
+   │
+   ▼
+8. User sees the reply in their chat
+```
+
+## Directory Mapping
+
+Each layer of the 1-2-3-4 model maps to specific directories in the codebase:
+
+```
+aleph/
+├── src/                         # 1. CORE (Brain)
+│   ├── harness/                 #    Reasoning: Observe-Think-Act-Feedback
+│   ├── thinker/                 #    Reasoning: LLM interaction
+│   ├── dispatcher/              #    Reasoning: Task orchestration
+│   ├── routing/                 #    Routing: Session keys
+│   ├── memory/                  #    State: Memory system
+│   ├── resilience/              #    State: Task persistence
+│   ├── gateway/                 #    2. FACE 2 (Gateway server)
+│   │   ├── handlers/            #       RPC method handlers
+│   │   ├── interfaces/          #       Telegram, Discord, iMessage
+│   │   └── security/            #       Auth, pairing, devices
+│   ├── desktop/                 #    4. NERVE N2 (Bridge client)
+│   ├── mcp/                     #    4. NERVE N4 (MCP client)
+│   ├── tools/                   #    3. LIMB (Tool definitions)
+│   ├── builtin_tools/           #    3. LIMB 1 (Native tools)
+│   └── extension/               #    3. LIMB 3 (Plugin runtime)
+├── apps/
+│   ├── desktop/                 #    3. LIMB 1 (Desktop Bridge)
+│   └── cli/                     #    2. FACE 1 (CLI client)
+└── web/                         #    2. FACE 1 (Leptos/WASM Panel)
+```
+
+## Design Philosophy
+
+The 1-2-3-4 model reflects a core belief: **an AI assistant should be a brain with swappable limbs, not a monolith.** By separating reasoning from execution, Aleph can:
+
+- Add new channels (Face) without touching the Core
+- Add new capabilities (Limb) without touching the UI
+- Upgrade communication protocols (Nerve) independently
+- Run the Core on a headless server while the Faces and Limbs run elsewhere
+
+This is not microservices for the sake of it. It is a pragmatic separation that keeps a complex system maintainable by a small team. The architecture is now stable -- future work fills in capabilities, not restructures the skeleton.

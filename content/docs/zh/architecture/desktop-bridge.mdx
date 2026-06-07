@@ -1,0 +1,314 @@
+---
+title: "桌面桥接"
+description: "UDS JSON-RPC 2.0 协议，用于桌面功能"
+---
+
+桌面桥接赋予 Aleph 物理世界的能力：截屏、通过 OCR 读取屏幕文字、点击按钮、输入文字、管理窗口和渲染画布覆盖层。它是 [1-2-3-4 模型](./1-2-3-4-model) 中 "肌肉" 肢体的主要实现。
+
+## 架构
+
+桥接遵循脑-肢体分离原则（红线 R1）：Rust 核心从不直接调用平台特定的 API。相反，它通过 Unix Domain Socket 向基于 Tauri 的桌面应用程序发送 JSON-RPC 请求，由后者实现实际的系统调用。
+
+```
+┌──────────────────────┐         UDS          ┌──────────────────────┐
+│     Aleph Core       │  ──JSON-RPC 2.0──▶   │   Desktop Bridge     │
+│     (Brain)          │                       │   (Tauri App)        │
+│                      │                       │                      │
+│  DesktopBridgeClient │  ◀──JSON-RPC──────   │  AppKit / Vision /   │
+│  (src/desktop/)      │    (response)         │  CoreGraphics / ...  │
+└──────────────────────┘                       └──────────────────────┘
+         Rust Core                                  Native Platform
+```
+
+这种分离意味着：
+
+- 核心可以在没有桌面能力的无头服务器上运行
+- 桌面能力可以独立于核心进行升级
+- 平台特定代码隔离在 Tauri 应用中，而不是在 `src` 中
+
+## Socket 路径解析
+
+桥接支持两种部署模式，每种模式有不同的 socket 路径：
+
+| Mode | Socket Path | Description |
+|------|-------------|-------------|
+| **Managed** | `~/.aleph/run/desktop-bridge.sock` | Bridge launched by `BridgeSupervisor` (daemon mode) |
+| **Standalone** | `~/.aleph/bridge.sock` | Bridge launched manually by the user |
+
+`DesktopBridgeClient::new()` 会探测两个路径，优先使用托管 socket：
+
+```rust
+pub fn new() -> Self {
+    let home = dirs::home_dir().expect("cannot resolve home directory");
+    let managed = home.join(".aleph/run/desktop-bridge.sock");
+    let standalone = home.join(".aleph/bridge.sock");
+
+    // Prefer managed socket when it exists
+    let socket_path = if managed.exists() { managed } else { standalone };
+    Self { socket_path }
+}
+```
+
+## 协议
+
+所有交互都通过换行分隔的 UDS 流上的 JSON-RPC 2.0 协议进行。每个请求打开一个新连接，发送一个请求，读取一个响应，然后关闭。
+
+### 请求格式
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "method": "desktop.screenshot",
+    "params": {
+        "region": null
+    }
+}
+```
+
+### 响应格式
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "result": {
+        "image_base64": "iVBORw0KGgo...",
+        "width": 2560,
+        "height": 1600
+    }
+}
+```
+
+### 错误格式
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "error": {
+        "code": -32000,
+        "message": "No focused window"
+    }
+}
+```
+
+### 超时
+
+所有请求都有 30 秒超时。如果桥接在此窗口内未响应，客户端返回 `DesktopError::Protocol` 错误。
+
+## 能力
+
+桥接在四个类别中提供能力：**感知**、**动作**、**画布**和**内部**。
+
+### 感知方法
+
+这些方法让 Aleph "看到" 屏幕：
+
+| Method | Parameters | Returns | Description |
+|--------|-----------|---------|-------------|
+| `desktop.screenshot` | `region?: ScreenRegion` | Base64 image | Capture full screen or a specific region |
+| `desktop.ocr` | `image_base64?: String` | Extracted text | Run OCR on a provided image or current screen |
+| `desktop.ax_tree` | `app_bundle_id?: String` | Accessibility tree JSON | Get the accessibility hierarchy of an app |
+| `desktop.snapshot` | `app_bundle_id?: String`, `max_depth?: u32`, `include_non_interactive?: bool` | Snapshot with elements | Get a UI snapshot with resolved elements |
+
+### 动作方法
+
+这些方法让 Aleph 在桌面上"执行"动作：
+
+| Method | Parameters | Description |
+|--------|-----------|-------------|
+| `desktop.click` | `ref?: String`, `x?: f64`, `y?: f64`, `button: String` | Click at coordinates or a ref element |
+| `desktop.double_click` | `ref?: String`, `x?: f64`, `y?: f64`, `button: String` | Double-click |
+| `desktop.type_text` | `ref?: String`, `text: String` | Type text into focused element or ref |
+| `desktop.key_combo` | `keys: [String]` | Press a key combination (e.g., `["cmd", "c"]`) |
+| `desktop.scroll` | `ref?: String`, `x?: f64`, `y?: f64`, `delta_x: f64`, `delta_y: f64` | Scroll at position or ref |
+| `desktop.drag` | `start_ref?`, `start_x?`, `start_y?`, `end_ref?`, `end_x?`, `end_y?`, `duration_ms?` | Drag from start to end |
+| `desktop.hover` | `ref?: String`, `x?: f64`, `y?: f64` | Move mouse to position |
+| `desktop.paste` | `text: String` | Paste text via clipboard |
+| `desktop.launch_app` | `bundle_id: String` | Launch an application |
+| `desktop.window_list` | (none) | List all visible windows |
+| `desktop.focus_window` | `window_id: u32` | Bring a window to front |
+
+### 画布方法
+
+画布提供一个 HTML 覆盖窗口，用于丰富的视觉输出：
+
+| Method | Parameters | Description |
+|--------|-----------|-------------|
+| `desktop.canvas_show` | `html: String`, `position: CanvasPosition` | Show an HTML overlay at a screen position |
+| `desktop.canvas_hide` | (none) | Hide the canvas overlay |
+| `desktop.canvas_update` | `patch: JSON` | Incrementally update the canvas content |
+
+### 内部方法
+
+| Method | Parameters | Description |
+|--------|-----------|-------------|
+| `desktop.ping` | (none) | Health check, returns `"pong"` |
+
+## 请求类型
+
+所有请求变体都定义在 `DesktopRequest` 枚举中：
+
+```rust
+pub enum DesktopRequest {
+    // Perception
+    Screenshot { region: Option<ScreenRegion> },
+    Ocr { image_base64: Option<String> },
+    AxTree { app_bundle_id: Option<String> },
+    Snapshot { app_bundle_id: Option<String>, max_depth: Option<u32>,
+              include_non_interactive: Option<bool> },
+
+    // Action (coordinate or ref-based)
+    Click { ref_id: Option<String>, x: Option<f64>, y: Option<f64>,
+            button: MouseButton },
+    DoubleClick { ref_id: Option<String>, x: Option<f64>, y: Option<f64>,
+                  button: MouseButton },
+    TypeText { ref_id: Option<String>, text: String },
+    KeyCombo { keys: Vec<String> },
+    Scroll { ref_id: Option<String>, x: Option<f64>, y: Option<f64>,
+             delta_x: f64, delta_y: f64 },
+    Drag { start_ref: Option<String>, start_x: Option<f64>,
+           start_y: Option<f64>, end_ref: Option<String>,
+           end_x: Option<f64>, end_y: Option<f64>,
+           duration_ms: Option<u64> },
+    Hover { ref_id: Option<String>, x: Option<f64>, y: Option<f64> },
+    Paste { text: String },
+    LaunchApp { bundle_id: String },
+    WindowList,
+    FocusWindow { window_id: u32 },
+
+    // Canvas
+    CanvasShow { html: String, position: CanvasPosition },
+    CanvasHide,
+    CanvasUpdate { patch: serde_json::Value },
+
+    // Internal
+    Ping,
+}
+```
+
+## 元素引用
+
+动作方法支持两种目标模式：**基于坐标**和**基于引用**。基于引用的目标使用先前 `desktop.snapshot` 调用中的元素 ID：
+
+```rust
+pub struct ResolvedElement {
+    pub ref_id: RefId,       // e.g., "e1", "e12"
+    pub role: String,        // UI role (button, text field, etc.)
+    pub label: Option<String>, // Accessible label
+    pub frame: ScreenRegion, // Bounding box on screen
+}
+```
+
+工作流程：
+
+```
+1. desktop.snapshot → { elements: [
+     { ref_id: "e1", role: "button", label: "Submit", frame: {...} },
+     { ref_id: "e2", role: "textField", label: "Email", frame: {...} },
+   ]}
+
+2. desktop.click { ref: "e1" }   → clicks the Submit button
+3. desktop.type_text { ref: "e2", text: "user@example.com" }
+```
+
+这比原始坐标更可靠，因为：
+
+- 元素可以通过语义身份定位
+- 桥接在点击时将引用解析为当前坐标
+- 快照和动作之间的布局变更会自动处理
+
+## 支持类型
+
+```rust
+/// A rectangular region on screen (pixels)
+pub struct ScreenRegion {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Mouse button variants
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// Canvas overlay position and size
+pub struct CanvasPosition {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Statistics about a UI snapshot
+pub struct SnapshotStats {
+    pub total_elements: u32,
+    pub interactive: u32,
+    pub max_depth: u32,
+}
+```
+
+## 客户端使用
+
+`DesktopBridgeClient` 提供 Rust 端的 API：
+
+```rust
+let client = DesktopBridgeClient::new();
+
+// Check if bridge is available
+if !client.is_available() {
+    return Err("Desktop Bridge not running");
+}
+
+// Take a screenshot
+let result = client.send(DesktopRequest::Screenshot {
+    region: None,
+}).await?;
+
+// Click a button
+client.send(DesktopRequest::Click {
+    ref_id: Some("e7".into()),
+    x: None,
+    y: None,
+    button: MouseButton::Left,
+}).await?;
+
+// Type text
+client.send(DesktopRequest::TypeText {
+    ref_id: None,
+    text: "Hello, world!".into(),
+}).await?;
+```
+
+## 错误处理
+
+```rust
+pub enum DesktopError {
+    /// Bridge socket does not exist -- app not running
+    AppNotRunning,
+
+    /// Connection was refused -- app crashed or socket stale
+    ConnectionFailed(std::io::Error),
+
+    /// Protocol error (timeout, malformed response)
+    Protocol(String),
+
+    /// Operation error (bridge returned an error)
+    Operation(String),
+}
+```
+
+## 模块结构
+
+```
+src/desktop/
+├── mod.rs      # Module entry, re-exports
+├── types.rs    # DesktopRequest, DesktopResponse, ScreenRegion, etc.
+├── client.rs   # DesktopBridgeClient: UDS connection and JSON-RPC
+└── error.rs    # DesktopError types
+```

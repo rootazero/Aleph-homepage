@@ -1,0 +1,231 @@
+---
+title: "plugins.*"
+description: "插件管理 RPC 方法"
+---
+
+插件方法管理插件系统 —— 加载、卸载、列出和配置扩展 Aleph 能力的插件。插件可以添加工具、处理器、事件监听器和自定义行为。
+
+## 方法
+
+### plugins.list
+
+列出所有已加载的插件及其状态。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "plugins.list",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "plugins": [
+      {
+        "id": "filesystem",
+        "name": "File System Plugin",
+        "version": "1.0.0",
+        "enabled": true,
+        "tools": ["read_file", "write_file", "list_dir"],
+        "handlers": ["file_change_event"]
+      }
+    ]
+  }
+}
+```
+
+### plugins.status
+
+获取特定插件的详细状态。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "plugins.status",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "id": "filesystem",
+    "name": "File System Plugin",
+    "version": "1.0.0",
+    "enabled": true,
+    "loaded_at": "2024-01-15T10:30:00Z",
+    "tools_count": 3,
+    "handlers_count": 1
+  }
+}
+```
+
+### plugins.load
+
+从路径或插件 ID 加载插件。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "plugins.load",
+  "params": {
+    "path": "~/.aleph/plugins/custom_plugin"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "loaded": true,
+    "plugin_id": "custom_plugin"
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `path` | string | 是* | 插件目录或文件的路径 |
+| `plugin_id` | string | 是* | 插件标识符（path 的替代） |
+
+*需要 `path` 或 `plugin_id` 中的一个。
+
+### plugins.unload
+
+通过 ID 卸载插件。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "plugins.unload",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "unloaded": true
+  }
+}
+```
+
+### plugins.reload
+
+重新加载插件（先卸载再加载）。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "plugins.reload",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "reloaded": true
+  }
+}
+```
+
+### plugins.enable
+
+启用先前禁用的插件。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "plugins.enable",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+### plugins.disable
+
+禁用插件而不卸载它。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "plugins.disable",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+## 插件结构
+
+插件从 `~/.aleph/plugins/` 加载，通常包含：
+
+```
+my_plugin/
+  plugin.toml       # 插件清单
+  src/
+    lib.rs          # 插件入口点
+  skills/           # 可选捆绑技能
+```
+
+**plugin.toml 示例：**
+
+```toml
+[plugin]
+id = "my_plugin"
+name = "My Plugin"
+version = "1.0.0"
+description = "Does something useful"
+
+[plugin.tools]
+provides = ["my_tool"]
+
+[plugin.events]
+listens = ["session.start"]
+```
+
+## 参见
+
+- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
+- [架构：插件](/docs/zh/architecture/plugins) -- 插件系统架构

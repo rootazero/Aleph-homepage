@@ -1,0 +1,135 @@
+---
+title: "Tool Infrastructure"
+description: "Tool system infrastructure including schema generation, execution, repair, registry, and middleware pipeline."
+---
+
+The `tools` module provides the infrastructure for Aleph's tool system. It handles tool registration, schema generation, execution, repair, and the middleware pipeline that wraps tool calls.
+
+## Design Philosophy
+
+1. **Schema-driven** — All tools declare their input schema via JSON Schema
+2. **Repair-friendly** — Failed tool calls can be automatically repaired and retried
+3. **Middleware pipeline** — Permission checks, logging, and metrics happen in layered middleware
+4. **Type-safe execution** — Strongly typed tool traits with dynamic dispatch support
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      Tool Infrastructure                     │
+├──────────────────────────────────────────────────────────────┤
+│  Registry                                                    │
+│  ├─ register() — Add tool to registry                        │
+│  ├─ get() — Lookup by name                                   │
+│  └─ list() — All registered tools                            │
+├──────────────────────────────────────────────────────────────┤
+│  Schema                                                      │
+│  ├─ JSON Schema generation from Rust types                   │
+│  ├─ Strictification (remove LLM-unfriendly fields)           │
+│  └─ YAML serialization with injection protection             │
+├──────────────────────────────────────────────────────────────┤
+│  Execution                                                   │
+│  ├─ ToolExecutor — Async execution with timeout              │
+│  ├─ ExecutionContext — Workspace, env, permissions           │
+│  └─ Repair — Auto-fix common failures (case, snake_case)     │
+├──────────────────────────────────────────────────────────────┤
+│  Middleware Pipeline                                         │
+│  ├─ Permission layer — Capability checks                     │
+│  ├─ Audit layer — Logging and metrics                        │
+│  └─ Rate limit layer — Throttling                            │
+├──────────────────────────────────────────────────────────────┤
+│  Runtime                                                     │
+│  ├─ Docker sandbox — Containerized execution                 │
+│  ├─ VirtualFs — Environment-level isolation                  │
+│  └─ Scoped execution — Temporary permission elevation        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Tool Traits
+
+```rust
+/// Core tool trait
+pub trait AlephTool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn schema(&self) -> Value; // JSON Schema
+    async fn execute(&self, input: Value, ctx: &ExecutionContext) -> ToolResult;
+}
+```
+
+## Schema Generation
+
+Tool schemas are generated from Rust types using reflection:
+
+```rust
+// Derive macro generates JSON Schema
+#[derive(ToolSchema)]
+pub struct SearchInput {
+    pub query: String,
+    pub limit: Option<u32>,
+}
+```
+
+The `schema_strictify` module removes LLM-unfriendly fields (like `format`, `pattern` on complex types) to reduce token usage.
+
+## Repair System
+
+When a tool call fails, the repair system attempts common fixes:
+
+1. **Case correction** — `getMP3File` → `get_mp3_file`
+2. **Unicode handling** — Proper `to_lowercase()` for non-ASCII
+3. **Schema validation** — Check input against schema before execution
+
+## Middleware Pipeline
+
+Tool calls flow through middleware layers:
+
+```
+User Request
+    │
+    ▼
+┌─────────────┐
+│  Permission │ ← Capability checks
+│   Layer     │
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   Audit     │ ← Logging, metrics
+│   Layer     │
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   Tool      │ ← Actual execution
+│  Execution  │
+└─────────────┘
+    │
+    ▼
+  Result
+```
+
+## Docker Sandbox
+
+For untrusted tools, Docker provides containerized execution:
+
+- **Allowlist** — Only explicitly allowed Docker flags are permitted
+- **Volume mounts** — Workspace directory mounted read-write
+- **Network** — Configurable network access (enabled/disabled)
+
+## Key Source Files
+
+- `src/tools/mod.rs` — Module overview
+- `src/tools/traits.rs` — Core tool traits
+- `src/tools/registry.rs` — Tool registry
+- `src/tools/schema_strictify.rs` — Schema optimization
+- `src/tools/repair.rs` — Failure repair
+- `src/tools/execution_context.rs` — Execution context
+- `src/tools/middleware/permission/` — Permission middleware
+- `src/tools/runtime.rs` — Docker sandbox
+
+## See Also
+
+- [Builtin Tools](/docs/concepts/builtin-tools) — Specific tool implementations
+- [Capability System](/docs/concepts/capability-system) — Permission framework
+- [Execution Engine](/docs/concepts/execution-engine) — Command sandboxing

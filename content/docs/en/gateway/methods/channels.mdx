@@ -1,0 +1,192 @@
+---
+title: "channels.*"
+description: "Communication channel management RPC methods"
+---
+
+Channel methods manage communication channels — connections to external messaging platforms and notification services (Discord, Slack, email, etc.).
+
+## Methods
+
+### channels.list
+
+List all configured channels.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "channels.list",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "channels": [
+      {
+        "id": "discord-main",
+        "name": "Discord Main",
+        "type": "discord",
+        "status": "connected",
+        "guild_id": "123456789"
+      },
+      {
+        "id": "slack-alerts",
+        "name": "Slack Alerts",
+        "type": "slack",
+        "status": "disconnected"
+      }
+    ]
+  }
+}
+```
+
+### channels.status
+
+Get status of a specific channel.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "channels.status",
+  "params": {
+    "channel_id": "discord-main"
+  }
+}
+```
+
+### channels.add
+
+Add a new channel configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "channels.add",
+  "params": {
+    "id": "discord-second",
+    "name": "Discord Secondary",
+    "type": "discord",
+    "config": {
+      "token": "bot-token-here",
+      "guild_id": "987654321"
+    }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Unique channel identifier |
+| `name` | string | Yes | Display name |
+| `type` | string | Yes | Channel type: `"discord"`, `"slack"`, `"email"`, `"webhook"` |
+| `config` | object | Yes | Type-specific configuration |
+
+### channels.update
+
+Update a channel configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "channels.update",
+  "params": {
+    "channel_id": "discord-main",
+    "config": {
+      "token": "new-bot-token"
+    }
+  }
+}
+```
+
+### channels.delete
+
+Delete a channel configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "channels.delete",
+  "params": {
+    "channel_id": "slack-alerts"
+  }
+}
+```
+
+### channels.connect
+
+Connect a disconnected channel.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "channels.connect",
+  "params": {
+    "channel_id": "slack-alerts"
+  }
+}
+```
+
+### channels.disconnect
+
+Disconnect a connected channel.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "channels.disconnect",
+  "params": {
+    "channel_id": "discord-main"
+  }
+}
+```
+
+### channels.send
+
+Send a message through a channel.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "channels.send",
+  "params": {
+    "channel_id": "discord-main",
+    "message": "Hello from Aleph!",
+    "target": "general"
+  }
+}
+```
+
+## Channel Types
+
+| Type | Description | Config Required |
+|------|-------------|----------------|
+| `discord` | Discord bot integration | `token`, `guild_id` |
+| `slack` | Slack bot/app integration | `token`, `channel` |
+| `email` | Email notifications | `smtp_host`, `from_address` |
+| `webhook` | Generic HTTP webhooks | `url`, `headers` |
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

@@ -1,0 +1,334 @@
+---
+title: "Building"
+description: "Build Aleph from source — prerequisites, workspace structure, feature flags, and release profiles."
+---
+
+This guide covers everything you need to compile Aleph from source, from installing the Rust toolchain to producing optimized release binaries.
+
+## Prerequisites
+
+### Rust Toolchain
+
+Aleph requires **Rust 1.92 or later** (edition 2021). Install via [rustup](https://rustup.rs/):
+
+```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Ensure the stable toolchain is active
+rustup default stable
+
+# Verify version
+rustc --version   # must be >= 1.92
+cargo --version
+```
+
+If you plan to build the **Control Plane UI** (the embedded web dashboard), you also need the WASM target:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli
+```
+
+### System Dependencies
+
+Aleph bundles most of its dependencies via Cargo, but a few system-level libraries are needed:
+
+| Dependency | Purpose | Notes |
+|------------|---------|-------|
+| **SQLite** | Session storage, memory DB | Bundled via `rusqlite` `bundled` feature — no system install needed |
+| **OpenSSL** | TLS for HTTP clients | macOS: provided by the system. Linux: `libssl-dev` (Debian) or `openssl-devel` (Fedora) |
+| **pkg-config** | Locating system libraries | Linux only: `apt install pkg-config` or `dnf install pkgconf` |
+| **C compiler** | Native dependency compilation | Xcode Command Line Tools (macOS) or `build-essential` (Linux) |
+| **Node.js + npm** | Control Plane CSS build (optional) | Only required when building with the `control-plane` feature |
+
+On **macOS**, the Xcode Command Line Tools provide everything:
+
+```bash
+xcode-select --install
+```
+
+On **Debian/Ubuntu**:
+
+```bash
+sudo apt update
+sudo apt install build-essential pkg-config libssl-dev
+```
+
+### Environment Variables
+
+The server requires an API key at runtime (not at build time):
+
+```bash
+# Set in your shell profile or ~/.aleph/config.toml
+export ANTHROPIC_API_KEY="your-api-key"
+```
+
+## Workspace Structure
+
+Aleph uses a **Cargo workspace** with members organized by role:
+
+```
+Aleph/
+├── Cargo.toml                  # Workspace root + alephcore package
+├── src/                        # alephcore — main library + server binary
+│   ├── lib.rs                  # Library crate entrypoint
+│   └── bin/aleph-server/       # Server binary
+├── desktop/
+│   ├── shared/                 # DesktopCapability trait + IPC protocol
+│   ├── macos/                  # macOS native implementation
+│   ├── linux/                  # Linux native implementation
+│   └── windows/                # Windows native implementation
+├── shared/
+│   ├── protocol/               # aleph-protocol — shared types
+│   ├── logging/                # Logging infrastructure
+│   ├── ui_logic/               # Shared UI logic
+│   └── client/                 # Shared client utilities
+└── interfaces/
+    ├── cli/                    # Terminal client
+    ├── tui/                    # TUI client
+    └── webchat/                # Web-based chat interface (WASM)
+```
+
+The workspace root `Cargo.toml` defines shared dependency versions so all members stay in sync:
+
+```toml
+[workspace]
+resolver = "2"
+members = [
+    "desktop/shared",
+    "desktop/macos",
+    "desktop/linux",
+    "desktop/windows",
+    "shared/logging",
+    "shared/protocol",
+    "shared/ui_logic",
+    "shared/client",
+    "interfaces/cli",
+    "interfaces/tui",
+    "interfaces/webchat",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.92"
+```
+
+## Feature Flags
+
+Aleph compiles **all production features by default**. Only test and experimental features are gated:
+
+```toml
+[features]
+default = []
+loom = ["dep:loom"]               # Concurrency testing with Loom
+test-helpers = []                  # Integration test utilities
+control-plane = []                 # Experimental: Control Plane UI
+disabled-tests = []                # Disabled test modules (awaiting rewrite)
+telegram-draft-api = []            # Experimental: Telegram Draft API
+```
+
+**No feature flags are required for production builds.** All channels, tools, and integrations are compiled and enabled/disabled at runtime via `aleph.toml` configuration.
+
+### Building
+
+```bash
+# Default build (all production features)
+cargo run -p alephcore --bin aleph-server
+
+# Release build
+cargo build -p alephcore --bin aleph-server --release
+
+# With Loom concurrency testing
+cargo test -p alephcore --features loom --lib loom
+```
+
+## Build Profiles
+
+### Debug Build (Development)
+
+```bash
+# Fast compilation, slower runtime, full debug symbols
+cargo build -p alephcore --bin aleph-server
+
+# Run directly (build + execute)
+cargo run -p alephcore --bin aleph-server
+```
+
+Debug builds compile quickly but produce large, unoptimized binaries. Use this for day-to-day development.
+
+### Release Build (Production)
+
+```bash
+# Optimized binary
+cargo build -p alephcore --bin aleph-server --release
+
+# Binary location
+ls -lh target/release/aleph-server
+```
+
+The workspace release profile strips debug symbols:
+
+```toml
+[profile.release]
+strip = true
+```
+
+### Verifying a Build
+
+```bash
+# Check version
+./target/release/aleph-server --version
+
+# Check help
+./target/release/aleph-server --help
+
+# Verify embedded UI assets (if built with control-plane)
+strings target/release/aleph-server | grep "index.html"
+```
+
+## Building the WebChat Panel UI
+
+The WebChat Panel is a web-based chat interface compiled to WASM and served by the Gateway. The `just` build pipeline handles this automatically via the `wasm` recipe.
+
+### Manual WASM Build
+
+If you need to build the WASM panel separately:
+
+```bash
+# The justfile handles the full WASM build pipeline:
+just wasm
+```
+
+This will:
+1. Compile Tailwind CSS (`interfaces/webchat`)
+2. Build the Rust code to WASM (`cargo build -p aleph-panel --target wasm32-unknown-unknown`)
+3. Generate JavaScript bindings with `wasm-bindgen`
+4. Create the runtime `index.html`
+
+The Gateway serves the WASM assets directly from `interfaces/webchat/dist/`.
+
+## Using Just (Recommended)
+
+The project includes a `justfile` with common build tasks. Install `just` first:
+
+```bash
+cargo install just
+```
+
+Available recipes:
+
+```bash
+# Show all available recipes
+just --list
+
+# Development: build WASM panel + run server in debug mode
+just dev
+
+# Full release build (WASM + Swift bridge + server)
+just build
+
+# Build server only (debug)
+just build-debug
+
+# Build WASM Panel UI only
+just wasm
+
+# Quick compilation check
+cargo check -p alephcore
+
+# Run core tests
+just test
+
+# Run all tests (core + desktop + proptest)
+just test-all
+
+# Lint with clippy
+just clippy
+
+# Clean build artifacts
+just clean
+```
+
+## Cross-Compilation Notes
+
+Aleph is primarily developed and tested on **macOS (ARM64)**. Cross-compilation targets to be aware of:
+
+| Target | Status | Notes |
+|--------|--------|-------|
+| `aarch64-apple-darwin` | Primary | Default development target |
+| `x86_64-apple-darwin` | Supported | Intel Mac builds |
+| `x86_64-unknown-linux-gnu` | Supported | Linux server deployment |
+| `aarch64-unknown-linux-gnu` | Supported | Linux ARM (Raspberry Pi, etc.) |
+| `wasm32-unknown-unknown` | Required | Control Plane UI only |
+
+For Linux cross-compilation from macOS, consider using [cross](https://github.com/cross-rs/cross):
+
+```bash
+cargo install cross
+cross build --bin aleph-server --target x86_64-unknown-linux-gnu --release
+```
+
+## Build Troubleshooting
+
+### `rusqlite` Fails to Compile
+
+The `bundled` feature flag compiles SQLite from source, requiring a C compiler. On Linux:
+
+```bash
+sudo apt install build-essential
+```
+
+### OpenSSL Linking Errors
+
+If `reqwest` fails to link OpenSSL on Linux:
+
+```bash
+sudo apt install libssl-dev pkg-config
+```
+
+On macOS, this should not occur because `native-tls` uses the system Security framework.
+
+### WASM Build Fails
+
+If the Control Plane WASM build fails, ensure the target is installed:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli
+```
+
+Note: The server builds successfully without the UI. If the `dist/` directory exists, `build.rs` skips the UI build step. The `control-plane` feature is optional.
+
+### Port Already in Use
+
+If the server fails to start because port 18790 is occupied:
+
+```bash
+# Find the process using the port
+lsof -i :18790
+
+# Kill it
+kill -9 <PID>
+
+# Or start on a different port
+cargo run --bin aleph-server -- --port 8080
+```
+
+### Slow Builds
+
+For faster incremental builds during development:
+
+```bash
+# Use the mold linker (Linux)
+cargo install mold
+RUSTFLAGS="-C link-arg=-fuse-ld=mold" cargo build
+
+# Or reduce codegen units in dev profile (already the default)
+# [profile.dev]
+# codegen-units = 256  # More units = faster compile, slower runtime
+```
+
+Consider using `cargo check` instead of `cargo build` when you only need to verify compilation without producing a binary.

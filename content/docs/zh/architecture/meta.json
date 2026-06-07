@@ -1,0 +1,26 @@
+{
+  "title": "Architecture",
+  "pages": [
+    "overview",
+    "gateway",
+    "orchestrator",
+    "harness",
+    "thinker",
+    "dispatcher",
+    "executor",
+    "memory",
+    "sandbox",
+    "session-service",
+    "providers",
+    "memory-evolution",
+    "desktop-bridge",
+    "a2a",
+    "acp",
+    "clawhub",
+    "groupchat",
+    "teams",
+    "worldmodel",
+    "proactive-dispatcher",
+    "design-patterns"
+  ]
+}

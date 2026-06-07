@@ -1,0 +1,143 @@
+---
+title: "Browser Automation"
+description: "Browser automation with Playwright CLI and Chrome DevTools Protocol backends for web scraping, screenshot capture, and page interaction."
+---
+
+The `browser` module provides browser automation for Aleph, supporting two backends: Playwright CLI driver and Chrome DevTools Protocol (CDP) via MCP. It enables the agent to navigate websites, capture screenshots, extract content, and interact with web pages.
+
+## Design Philosophy
+
+1. **Backend abstraction** — All browser operations go through the `BrowserBackend` trait; the agent doesn't care which driver is used
+2. **Text-first extraction** — Page content is extracted as clean text, not raw HTML
+3. **Snapshot-based interaction** — The agent receives a simplified page snapshot (links, buttons, inputs) rather than full DOM
+
+---
+
+## Core Components
+
+### BrowserBackend Trait
+
+```rust
+pub trait BrowserBackend: Send + Sync {
+    async fn navigate(&self, url: &str) -> Result<()>;
+    async fn click(&self, target: &ActionTarget) -> Result<()>;
+    async fn type_text(&self, selector: &str, text: &str) -> Result<()>;
+    async fn screenshot(&self, opts: &ScreenshotOpts) -> Result<ScreenshotOutput>;
+    async fn snapshot(&self) -> Result<SnapshotOutput>;
+    async fn scroll(&self, direction: ScrollDirection) -> Result<()>;
+}
+```
+
+### PlaywrightCliBackend
+
+Uses Playwright's CLI to control a headless browser:
+
+```rust
+pub struct PlaywrightCliBackend {
+    driver: PlaywrightCliDriver,
+    profile: BrowserProfile,
+}
+```
+
+**Features:**
+- Launch Chromium/Chrome/Firefox/WebKit
+- Persistent profiles (cookies, localStorage)
+- Screenshot capture
+- Page navigation and interaction
+- Content extraction
+
+### ChromeMcpBackend
+
+Uses Chrome DevTools Protocol via MCP (Model Context Protocol):
+
+```rust
+pub struct ChromeMcpBackend {
+    driver: ChromeMcpDriver,
+}
+```
+
+**Features:**
+- Connect to existing Chrome instance
+- Tab management
+- Network interception
+- Console log capture
+- Snapshot-based interaction
+
+### BrowserManager
+
+Manages browser instances and profiles:
+
+```rust
+pub struct BrowserManager {
+    backends: HashMap<String, Box<dyn BrowserBackend>>,
+    profiles: HashMap<String, BrowserProfile>,
+}
+```
+
+---
+
+## Page Snapshot
+
+Snapshots provide a simplified view of the page for the agent:
+
+```rust
+pub struct SnapshotOutput {
+    pub url: String,
+    pub title: String,
+    pub text: String,
+    pub links: Vec<Link>,
+    pub buttons: Vec<Button>,
+    pub inputs: Vec<Input>,
+}
+```
+
+The agent receives this structured data rather than raw HTML, making it easier to reason about page structure.
+
+---
+
+## Network Policy
+
+Controls what URLs the browser can access:
+
+```rust
+pub struct BrowserNetworkPolicy {
+    allowed_hosts: Vec<String>,
+    blocked_hosts: Vec<String>,
+}
+```
+
+Blocks private networks, localhost, and other sensitive URLs by default.
+
+---
+
+## Profile Management
+
+Browser profiles persist cookies, localStorage, and session data:
+
+```rust
+pub struct BrowserProfile {
+    name: String,
+    data_dir: PathBuf,
+}
+```
+
+Profiles are isolated — each profile has its own cookie jar and storage.
+
+---
+
+## Code Location
+
+- `src/browser/mod.rs` — Module entry point
+- `src/browser/backend.rs` — Backend trait
+- `src/browser/playwright_cli.rs` — Playwright CLI driver
+- `src/browser/playwright_cli_backend.rs` — Playwright backend impl
+- `src/browser/chrome_mcp.rs` — Chrome MCP driver
+- `src/browser/chrome_mcp_backend.rs` — Chrome MCP backend impl
+- `src/browser/manager.rs` — Browser instance management
+- `src/browser/network_policy.rs` — URL access control
+- `src/browser/profile.rs` — Profile management
+
+## See Also
+
+- [Builtin Tools](./builtin-tools) — Browser tools exposed to agents
+- [Security Primitives](./security-primitives) — SSRF protection for browser requests

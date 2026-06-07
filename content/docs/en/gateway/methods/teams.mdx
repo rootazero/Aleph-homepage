@@ -1,0 +1,170 @@
+---
+title: "teams.*"
+description: "Team and multi-agent orchestration RPC methods"
+---
+
+Team methods manage multi-agent teams — groups of AI agents that collaborate on tasks with defined roles, communication patterns, and coordination strategies.
+
+## Methods
+
+### teams.list
+
+List all configured teams.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "teams.list",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "teams": [
+      {
+        "id": "team-1",
+        "name": "Code Review Team",
+        "agents": ["reviewer", "tester", "documenter"],
+        "status": "idle"
+      }
+    ]
+  }
+}
+```
+
+### teams.create
+
+Create a new team configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "teams.create",
+  "params": {
+    "name": "Bug Fix Squad",
+    "agents": [
+      {
+        "role": "debugger",
+        "model": "claude-sonnet",
+        "system_prompt": "You are a debugging specialist."
+      },
+      {
+        "role": "fixer",
+        "model": "claude-sonnet",
+        "system_prompt": "You implement fixes."
+      }
+    ],
+    "coordination": "sequential"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "team": {
+      "id": "team-2",
+      "name": "Bug Fix Squad",
+      "agents": ["debugger", "fixer"],
+      "status": "idle"
+    }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Team name |
+| `agents` | object[] | Yes | Agent configurations with `role`, `model`, `system_prompt` |
+| `coordination` | string | No | Coordination mode: `"sequential"`, `"parallel"`, `"hierarchical"` |
+
+### teams.get
+
+Get team details.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "teams.get",
+  "params": {
+    "team_id": "team-1"
+  }
+}
+```
+
+### teams.run
+
+Execute a task with a team.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "teams.run",
+  "params": {
+    "team_id": "team-1",
+    "task": "Review this pull request for security issues",
+    "context": {
+      "pr_url": "https://github.com/org/repo/pull/123"
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "run_id": "run-team-1",
+    "status": "running"
+  }
+}
+```
+
+### teams.delete
+
+Delete a team configuration.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "teams.delete",
+  "params": {
+    "team_id": "team-2"
+  }
+}
+```
+
+## Coordination Modes
+
+| Mode | Description |
+|------|-------------|
+| `sequential` | Agents run one after another, passing output forward |
+| `parallel` | Agents run simultaneously, results merged at the end |
+| `hierarchical` | A leader agent delegates subtasks to worker agents |
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [Architecture: Teams](/docs/en/architecture/teams) -- Team orchestration architecture

@@ -1,0 +1,208 @@
+---
+title: "Error Handling"
+description: "Error handling conventions using thiserror for libraries and anyhow for applications. Safe truncation, generic constraints, and defensive design."
+---
+
+The `error` module defines Aleph's error handling philosophy. It uses a dual approach: `thiserror` for library code that needs typed errors, and `anyhow` for application code that needs flexible context.
+
+## Design Philosophy
+
+Error handling in Aleph follows three principles:
+
+1. **Type safety at boundaries** — Library APIs return typed errors so callers can handle specific cases
+2. **Ergonomic propagation** — Application code uses `?` with context, not match spaghetti
+3. **Defensive display** — Error messages are safe to show users; they never leak internal paths or secrets
+
+---
+
+## Dual Error Approach
+
+### Library Errors (thiserror)
+
+Libraries define typed errors with `thiserror`:
+
+```rust
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("failed to read config file: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("invalid config format: {0}")]
+    Parse(String),
+
+    #[error("unknown channel: {0}")]
+    UnknownChannel(String),
+}
+```
+
+**Benefits:**
+- Callers can match on specific variants (`ConfigError::Parse`)
+- Error messages are stable and tested
+- Automatic `From` implementations reduce boilerplate
+
+**Usage in libraries:**
+```rust
+pub fn load_config(path: &str) -> Result<Config, ConfigError> {
+    let content = std::fs::read_to_string(path)?; // Auto-converts io::Error
+    toml::from_str(&content)
+        .map_err(|e| ConfigError::Parse(e.to_string()))
+}
+```
+
+### Application Errors (anyhow)
+
+Application code uses `anyhow` for flexibility:
+
+```rust
+use anyhow::{Context, Result};
+
+async fn start_server(config_path: &str) -> Result<()> {
+    let config = load_config(config_path)
+        .with_context(|| format!("failed to load config from {config_path}"))?;
+
+    let db = connect_database(&config.database_url)
+        .await
+        .context("database connection failed")?;
+
+    run_server(config, db).await?;
+    Ok(())
+}
+```
+
+**Benefits:**
+- Easy context addition with `.context()`
+- No need to define error types for every function
+- Backtrace capture for debugging
+
+---
+
+## Defensive Patterns
+
+### Safe String Truncation
+
+Never truncate strings at byte boundaries — this can split multi-byte UTF-8 characters:
+
+```rust
+// BAD — may panic or produce invalid UTF-8
+let truncated = &text[..max_len];
+
+// GOOD — safe UTF-8 truncation
+fn safe_truncate(text: &str, max_len: usize) -> &str {
+    if text.len() <= max_len {
+        return text;
+    }
+    // Find the last valid UTF-8 boundary before max_len
+    match text[..max_len].char_indices().last() {
+        Some((idx, _)) => &text[..idx],
+        None => "",
+    }
+}
+```
+
+Aleph uses this pattern throughout the codebase for log messages, error display, and UI truncation.
+
+### Generic Constraints
+
+Use `impl Into<String>` for ergonomic APIs:
+
+```rust
+// Before — caller must allocate a String
+fn new_error(message: String) -> MyError;
+
+// After — caller can pass &str, String, or anything that converts
+fn new_error(message: impl Into<String>) -> MyError {
+    MyError { message: message.into() }
+}
+
+// Usage:
+new_error("simple error");           // &str
+new_error(format!("code: {}", 42)); // String
+```
+
+### Error Context Stack
+
+Errors accumulate context as they bubble up:
+
+```
+Root cause: connection refused (os error 61)
+  → database connection failed
+    → failed to initialize session service
+      → failed to start server
+```
+
+This stack is produced by `anyhow::Error` and displayed with `{:?}`:
+
+```rust
+if let Err(e) = start_server("config.toml").await {
+    eprintln!("Error: {:#}", e); // Pretty-print context stack
+}
+```
+
+---
+
+## Error Types in Aleph
+
+| Type | Location | Purpose |
+|---|---|---|
+| `ConfigError` | `src/config/` | Configuration file errors |
+| `SessionError` | `src/session/` | Session lifecycle errors |
+| `ToolError` | `src/tools/` | Tool execution errors |
+| `MemoryError` | `src/memory/` | Storage and retrieval errors |
+| `GatewayError` | `src/gateway/` | WebSocket/HTTP errors |
+| `ProviderError` | `src/providers/` | LLM API errors |
+
+---
+
+## UniFFI Compatibility
+
+For cross-language bindings (deprecated in favor of Gateway WebSocket), errors implement `From` conversions to `AlephException`:
+
+```rust
+impl From<ConfigError> for AlephException {
+    fn from(err: ConfigError) -> Self {
+        AlephException::Config {
+            message: err.to_string(),
+        }
+    }
+}
+```
+
+This trades detail for simplicity — UniFFI consumers get a string message, not typed variants.
+
+---
+
+## Best Practices
+
+### Do
+
+- Use `thiserror` for library public APIs
+- Use `anyhow` for application main functions
+- Add `.context()` at every significant boundary
+- Implement `Display` carefully (user-facing messages)
+- Use `#[error("...")]` for stable error messages
+
+### Don't
+
+- Use `unwrap()` in production code
+- Use `expect()` with trivial messages
+- Leak internal paths or secrets in error messages
+- Create deeply nested error enums (max 3 levels)
+- Use `String` as an error type (always use `thiserror`)
+
+---
+
+## Code Location
+
+- `src/error.rs` — Error type definitions and conversions
+- `src/config/error.rs` — Config-specific errors
+- `src/session/error.rs` — Session-specific errors
+- `src/tools/error.rs` — Tool-specific errors
+
+## See Also
+
+- [Rust Error Handling](https://doc.rust-lang.org/book/ch09-00-error-handling.html) — Official Rust guide
+- [thiserror](https://docs.rs/thiserror) — Typed error derive macro
+- [anyhow](https://docs.rs/anyhow) — Flexible error handling
+- [Logging](./logging) — How errors are logged

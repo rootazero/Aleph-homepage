@@ -1,0 +1,117 @@
+---
+title: "ClawHub"
+description: "HTTP client and types for the ClawHub skill registry integration."
+---
+
+The `clawhub` module provides HTTP client integration with [ClawHub](https://clawhub.ai), a skill registry for discovering and installing community-contributed skills.
+
+## Overview
+
+ClawHub integration enables Aleph to:
+- **Browse skills** — Search and discover community skills
+- **Install skills** — Download and install skills from the registry
+- **Sync metadata** — Keep skill metadata up to date
+
+## Architecture
+
+```
+ClawHubClient
+  ├── HTTP Client (reqwest)
+  ├── Types — Request/response schemas
+  └── Authentication (API tokens)
+```
+
+## Core Components
+
+### ClawHubClient
+
+HTTP client for the ClawHub API:
+
+```rust
+// src/clawhub/client.rs
+pub struct ClawHubClient {
+    base_url: String,
+    client: reqwest::Client,
+    auth_token: Option<String>,
+}
+
+impl ClawHubClient {
+    pub fn new(base_url: String) -> Self;
+    
+    pub async fn search_skills(
+        &self,
+        query: &str,
+    ) -> Result<Vec<SkillListing>>;
+    
+    pub async fn get_skill(
+        &self,
+        id: &str,
+    ) -> Result<SkillDetail>;
+    
+    pub async fn download_skill(
+        &self,
+        id: &str,
+        dest: &Path,
+    ) -> Result<()>;
+}
+```
+
+### Types
+
+```rust
+// src/clawhub/types.rs
+pub struct SkillListing {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    pub downloads: u64,
+    pub rating: f32,
+}
+
+pub struct SkillDetail {
+    pub listing: SkillListing,
+    pub readme: String,
+    pub dependencies: Vec<String>,
+    pub tools: Vec<String>,
+}
+```
+
+## Usage
+
+```rust
+use alephcore::clawhub::ClawHubClient;
+
+let client = ClawHubClient::new(
+    "https://api.clawhub.ai".to_string()
+);
+
+// Search for skills
+let results = client.search_skills("code review").await?;
+
+// Download a skill
+client.download_skill("code-review", 
+    Path::new("~/.aleph/skills/")
+).await?;
+```
+
+## Configuration
+
+```toml
+[clawhub]
+enabled = true
+base_url = "https://api.clawhub.ai"
+api_token = "${CLAWHUB_TOKEN}"
+```
+
+## Code Location
+
+- `src/clawhub/mod.rs` — Module entry point
+- `src/clawhub/client.rs` — HTTP client
+- `src/clawhub/types.rs` — Request/response types
+
+## See Also
+
+- [Skills](../concepts/skills) — Skill system overview
+- [Skill Installer](../concepts/skills#installation) — Installing skills from ClawHub

@@ -1,0 +1,195 @@
+---
+title: "Gateway"
+description: "WebSocket JSON-RPC gateway for client connections, session management, execution engine, and multi-interface support."
+---
+
+The `gateway` module is Aleph's WebSocket JSON-RPC gateway. It handles client connections, session management, the execution engine, and interfaces with multiple messaging platforms (Discord, Telegram, CLI, TUI, etc.).
+
+## Design Philosophy
+
+1. **Interface-agnostic core** — The same agent brain serves every interface
+2. **Session isolation** — Each conversation is an independent session with its own context
+3. **Streaming responses** — Real-time token streaming to all connected clients
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Gateway                               │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │   WebSocket  │  │   Session    │  │  Execution   │     │
+│  │   Handler    │  │   Manager    │  │   Engine     │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │   Discord    │  │   Telegram   │  │     CLI      │     │
+│  │  Interface   │  │  Interface   │  │  Interface   │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Core Components
+
+### WebSocket Handler
+
+Accepts JSON-RPC 2.0 connections:
+
+```rust
+pub struct WebSocketHandler;
+
+impl WebSocketHandler {
+    pub async fn handle(
+        &self,
+        socket: WebSocket,
+    ) -> Result<()> { /* ... */ }
+}
+```
+
+**Methods:**
+- `session.create` — Create a new session
+- `session.send` — Send a message
+- `session.history` — Get conversation history
+- `session.clear` — Clear session context
+- `tool.call` — Invoke a tool directly
+
+### SessionManager
+
+Manages active sessions:
+
+```rust
+pub struct SessionManager {
+    sessions: HashMap<SessionId, Session>,
+}
+
+impl SessionManager {
+    pub async fn create(
+        &self,
+        config: SessionConfig,
+    ) -> Result<SessionId> { /* ... */ }
+
+    pub async fn get(
+        &self,
+        id: SessionId,
+    ) -> Option<Session> { /* ... */ }
+}
+```
+
+**Session types:**
+- `Owner` — Full access to all features
+- `Guest` — Restricted access, no persistent history
+- `Paired` — Linked to a specific channel (Telegram, Discord)
+
+### ExecutionEngine
+
+The agent loop that processes messages:
+
+```rust
+pub struct ExecutionEngine {
+    thinker: Thinker,
+    tool_service: ToolService,
+    provider: Arc<dyn LlmProvider>,
+}
+
+impl ExecutionEngine {
+    pub async fn run(
+        &self,
+        request: RunRequest,
+    ) -> Result<RunOutput> { /* ... */ }
+}
+```
+
+**Flow:**
+1. Receive `RunRequest` (message + attachments + context)
+2. Process attachments via `MediaProcessor`
+3. Build system prompt via `Thinker`
+4. Call LLM provider
+5. Parse response (text + tool calls)
+6. Execute tools
+7. Stream results back to client
+
+### Interfaces
+
+Platform-specific adapters:
+
+**Discord:**
+- Bot integration via `serenity`
+- Slash commands
+- DM and guild channel support
+
+**Telegram:**
+- Bot integration via `teloxide`
+- Inline queries
+- Group chat support
+
+**CLI:**
+- Interactive terminal interface
+- Command history
+- Tab completion
+
+**TUI:**
+- Terminal UI with `ratatui`
+- Multi-pane layout
+- Real-time streaming
+
+---
+
+## Routing
+
+Messages are routed to the appropriate handler:
+
+```rust
+pub struct InboundRouter {
+    handlers: HashMap<InterfaceType, Box<dyn MessageHandler>>,
+}
+```
+
+**Routing rules:**
+- WebSocket → SessionManager → ExecutionEngine
+- Discord → ChannelManager → SessionManager
+- Telegram → BotHandler → SessionManager
+- CLI → DirectExecution
+
+---
+
+## Rate Limiting
+
+```rust
+pub struct RateLimiter {
+    buckets: HashMap<String, TokenBucket>,
+}
+```
+
+Per-session and per-user rate limits prevent abuse.
+
+---
+
+## Safety Properties
+
+- **UTF-8 safe** — All string operations use `char_indices()` or `.find()`
+- **Lock recovery** — `unwrap_or_else(|e| e.into_inner())`
+- **No unwrap in production** — All hot paths return `Result`
+- **Saturating arithmetic** — `saturating_sub` for index calculations
+
+---
+
+## Code Location
+
+- `src/gateway/` — Module root
+- `src/gateway/handlers/` — WebSocket and HTTP handlers
+- `src/gateway/session/` — Session management
+- `src/gateway/execution_engine/` — Agent execution loop
+- `src/gateway/interfaces/` — Platform adapters (Discord, Telegram, CLI, TUI)
+- `src/gateway/routing/` — Message routing
+
+## See Also
+
+- [Session Management](./session-service) — Session lifecycle
+- [Event System](./event-system) — Event distribution
+- [Thinker](./thinker) — Prompt construction

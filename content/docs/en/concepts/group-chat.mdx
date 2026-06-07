@@ -1,0 +1,180 @@
+---
+title: "Group Chat"
+description: "Multi-agent group chat with persona-based collaborative discussions across any messaging channel."
+---
+
+The `group_chat` module provides channel-agnostic orchestration for multi-persona collaborative discussions. Multiple agents with different personas can participate in a shared conversation, each contributing their expertise to solve problems collaboratively.
+
+## Design Philosophy
+
+1. **Persona-driven** — Each participant has a distinct role, expertise, and communication style
+2. **Channel-agnostic** — Works over Discord, Telegram, CLI, or any connected interface
+3. **Shared session** — All participants see the full conversation context
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│         GroupChatOrchestrator               │
+├─────────────────────────────────────────────┤
+│                                             │
+│  ┌──────────────┐      ┌─────────────────┐ │
+│  │ Coordinator  │◄────►│   Executor      │ │
+│  │ (turn logic) │      │ (LLM calls)     │ │
+│  └──────────────┘      └─────────────────┘ │
+│         │                                    │
+│         ▼                                    │
+│  ┌──────────────┐      ┌─────────────────┐ │
+│  │   Session    │      │   Persona       │ │
+│  │ (state)      │      │   Registry      │ │
+│  └──────────────┘      └─────────────────┘ │
+│                                             │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Core Components
+
+### GroupChatOrchestrator
+
+Manages the overall chat flow:
+
+```rust
+pub struct GroupChatOrchestrator {
+    session: GroupChatSession,
+    personas: Vec<Persona>,
+    coordinator: GroupChatCoordinator,
+}
+```
+
+### GroupChatCoordinator
+
+Determines whose turn it is and what they should do:
+
+```rust
+pub struct GroupChatCoordinator;
+
+impl GroupChatCoordinator {
+    pub fn next_speaker(
+        &self,
+        session: &GroupChatSession,
+    ) -> Option<&Persona> { /* ... */ }
+
+    pub fn build_persona_prompt(
+        &self,
+        persona: &Persona,
+        context: &ChatHistory,
+    ) -> String { /* ... */ }
+}
+```
+
+**System prompt handling:** The system prompt is passed via the proper `.with_system()` parameter, not embedded in user message text.
+
+### GroupChatExecutor
+
+Runs LLM calls for each participant:
+
+```rust
+pub struct GroupChatExecutor {
+    provider: Arc<dyn LlmProvider>,
+}
+```
+
+### Persona
+
+Defines a participant's identity:
+
+```rust
+pub struct Persona {
+    pub id: String,
+    pub name: String,
+    pub system_prompt: String,
+    pub expertise: Vec<String>,
+}
+```
+
+**Presets:** The `PersonaRegistry` includes predefined personas (e.g., "coder", "reviewer", "architect").
+
+### GroupChatSession
+
+Maintains conversation state:
+
+```rust
+pub struct GroupChatSession {
+    pub messages: Vec<ChatMessage>,
+    pub participants: Vec<String>,
+}
+```
+
+---
+
+## Protocol
+
+Message types for group chat communication:
+
+```rust
+pub enum GroupChatMessage {
+    Text { from: String, content: String },
+    Join { persona: String },
+    Leave { persona: String },
+    System { content: String },
+}
+```
+
+---
+
+## Intent Types
+
+The `intent` module provides lightweight type definitions retained from the old intent detection pipeline:
+
+```rust
+pub enum TaskCategory {
+    Code,
+    Search,
+    FileOperation,
+    // ... etc
+}
+
+pub enum DetectionLayer {
+    L2Heuristic,
+    L3Llm,
+}
+```
+
+**Note:** The detection/classification pipeline has been removed in favor of LLM-native tool selection. Only shared type definitions remain.
+
+---
+
+## Safety Properties
+
+- **UTF-8 safe** — `char_indices()` for truncation, `.chars().count()` for length
+- **Deterministic ordering** — `list_presets()` returns sorted results
+- **No lock poisoning** — Uses `tokio::sync::Mutex`
+- **No SQL injection** — No database queries in this module
+
+---
+
+## Code Location
+
+**Group Chat:**
+- `src/group_chat/mod.rs` — Module entry point
+- `src/group_chat/orchestrator.rs` — Chat flow management
+- `src/group_chat/coordinator.rs` — Turn logic and prompt building
+- `src/group_chat/executor.rs` — LLM execution
+- `src/group_chat/session.rs` — Conversation state
+- `src/group_chat/persona.rs` — Persona definitions
+- `src/group_chat/protocol.rs` — Message types
+- `src/group_chat/channel.rs` — Channel abstraction
+
+**Intent:**
+- `src/intent/mod.rs` — Type re-exports
+- `src/intent/types/` — TaskCategory, DetectionLayer, etc.
+
+## See Also
+
+- [Agent Runtime](./agent-runtime) — How individual agents work
+- [Arena](./arena) — Multi-agent collaboration workspace
+- [Teams](./teams) — Agent team management

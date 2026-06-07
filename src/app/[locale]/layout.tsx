@@ -1,4 +1,4 @@
-import { NextIntlClientProvider } from "next-intl";
+import { NextIntlClientProvider, hasLocale } from "next-intl";
 import { getMessages } from "next-intl/server";
 import { notFound } from "next/navigation";
 import { ThemeProvider } from "next-themes";
@@ -13,7 +13,7 @@ type Props = {
 
 export default async function LocaleLayout({ children, params }: Props) {
   const { locale } = await params;
-  if (!routing.locales.includes(locale as any)) {
+  if (!hasLocale(routing.locales, locale)) {
     notFound();
   }
   const messages = await getMessages();

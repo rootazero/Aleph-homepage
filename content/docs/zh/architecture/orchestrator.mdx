@@ -1,0 +1,115 @@
+---
+title: "编排器"
+description: "AgentDef 与 FlowSpec 解析、HarnessDeps 组装及分派至 Harness 运行时。"
+---
+
+# 编排器
+
+编排器是 **Gateway**（聊天入口、协议适配器）与 **AgentHarness**（Think→Act 循环）之间的桥梁。它解析智能体的配置，组装执行依赖，并分派工作流。
+
+## 架构中的角色
+
+```
+Gateway FlowRequest
+     │
+     ▼
+┌─────────────┐
+│ Orchestrator │
+│              │
+│ • Resolve    │
+│ • Build      │
+│ • Dispatch   │
+└──────┬───────┘
+       │ HarnessRunner::run
+       ▼
+┌─────────────┐
+│   Harness   │
+└─────────────┘
+```
+
+**位置**：`src/orchestrator/`
+
+---
+
+## AgentDef 解析
+
+`AgentDef` 定义智能体的行为 —— 其模型、可用工具、系统提示词和个性。编排器通过以下方式解析它：
+
+- **静态配置** —— `aleph.toml` 或 `.aleph/agent.toml`
+- **动态覆盖** —— 每次请求的参数（例如 `model`、`thinking`）
+- **身份上下文** —— 所有者与访客的权限
+
+解析后的 `AgentDef` 作为 `FlowSpec` 的一部分传入工作流。
+
+---
+
+## FlowSpec 解析
+
+`FlowSpec` 定义单个请求的执行工作流：
+
+| Field | Description |
+|-------|-------------|
+| `agent_id` | Target agent identifier |
+| `input` | User message or command |
+| `identity` | IdentityContext (owner / guest / anonymous) |
+| `abort_signal` | Cancellation token |
+| `tool_filter` | Optional tool whitelist / blacklist |
+| `context_budget` | Token budget override |
+
+编排器将请求级别的覆盖与解析后的 `AgentDef` 合并，生成最终的 `FlowSpec`。
+
+---
+
+## HarnessDeps 组装
+
+`AgentDef` 和 `FlowSpec` 解析完成后，编排器构建 `HarnessDeps` —— Harness 运行时的完整依赖包：
+
+```rust
+pub struct HarnessDeps {
+    pub session: Arc<dyn SessionService>,      // Append-only history
+    pub tool_service: Arc<dyn ToolService>,    // Tool catalog + execution
+    pub sandbox: Arc<dyn Sandbox>,            // Exec environment, capability ledger
+    pub provider: Arc<dyn AiProvider>,         // LLM provider
+    pub trace_sink: Arc<dyn TraceSink>,        // Event streaming
+}
+```
+
+所有依赖均以 `Arc<dyn Trait>` 形式注入，允许使用测试替身和运行时替换。
+
+---
+
+## 分派流程
+
+```
+FlowRequest { agent_id, input, identity, ... }
+     │
+     ▼
+Resolve AgentDef + FlowSpec
+     │
+     ▼
+Build HarnessDeps
+     │
+     ▼
+HarnessRunner::run(flow, deps) → FlowOutcome
+```
+
+`HarnessRunner::run` 函数取得 `FlowRequest` 和 `HarnessDeps` 的所有权，驱动 Think→Act 循环至完成，并返回一个包含最终响应、流式事件及任何错误的 `FlowOutcome`。
+
+---
+
+## 关键类型
+
+| Type | Purpose | Location |
+|------|---------|----------|
+| `FlowRequest` | Incoming request from Gateway | `src/orchestrator/` |
+| `HarnessDeps` | Assembled dependency bundle | `src/orchestrator/` |
+| `FlowOutcome` | Execution result (response, events, errors) | `src/orchestrator/` |
+| `HarnessRunner` | Entry point for Harness execution | `src/harness/` |
+
+---
+
+## 另请参阅
+
+- [Harness](./harness) — Think→Act 循环运行时
+- [Session Service](./sessions) — 追加式事件日志
+- [Thinker](./thinker) — LLM 交互层

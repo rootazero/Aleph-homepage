@@ -1,0 +1,316 @@
+---
+title: "Execution Approval"
+description: "Human-in-the-loop approval system for shell command execution with allowlists, risk analysis, and multi-channel decision routing"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+Aleph's execution approval system is a three-tier security model that governs how shell commands are executed by the AI agent. Every command passes through a pipeline of parsing, risk analysis, and approval before it reaches the operating system. This human-in-the-loop design ensures that the AI cannot silently execute destructive operations on your machine.
+
+The system is built around three core principles:
+
+1. **Default deny** -- Commands are blocked unless explicitly approved or matched by an allowlist entry.
+2. **Progressive trust** -- Users can approve commands once, for the session, or permanently (adding to the allowlist). Trust accumulates over time.
+3. **Multi-channel routing** -- Approval requests can be delivered to the CLI, macOS app, Telegram, Discord, or any connected interface.
+
+**Source locations:**
+- Exec kernel: `src/exec/kernel.rs`
+- Approval manager: `src/exec/manager.rs`
+- Risk analyzer: `src/exec/risk.rs`
+- Command parser: `src/exec/parser.rs`
+- Allowlist: `src/exec/allowlist.rs`
+- Configuration: `src/exec/config.rs`
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      Exec Kernel Pipeline                     │
+│                                                               │
+│  Command ──→ Parser ──→ Risk Analyzer ──→ Approval Manager   │
+│                                               │               │
+│                              ┌────────────────┼──────┐       │
+│                              │                │      │       │
+│                              ▼                ▼      ▼       │
+│                          Allowlist        Human    Auto      │
+│                           Check          Approval  Approve   │
+│                              │                │      │       │
+│                              └────────────────┼──────┘       │
+│                                               │               │
+│                                               ▼               │
+│                              Execute ──→ Output Masker        │
+│                                               │               │
+│                                               ▼               │
+│                                          Audit Log            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+When a command enters the pipeline:
+1. The **Command Parser** breaks it into structured segments (program, arguments, pipes, redirects).
+2. The **Risk Analyzer** scores each segment against pattern-based rules.
+3. The **Approval Manager** checks the allowlist, blocklist, and -- if needed -- routes the request to a human for approval.
+4. On approval, the command is executed and output passes through the **Output Masker** to redact secrets.
+5. Every decision is written to the **Audit Log**.
+
+## Security Levels
+
+The `security` field in the exec approvals configuration determines the base behavior:
+
+| Level | Behavior | Use Case |
+|-------|----------|----------|
+| `deny` | Block all command execution | Maximum lockdown, no shell access |
+| `allowlist` | Only allow commands matching allowlist patterns | Default -- balanced safety |
+| `full` | Allow all commands without approval | Full trust (development environments) |
+
+The `ask` policy controls what happens when a command is not in the allowlist:
+
+| Policy | Behavior |
+|--------|----------|
+| `off` | Never prompt the user; use `ask_fallback` |
+| `on-miss` | Prompt when command is not in allowlist (default) |
+| `always` | Prompt for every command, even allowlisted ones |
+
+## Risk Analysis
+
+Before reaching the approval manager, every command is scored by the risk analyzer. Risk levels determine how prominently the approval prompt is displayed:
+
+```rust
+pub enum RiskLevel {
+    Low,       // Read-only operations (ls, cat, git log)
+    Medium,    // File modifications (cp, mv, mkdir)
+    High,      // System changes (chmod, chown, sudo)
+    Critical,  // Destructive operations (rm -rf, mkfs, dd)
+}
+```
+
+### Built-in Risk Rules
+
+| Pattern | Risk | Description |
+|---------|------|-------------|
+| `rm -rf /` | Critical | Recursive root delete |
+| `rm -rf ~` | Critical | Home directory wipe |
+| `curl * \| sh` | Critical | Remote code execution |
+| `> /dev/sd*` | Critical | Disk overwrite |
+| `dd if=* of=/dev/` | Critical | Raw device write |
+| `mkfs.*` | Critical | Filesystem format |
+| `:(){ :\|:& };:` | Critical | Fork bomb |
+| `sudo *` | High | Elevated privileges |
+| `chmod 777 /` | High | Permissive permissions |
+| `git *` | Low | Version control |
+| `ls *` | Low | Directory listing |
+| `cat *` | Low | File read |
+
+You can add custom blocked patterns via the configuration:
+
+```json
+{
+  "agents": {
+    "main": {
+      "blocklist": [
+        "curl.*evil\\.com",
+        "npm publish"
+      ]
+    }
+  }
+}
+```
+
+## Allowlist System
+
+The allowlist is the core of the progressive trust model. Each entry is a glob pattern matched against the resolved executable path:
+
+```rust
+pub struct AllowlistEntry {
+    pub id: Option<String>,          // Unique identifier
+    pub pattern: String,             // Glob pattern (e.g., "/usr/bin/git")
+    pub last_used_at: Option<i64>,   // Unix timestamp
+    pub last_used_command: Option<String>,
+    pub last_resolved_path: Option<String>,
+}
+```
+
+### Pattern Matching
+
+Patterns are matched against the fully resolved path of the command executable:
+
+| Pattern | Matches |
+|---------|---------|
+| `/usr/bin/git` | Exact path match |
+| `/usr/bin/*` | Any executable in `/usr/bin/` |
+| `git` | Name-based match (resolved via PATH) |
+| `~/bin/*` | User bin directory |
+
+### Automatic Allowlist Growth
+
+When a user approves a command with **Allow Always**, the resolved executable path is automatically added to the agent's allowlist. This means the allowlist grows organically as the user works:
+
+```
+1. Agent wants to run: git status
+2. Resolved path: /usr/bin/git
+3. User clicks "Allow Always"
+4. /usr/bin/git is added to allowlist
+5. All future git commands are auto-approved
+```
+
+## Approval Decisions
+
+When a command requires human approval, the user is presented with three options:
+
+```rust
+pub enum ApprovalDecisionType {
+    AllowOnce,    // Execute this command only
+    AllowAlways,  // Execute and add to allowlist
+    Deny,         // Block execution
+}
+```
+
+Each decision is scoped:
+
+| Decision | Scope | Persistence |
+|----------|-------|-------------|
+| Allow Once | This execution only | None |
+| Allow Always | All future matching commands | Written to `exec-approvals.json` |
+| Deny | This execution only | None |
+
+### Approval Timeout
+
+Approval requests have a default timeout of **120 seconds** (2 minutes). If no decision is received within the timeout, the command is denied. This prevents the agent from hanging indefinitely.
+
+```rust
+pub const DEFAULT_APPROVAL_TIMEOUT_MS: u64 = 120_000;
+```
+
+## Multi-Channel Approval Routing
+
+Approval requests are broadcast to all connected interfaces simultaneously. The first response wins:
+
+```
+┌─────────────┐
+│ Approval     │───→ CLI Terminal (inline prompt)
+│ Manager      │───→ macOS App (via IPC socket)
+│              │───→ Telegram (inline keyboard)
+│              │───→ Discord (button components)
+└─────────────┘
+```
+
+### Chat Channel Approval UI
+
+In chat interfaces (Telegram, Discord), approval requests are rendered as interactive messages with inline buttons:
+
+```
+🔒 Command Approval Required
+
+Command: npm install express
+Working Directory: /project
+Agent: main
+
+┌─────────────┬────────────────┐
+│ ✅ Allow Once │ ✅ Allow Always │
+├─────────────┴────────────────┤
+│          ❌ Deny              │
+└──────────────────────────────┘
+```
+
+The callback data format for button presses is:
+```
+approve:{approval_id}:{decision}
+```
+Where `decision` is `once`, `always`, or `deny`.
+
+### Local IPC Approval
+
+For the macOS desktop application, approval requests are routed through the Unix domain socket IPC protocol. See [IPC Protocol](/docs/en/security/ipc) for details.
+
+## Per-Agent Configuration
+
+Each agent can have its own security policy. Agent-specific settings override global defaults:
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "security": "allowlist",
+    "ask": "on-miss",
+    "ask_fallback": "deny"
+  },
+  "agents": {
+    "main": {
+      "security": "allowlist",
+      "auto_allow_skills": true,
+      "allowlist": [
+        { "pattern": "/usr/bin/git" },
+        { "pattern": "/usr/local/bin/node" }
+      ],
+      "skill_allowlist": ["github", "ffmpeg"]
+    },
+    "sandbox": {
+      "security": "deny"
+    }
+  }
+}
+```
+
+<Callout type="info">
+Configuration is stored at `~/.aleph/exec-approvals.json` and supports optimistic locking via content hashing to prevent concurrent write conflicts.
+</Callout>
+
+### Configuration Resolution
+
+When resolving configuration for a specific agent, the system applies a layered merge:
+
+1. Start with built-in defaults (`security: deny`, `ask: on-miss`)
+2. Apply global `defaults` section
+3. Apply agent-specific overrides
+
+```rust
+// Resolution priority: agent > global > built-in
+let security = agent.security
+    .or(global.security)
+    .unwrap_or(ExecSecurity::Deny);
+```
+
+## Output Masking
+
+After execution, command output passes through the output masker to redact sensitive data before it is returned to the AI or displayed to the user:
+
+| Pattern | Replacement |
+|---------|-------------|
+| API keys | `[API_KEY_REDACTED]` |
+| Passwords | `[PASSWORD_REDACTED]` |
+| AWS credentials | `[AWS_CRED_REDACTED]` |
+| Private keys | `[PRIVATE_KEY_REDACTED]` |
+| OAuth tokens | `[TOKEN_REDACTED]` |
+
+## Audit Logging
+
+Every execution decision is recorded for later review:
+
+```rust
+pub struct AuditEntry {
+    pub timestamp: DateTime<Utc>,
+    pub command: String,
+    pub risk_level: RiskLevel,
+    pub decision: ApprovalDecision,
+    pub executor: String,
+    pub session_key: String,
+    pub duration_ms: u64,
+    pub exit_code: Option<i32>,
+}
+```
+
+Query recent high-risk executions:
+
+```sql
+SELECT * FROM audit_log
+WHERE risk_level >= 'High'
+AND timestamp > datetime('now', '-7 days')
+ORDER BY timestamp DESC;
+```
+
+## See Also
+
+- [IPC Protocol](/docs/en/security/ipc) -- How approval requests are communicated between processes
+- [Sandboxing](/docs/en/security/sandboxing) -- Capability-based execution sandboxing
+- [Device Pairing](/docs/en/security/pairing) -- Trust establishment for remote devices

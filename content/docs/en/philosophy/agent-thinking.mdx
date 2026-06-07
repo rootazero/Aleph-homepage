@@ -1,0 +1,328 @@
+---
+title: Agent Thinking Model
+description: How Aleph's agent observes, thinks, acts, and learns — the OTAF cycle, dual-process cognition (System 1 + System 2), heuristic reasoning, and the POE architecture.
+---
+
+Aleph's agent is not a simple request-response chatbot. It is a cognitive architecture designed to pursue goals with purpose, reason about complex tasks, and learn from experience. This page describes the thinking model that drives every agent interaction — from the observe-think-act-feedback cycle to the dual-process cognition that balances speed with depth.
+
+The thinking model draws inspiration from cognitive science, particularly Daniel Kahneman's dual-process theory, and implements it through concrete architectural patterns in Rust.
+
+## The OTAF Cycle
+
+Every agent interaction follows the **Observe-Think-Act-Feedback** cycle. This is the fundamental loop that drives Aleph's behavior:
+
+```
+     ┌──────────┐
+     │ OBSERVE  │  Perceive the environment: user input,
+     │          │  context, memory, system state
+     └────┬─────┘
+          │
+          v
+     ┌──────────┐
+     │  THINK   │  Reason about what to do: classify intent,
+     │          │  retrieve experience, plan actions
+     └────┬─────┘
+          │
+          v
+     ┌──────────┐
+     │   ACT    │  Execute the plan: call tools, generate
+     │          │  responses, modify state
+     └────┬─────┘
+          │
+          v
+     ┌──────────┐
+     │ FEEDBACK │  Evaluate results: did it work? What was
+     │          │  learned? Should we retry or escalate?
+     └────┬─────┘
+          │
+          └──────────> (back to OBSERVE for next iteration)
+```
+
+### Observe
+
+The Observe phase gathers all available context before any reasoning begins:
+
+- **User input**: The current message or command from any connected interface.
+- **Session context**: The conversation history, active session state, and channel metadata.
+- **Memory retrieval**: Relevant facts from the Memory system, retrieved via semantic search and contextual anchoring.
+- **System state**: Available tools, active configurations, security policies, and resource constraints.
+
+The key insight is that observation is not passive. The agent actively queries its memory and environment to build a rich context before thinking. This prevents the common failure where an agent responds based solely on the immediate message without considering history or context.
+
+### Think
+
+The Think phase is where the dual-process cognition operates (described in detail below). The agent:
+
+1. **Classifies the intent** — What is the user trying to accomplish? Is this a question, a command, a creative task, or a multi-step workflow?
+2. **Retrieves relevant experience** — Has the agent handled similar tasks before? What worked? What failed?
+3. **Generates a plan** — What sequence of actions will achieve the goal? What tools are needed? What are the potential failure modes?
+4. **Defines success** — What does "done" look like? This is the Success Manifest from the POE architecture.
+
+### Act
+
+The Act phase executes the plan through the Dispatcher and tool system:
+
+- **Tool invocations**: Calling built-in tools, MCP servers, or plugin functions.
+- **Response generation**: Producing text, code, or structured output for the user.
+- **State modifications**: Updating memory, session state, or system configuration.
+- **Sub-task orchestration**: Breaking complex plans into DAGs of subtasks via the TaskGraph.
+
+All actions pass through the security guard system. Potentially dangerous operations require explicit approval before execution.
+
+### Feedback
+
+The Feedback phase evaluates what happened and determines next steps:
+
+- **Success evaluation**: Did the action achieve the defined success criteria?
+- **Experience recording**: Successful completions are stored in the experience database for future retrieval.
+- **Error analysis**: If something failed, what went wrong? Is it recoverable?
+- **Loop decision**: Should the agent retry with a different approach, continue to the next step, or escalate to the user?
+
+The Feedback phase feeds directly back into Observe, creating a continuous loop that can handle multi-step tasks without losing context.
+
+## Dual-Process Cognition
+
+Inspired by Daniel Kahneman's "Thinking, Fast and Slow," Aleph implements a dual-process cognitive architecture with two complementary systems:
+
+### System 1: Fast and Intuitive
+
+System 1 is the fast, pattern-matching layer. It provides quick "gut feelings" based on accumulated experience:
+
+- **Heuristic rules**: Predefined patterns that match common scenarios (e.g., "if the user asks to edit a file, check if it exists first").
+- **Experience retrieval**: Vector-similarity search over past successful task completions, returning relevant solution patterns.
+- **Pattern matching**: Recognizing that the current task is structurally similar to a previously solved one.
+- **Quick classification**: Instantly categorizing a request as simple (handle directly) or complex (engage System 2).
+
+System 1 is what makes Aleph responsive. For routine tasks, the agent can produce a plan almost instantly by recognizing the pattern and applying a known solution template.
+
+### System 2: Slow and Deliberate
+
+System 2 is the deep reasoning layer. It handles cases where intuition is not enough:
+
+- **LLM reasoning**: Using the language model's full reasoning capability to analyze complex problems, generate novel solutions, and evaluate trade-offs.
+- **Semantic validation**: Checking that a proposed plan actually satisfies the user's intent, not just the surface-level request.
+- **Success manifest generation**: Creating explicit, testable criteria for what "done" looks like.
+- **Multi-step planning**: Breaking complex goals into ordered sequences of actions with dependencies and fallback strategies.
+
+System 2 is what makes Aleph capable. For novel or complex tasks, the agent engages deeper reasoning to produce solutions that go beyond pattern matching.
+
+### How They Collaborate
+
+The two systems work together, not in competition:
+
+```
+User Request
+     │
+     v
+┌─────────────────────────────────┐
+│         SYSTEM 1 (Fast)         │
+│  Pattern match against          │
+│  experience database            │
+│                                 │
+│  Match found?                   │
+│  ├── YES (high confidence)      │──> Apply known solution
+│  ├── PARTIAL (some relevance)   │──> Use as starting point for System 2
+│  └── NO (novel situation)       │──> Defer entirely to System 2
+└─────────────────────────────────┘
+                │
+                v (partial or no match)
+┌─────────────────────────────────┐
+│         SYSTEM 2 (Slow)         │
+│  Deep reasoning via LLM         │
+│  ├── Analyze the problem        │
+│  ├── Generate candidate plans   │
+│  ├── Evaluate trade-offs        │
+│  └── Select best approach       │
+└─────────────────────────────────┘
+                │
+                v
+         Execute Plan
+```
+
+This mirrors how expert humans solve problems. An experienced developer does not analyze every line of code from scratch — they recognize patterns instantly (System 1) and then apply careful reasoning where the patterns do not fit (System 2). Over time, as more experiences are crystallized, System 1 handles an ever-larger share of tasks, making the agent faster and more efficient.
+
+## Thinking Levels
+
+Not every request requires the same depth of thought. Aleph implements a tiered thinking model that matches cognitive effort to task complexity:
+
+### Level 0: Reflexive
+
+Direct pattern match with high confidence. No LLM call needed.
+
+- Example: "What time is it?" -- invoke the clock tool immediately.
+- Example: Greeting messages -- respond with a contextual greeting.
+
+### Level 1: Associative
+
+System 1 finds a strong match in the experience database. Minimal LLM reasoning to adapt the template.
+
+- Example: "Summarize this file" -- apply the summarization skill template with the specific file.
+- Example: "Run the tests" -- execute the known test command for the current project.
+
+### Level 2: Analytical
+
+System 2 engaged for planning and reasoning. LLM generates a multi-step plan.
+
+- Example: "Refactor this module to use the repository pattern" -- requires understanding the current code, designing the refactored architecture, and planning the sequence of changes.
+- Example: "Debug why the API is returning 500 errors" -- requires investigation, hypothesis generation, and iterative testing.
+
+### Level 3: Creative
+
+Full System 2 engagement with multiple reasoning passes. Novel problem-solving.
+
+- Example: "Design a caching strategy for our real-time data pipeline" -- requires domain knowledge, trade-off analysis, and original architectural thinking.
+- Example: "Write a comprehensive test suite for the authentication system" -- requires understanding security edge cases, generating diverse test scenarios, and ensuring coverage.
+
+The thinking level is determined dynamically during the Observe phase based on intent classification, task complexity assessment, and experience database matches.
+
+## First Principles Anchoring
+
+Before any task execution begins, Aleph applies **First Principles Thinking** — defining success before starting execution.
+
+Traditional AI agents jump straight into action:
+
+```
+User Request  -->  Execute  -->  Hope it's right
+```
+
+Aleph takes a different approach:
+
+```
+User Request  -->  Define Success  -->  Execute  -->  Validate Against Contract
+```
+
+The agent generates a **Success Manifest** — a contract that explicitly defines:
+
+- **Completion criteria**: What does "done" look like? What artifacts should exist?
+- **Hard constraints**: What conditions must be satisfied? What invariants must hold?
+- **Soft metrics**: What qualities should be optimized? What trade-offs are acceptable?
+
+This prevents the common failure mode where an agent "completes" a task but misses the actual intent. When you know what success looks like, every action becomes purposeful.
+
+## POE Architecture
+
+The **Principle-Operation-Evaluation** (POE) architecture orchestrates the thinking model into a structured execution loop with clear separation of concerns:
+
+```
+┌────────────────────────────────────────────────────────┐
+│                      POE Loop                          │
+├────────────────────────────────────────────────────────┤
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  P - PRINCIPLE                                   │  │
+│  │  Anchor on first principles.                     │  │
+│  │  Generate the Success Manifest from user intent. │  │
+│  └──────────────────────────────────────────────────┘  │
+│                        |                               │
+│                        v                               │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  O - OPERATION                                   │  │
+│  │  Execute with heuristic guidance.                │  │
+│  │  Retrieve similar experiences. Apply skills.     │  │
+│  │  Use System 1 for known patterns,                │  │
+│  │  System 2 for novel challenges.                  │  │
+│  └──────────────────────────────────────────────────┘  │
+│                        |                               │
+│                        v                               │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  E - EVALUATION                                  │  │
+│  │  Validate output against Success Manifest.       │  │
+│  │  Independent critic -- does not trust the         │  │
+│  │  executor's self-assessment.                     │  │
+│  └──────────────────────────────────────────────────┘  │
+│                        |                               │
+│                        v                               │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  DECISION BRANCH                                 │  │
+│  │  Pass     --> Crystallize experience --> Done     │  │
+│  │  Stuck    --> Switch strategy                     │  │
+│  │  Budget   --> Escalate to human                   │  │
+│  │  Retry    --> Inject feedback --> Back to O        │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+```
+
+### Principle Phase
+
+The Principle phase anchors the entire execution on first principles:
+
+1. Parse the user's intent from their message and context.
+2. Generate a Success Manifest defining completion criteria, hard constraints, and soft metrics.
+3. This manifest becomes the contract that all subsequent phases are evaluated against.
+
+The Principle phase ensures that the agent always knows where it is going before it starts moving.
+
+### Operation Phase
+
+The Operation phase executes the plan using the dual-process cognitive architecture:
+
+1. Retrieve similar past experiences from the vector database (System 1).
+2. If a high-confidence match exists, apply the known solution pattern.
+3. If not, engage the LLM for deep reasoning and plan generation (System 2).
+4. Execute the plan through the Dispatcher's task graph, invoking tools and generating responses.
+
+### Evaluation Phase
+
+The Evaluation phase validates the results against the Success Manifest:
+
+1. An independent critic evaluates the output — it does not trust the executor's self-assessment.
+2. Each criterion in the Success Manifest is checked: hard constraints must all pass; soft metrics are scored.
+3. The evaluation produces a verdict: pass, retry, stuck, or budget exceeded.
+
+The separation between executor and critic is crucial. Self-assessment is unreliable — the same process that produced a flawed output will often judge it as correct. An independent evaluator catches errors that the executor misses.
+
+### Decision Branch
+
+Based on the evaluation verdict:
+
+- **Pass**: The task is complete. The successful execution path is crystallized into the experience database for future reuse. Done.
+- **Retry**: The output is close but not quite right. Evaluation feedback is injected back into the Operation phase for another attempt.
+- **Stuck**: The current strategy is not working. The agent switches to an alternative approach — different tools, different reasoning path, different decomposition.
+- **Budget exceeded**: The entropy budget (a cap on retry attempts) has been exhausted. The agent escalates to the human user rather than spinning in an infinite loop.
+
+### Entropy Budget
+
+The entropy budget is a critical safety mechanism. It prevents the agent from wasting resources on tasks where it is not making progress:
+
+- Each POE loop iteration consumes entropy.
+- If the entropy budget is exhausted without achieving the Success Manifest, the agent stops and escalates.
+- This prevents infinite retry loops and ensures that the agent knows when to ask for help.
+
+The budget is calibrated based on task complexity — simple tasks get small budgets (fail fast), complex tasks get larger budgets (persist through difficulty).
+
+## Self-Learning
+
+The thinking model is not static. Every successful task completion feeds back into the system through the experience crystallization pipeline:
+
+1. **Record**: The complete execution trace — input, plan, actions, results — is stored as an experience entry.
+2. **Detect**: When 3 or more similar experiences accumulate, the system detects a recurring pattern and creates a candidate skill.
+3. **Promote**: When a candidate skill has been successfully reused 5 or more times with high reliability, it is promoted to a permanent skill.
+
+```
+Ad-hoc success        -->  Experience entry (vector DB)
+Recurring pattern     -->  Candidate skill
+Proven reliability    -->  Permanent skill
+```
+
+Permanent skills become part of System 1's pattern library, allowing the agent to handle previously complex tasks with Level 1 (associative) thinking instead of Level 2 (analytical) thinking. This is how the agent gets faster and more capable over time.
+
+## Putting It All Together
+
+The complete thinking model works as follows:
+
+1. **OTAF Cycle** provides the moment-to-moment execution loop.
+2. **Dual-Process Cognition** balances speed (System 1) with depth (System 2).
+3. **Thinking Levels** match cognitive effort to task complexity.
+4. **First Principles Anchoring** ensures the agent always knows its goal.
+5. **POE Architecture** structures execution into principle, operation, and evaluation phases with accountability.
+6. **Self-Learning** transforms successful executions into reusable skills.
+
+The result is an agent that does not just react to prompts but **pursues goals with purpose, learns from experience, and knows when to ask for help**.
+
+## Further Reading
+
+- [Design Philosophy](./overview) — The foundational principles behind Aleph
+- [Five Layers of Emergence](./five-layers) — How the thinking model fits into the L1-L5 intelligence stack
+- [Domain Modeling](./domain-modeling) — How the POE context is modeled using DDD patterns
+- [Architecture](/docs/en/architecture) — Technical implementation of the agent loop

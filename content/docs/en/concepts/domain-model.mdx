@@ -1,0 +1,178 @@
+---
+title: "Domain Model"
+description: "Domain-Driven Design layer with Entity, AggregateRoot, and ValueObject traits. Pure domain logic with no platform dependencies."
+---
+
+The `domain` module implements Aleph's domain model using Domain-Driven Design (DDD) principles. It defines the core vocabulary of the system — what a Session is, what a Task means, how Intent is structured — independent of any infrastructure or framework concerns.
+
+## Design Philosophy
+
+The domain layer follows three DDD principles:
+
+1. **Pure domain logic** — No database queries, no HTTP calls, no file I/O
+2. **Type-safe boundaries** — Invalid states are unrepresentable via the type system
+3. **Explicit invariants** — Domain rules are enforced at construction time, not checked later
+
+This module has no dependencies on `tokio`, `axum`, or any async runtime. It can be tested with plain `#[test]` functions, no runtime needed.
+
+---
+
+## Core Traits
+
+### Entity
+
+Objects with a unique, immutable identity that remains constant through state changes.
+
+```rust
+pub trait Entity {
+    type Id: Eq + Hash + Clone;
+    fn id(&self) -> &Self::Id;
+}
+```
+
+Entities are compared by identity, not by attributes. Two Session objects with the same `session_id` are the same entity, even if their other fields differ.
+
+**Examples:** `Session`, `Task`, `Agent`
+
+### AggregateRoot
+
+The entry point of an aggregate — a consistency boundary that enforces domain invariants across multiple entities.
+
+```rust
+pub trait AggregateRoot: Entity {
+    fn version(&self) -> u64;
+}
+```
+
+The AggregateRoot is the only object that outside code can reference directly. All other objects in the aggregate are accessed through it.
+
+**Examples:** `TaskGraph` (contains Tasks and Dependencies), `MemoryFact` (contains ContextAnchors)
+
+### ValueObject
+
+Immutable objects defined entirely by their attributes. Two ValueObjects with the same attributes are equal and interchangeable.
+
+```rust
+pub trait ValueObject: Eq + Clone {
+    fn validate(&self) -> Result<(), ValidationError>;
+}
+```
+
+ValueObjects have no identity — they are pure data. Changing any attribute creates a new ValueObject.
+
+**Examples:** `TaskStatus`, `FactType`, `GuestScope`, `FileContent`
+
+---
+
+## Domain Types
+
+### Credentials
+
+Represents authentication credentials with automatic secret redaction.
+
+```rust
+pub struct Credentials {
+    pub username: String,
+    pub secret: String, // Redacted in Debug output
+}
+```
+
+The `Debug` implementation prints `"[REDACTED]"` instead of the actual secret, preventing accidental exposure in logs.
+
+### TrustLevel
+
+Inferred trust level based on connection source.
+
+```rust
+pub enum TrustLevel {
+    Local,      // localhost / loopback
+    Private,    // Private IP ranges (RFC 1918)
+    Public,     // Public internet
+    Untrusted,  // Known bad actors / blocklist
+}
+```
+
+Automatically inferred from IPv4/IPv6 addresses or hostnames. Used by the Gateway's security layer to determine default permission scopes.
+
+### FileContent
+
+Validates file content against A2A specification invariants.
+
+```rust
+pub struct FileContent {
+    pub mime_type: String,
+    pub data: Vec<u8>,
+    pub name: String,
+}
+```
+
+The `validate()` method enforces:
+- MIME type is not empty and is parseable
+- Data is non-empty
+- Filename is valid (no path traversal, no null bytes)
+
+---
+
+## Bounded Contexts
+
+Aleph's domain is organized into bounded contexts, each with its own ubiquitous language:
+
+| Context | Key Types | Location |
+|---|---|---|
+| **Dispatcher** | `TaskGraph`, `Task`, `TaskStatus` | `src/dispatcher/` |
+| **Memory** | `MemoryFact`, `ContextAnchor`, `FactType` | `src/memory/` |
+| **Intent** | `AggregatedIntent`, `IntentSignal` | `src/intent/` |
+| **Identity** | `IdentityContext`, `GuestScope`, `TrustLevel` | `src/gateway/security/` |
+
+Each context owns its own types and invariants. Cross-context references use explicit mapping layers, not direct type sharing.
+
+---
+
+## Design Patterns in Practice
+
+### Newtype for Type Safety
+
+```rust
+pub struct SessionId(String);
+pub struct TaskId(String);
+
+// Cannot accidentally pass a TaskId where SessionId is expected
+fn load_session(id: SessionId) -> Option<Session> { ... }
+```
+
+### Enum State Machines
+
+```rust
+pub enum TaskStatus {
+    Pending,
+    Running { started_at: i64 },
+    Completed { result: TaskResult },
+    Failed { reason: String },
+}
+```
+
+Illegal states are unrepresentable — a Task cannot be both Pending and Completed.
+
+### Parse, Don't Validate
+
+```rust
+impl Email {
+    pub fn parse(input: &str) -> Result<Self, ValidationError> {
+        // Rejects invalid input at the boundary
+        // Returns a typed Email that is guaranteed valid
+    }
+}
+```
+
+---
+
+## Code Location
+
+- `src/domain/` — Domain types and traits
+- `docs/reference/DOMAIN_MODELING.md` — Extended domain modeling guide
+
+## See Also
+
+- [Architecture Overview](../architecture/overview) — Where domain fits in the 5-layer model
+- [Design Patterns](../development/design-patterns) — Context, Newtype, Builder patterns
+- [Session Management](../architecture/session-service) — Identity and session domain concepts

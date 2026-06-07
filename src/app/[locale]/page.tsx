@@ -18,6 +18,7 @@ import {
   Check
 } from 'lucide-react';
 import { CodeBlock } from "@/components/shared/CodeBlock";
+import { Link } from "@/i18n/navigation";
 
 export default function HomePage() {
   const [activeLayer, setActiveLayer] = useState(5);
@@ -82,7 +83,15 @@ export default function HomePage() {
       {/* Header */}
       <header className="fixed top-0 w-full p-8 flex justify-between items-center z-50 mix-blend-difference pointer-events-none">
         <div className="text-[10px] tracking-[0.4em] text-gray-400 uppercase font-mono">PROJECT: ALEPH</div>
-        <div className="text-[10px] tracking-[0.2em] text-cyan-400 font-mono animate-pulse">STATUS: EMERGING</div>
+        <div className="flex items-center gap-8">
+          <Link
+            href="/docs"
+            className="pointer-events-auto text-[10px] tracking-[0.4em] text-gray-400 hover:text-cyan-400 uppercase font-mono transition-colors"
+          >
+            DOCS
+          </Link>
+          <div className="text-[10px] tracking-[0.2em] text-cyan-400 font-mono animate-pulse">STATUS: EMERGING</div>
+        </div>
       </header>
 
       {/* 1. Hero Section */}
@@ -137,13 +146,13 @@ export default function HomePage() {
                   className={`p-5 border-l border-gray-800 cursor-pointer transition-all duration-500 ${activeLayer === level ? 'border-cyan-400 bg-cyan-950/20' : 'hover:border-gray-600'}`}
                 >
                   <div className={`flex items-center justify-between ${activeLayer === level ? 'text-cyan-300' : 'text-gray-400'}`}>
-                    <span className="font-mono text-xs tracking-[0.2em]">{layers.find(l => l.id === level).name}</span>
+                    <span className="font-mono text-xs tracking-[0.2em]">{layers.find(l => l.id === level)!.name}</span>
                     {activeLayer === level && <Sparkles className="w-4 h-4 animate-pulse" />}
                   </div>
                   <AnimatePresence mode="wait">
                     {activeLayer === level && (
                       <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="mt-4 text-xs text-gray-300 font-light leading-relaxed">
-                        {layers.find(l => l.id === level).detail}
+                        {layers.find(l => l.id === level)!.detail}
                       </motion.div>
                     )}
                   </AnimatePresence>

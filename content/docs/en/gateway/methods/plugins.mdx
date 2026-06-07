@@ -1,0 +1,231 @@
+---
+title: "plugins.*"
+description: "Plugin management RPC methods"
+---
+
+Plugin methods manage the plugin system — load, unload, list, and configure plugins that extend Aleph's capabilities. Plugins can add tools, handlers, event listeners, and custom behavior.
+
+## Methods
+
+### plugins.list
+
+List all loaded plugins and their status.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "plugins.list",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "plugins": [
+      {
+        "id": "filesystem",
+        "name": "File System Plugin",
+        "version": "1.0.0",
+        "enabled": true,
+        "tools": ["read_file", "write_file", "list_dir"],
+        "handlers": ["file_change_event"]
+      }
+    ]
+  }
+}
+```
+
+### plugins.status
+
+Get detailed status of a specific plugin.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "plugins.status",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "id": "filesystem",
+    "name": "File System Plugin",
+    "version": "1.0.0",
+    "enabled": true,
+    "loaded_at": "2024-01-15T10:30:00Z",
+    "tools_count": 3,
+    "handlers_count": 1
+  }
+}
+```
+
+### plugins.load
+
+Load a plugin from a path or plugin ID.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "plugins.load",
+  "params": {
+    "path": "~/.aleph/plugins/custom_plugin"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "loaded": true,
+    "plugin_id": "custom_plugin"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | Yes* | Path to plugin directory or file |
+| `plugin_id` | string | Yes* | Plugin identifier (alternative to path) |
+
+*One of `path` or `plugin_id` is required.
+
+### plugins.unload
+
+Unload a plugin by ID.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "plugins.unload",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "unloaded": true
+  }
+}
+```
+
+### plugins.reload
+
+Reload a plugin (unload then load).
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "plugins.reload",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "reloaded": true
+  }
+}
+```
+
+### plugins.enable
+
+Enable a previously disabled plugin.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "plugins.enable",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+### plugins.disable
+
+Disable a plugin without unloading it.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "plugins.disable",
+  "params": {
+    "plugin_id": "filesystem"
+  }
+}
+```
+
+## Plugin Structure
+
+Plugins are loaded from `~/.aleph/plugins/` and typically contain:
+
+```
+my_plugin/
+  plugin.toml       # Plugin manifest
+  src/
+    lib.rs          # Plugin entry point
+  skills/           # Optional bundled skills
+```
+
+**plugin.toml example:**
+
+```toml
+[plugin]
+id = "my_plugin"
+name = "My Plugin"
+version = "1.0.0"
+description = "Does something useful"
+
+[plugin.tools]
+provides = ["my_tool"]
+
+[plugin.events]
+listens = ["session.start"]
+```
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [Architecture: Plugins](/docs/en/architecture/plugins) -- Plugin system architecture

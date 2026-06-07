@@ -1,0 +1,384 @@
+---
+title: "Deployment"
+description: "Deploy Aleph as a persistent service on macOS, Linux, Docker, or behind a reverse proxy"
+---
+
+This guide covers the most common ways to run Aleph in production — from a simple foreground process to a fully managed system service behind a reverse proxy with TLS.
+
+## Local Development
+
+The simplest way to run Aleph is directly from the command line:
+
+```bash
+# Foreground (Ctrl+C to stop)
+cargo run --bin aleph-server
+
+# Or with just
+just dev
+```
+
+The gateway listens on `ws://127.0.0.1:18790` by default.
+
+## macOS — launchd Service
+
+On macOS, create a launchd user agent for auto-start.
+
+### Create the plist
+
+Create `~/Library/LaunchAgents/com.aleph.daemon.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aleph.daemon</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/aleph-server</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/.aleph/logs/aleph.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/.aleph/logs/aleph-error.log</string>
+</dict>
+</plist>
+```
+
+### Manage the Service
+
+```bash
+# Load the service
+launchctl load ~/Library/LaunchAgents/com.aleph.daemon.plist
+
+# Start
+launchctl start com.aleph.daemon
+
+# Check status
+launchctl list | grep com.aleph
+
+# Stop
+launchctl stop com.aleph.daemon
+
+# Unload
+launchctl unload ~/Library/LaunchAgents/com.aleph.daemon.plist
+```
+
+## Linux — systemd Service
+
+On Linux, create a systemd user service for Aleph.
+
+### Create the Unit File
+
+```bash
+mkdir -p ~/.config/systemd/user
+```
+
+```ini title="~/.config/systemd/user/aleph.service"
+[Unit]
+Description=Aleph AI Assistant Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/aleph-server
+Restart=on-failure
+RestartSec=5
+Environment=ALEPH_HOME=%h/.aleph
+Environment=RUST_LOG=info
+
+# Resource limits
+MemoryMax=1G
+MemoryHigh=512M
+CPUQuota=80%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=read-only
+ReadWritePaths=%h/.aleph
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+```
+
+### Enable and Start
+
+```bash
+# Reload unit files
+systemctl --user daemon-reload
+
+# Enable on boot (requires lingering)
+systemctl --user enable aleph
+
+# Start now
+systemctl --user start aleph
+
+# Check status
+systemctl --user status aleph
+```
+
+### Enable User Lingering
+
+By default, systemd user services stop when you log out. Enable lingering so Aleph runs even when no session is active:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+### View Logs
+
+```bash
+journalctl --user -u aleph -f
+```
+
+## Docker Deployment
+
+### Dockerfile
+
+Create a multi-stage Dockerfile for a minimal production image:
+
+```dockerfile title="Dockerfile"
+# Build stage
+FROM rust:1.92-bookworm AS builder
+
+WORKDIR /build
+COPY . .
+
+# Install wasm-bindgen and npm dependencies for WASM build
+RUN cargo install wasm-bindgen-cli
+RUN apt-get update && apt-get install -y npm
+
+# Build the server (just build handles WASM + Swift + Rust)
+RUN cargo build -p alephcore --bin aleph-server --release
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/aleph-server /usr/local/bin/aleph-server
+
+# Create aleph user
+RUN useradd -m -s /bin/bash aleph
+USER aleph
+
+RUN mkdir -p /home/aleph/.aleph/logs
+
+EXPOSE 18790
+
+ENTRYPOINT ["aleph-server"]
+```
+
+### Docker Compose
+
+For a complete setup with persistent storage:
+
+```yaml title="docker-compose.yml"
+services:
+  aleph:
+    build: .
+    container_name: aleph
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18790:18790"
+    volumes:
+      - aleph-data:/home/aleph/.aleph
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - RUST_LOG=info
+
+volumes:
+  aleph-data:
+```
+
+Start the stack:
+
+```bash
+# Set your API key
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+
+# Build and start
+docker compose up -d
+
+# Check logs
+docker compose logs -f aleph
+```
+
+## Environment Variables
+
+These environment variables are recognized in production:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ANTHROPIC_API_KEY` | Anthropic API key | — |
+| `OPENAI_API_KEY` | OpenAI API key | — |
+| `GOOGLE_AI_API_KEY` | Google AI API key | — |
+| `OPENROUTER_API_KEY` | OpenRouter API key | — |
+| `ALEPH_HOME` | Override config directory | `~/.aleph` |
+| `ALEPH_MASTER_KEY` | Encryption key for the secret vault | — |
+| `RUST_LOG` | Log level (`trace`, `debug`, `info`, `warn`, `error`) | `info` |
+
+API keys can also be set through the configuration file. Environment variables take precedence.
+
+## Reverse Proxy
+
+If you expose Aleph over the network, place it behind a reverse proxy for TLS termination and access control. The gateway uses WebSocket, so make sure your proxy supports WebSocket upgrades.
+
+### Nginx
+
+```nginx title="/etc/nginx/sites-available/aleph"
+upstream aleph_gateway {
+    server 127.0.0.1:18790;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name aleph.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/aleph.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/aleph.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://aleph_gateway;
+        proxy_http_version 1.1;
+
+        # WebSocket support
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Timeouts for long-lived WebSocket connections
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
+}
+```
+
+Enable and reload:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/aleph /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### Caddy
+
+Caddy handles TLS automatically via Let's Encrypt:
+
+```txt title="Caddyfile"
+aleph.example.com {
+    reverse_proxy 127.0.0.1:18790
+}
+```
+
+Caddy supports WebSocket upgrades by default — no extra configuration needed.
+
+```bash
+sudo caddy reload --config /etc/caddy/Caddyfile
+```
+
+## HTTPS and TLS
+
+Aleph also supports TLS natively without a reverse proxy. Configure it in `~/.aleph/config.toml`:
+
+```toml
+[gateway]
+port = 18790
+bind = "0.0.0.0"
+
+[gateway.tls]
+cert = "/etc/letsencrypt/live/aleph.example.com/fullchain.pem"
+key = "/etc/letsencrypt/live/aleph.example.com/privkey.pem"
+```
+
+When TLS is configured, the gateway listens on `wss://` instead of `ws://`.
+
+For most deployments, using a reverse proxy for TLS is simpler — it handles certificate renewal and lets you serve other services on the same host.
+
+## Monitoring and Health Checks
+
+### Health Endpoint
+
+The gateway exposes a health check at the HTTP root:
+
+```bash
+curl http://localhost:18790/health
+# Expected: HTTP 200 with status information
+```
+
+For automated monitoring, use this endpoint in your Docker Compose, systemd, or monitoring tool.
+
+### Log Rotation
+
+In systemd, journald handles rotation automatically. For other deployments, configure logrotate:
+
+```txt title="/etc/logrotate.d/aleph"
+/home/aleph/.aleph/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
+```
+
+## Backup Strategy
+
+The critical data to back up lives in `~/.aleph/`:
+
+| Path | Contents | Priority |
+|------|----------|----------|
+| `config.toml` | All configuration | High |
+| `sessions/` | Conversation databases | Medium |
+| `plugins/` | Installed plugins | Low (can reinstall) |
+| `logs/` | Application logs | Low |
+
+A simple cron job:
+
+```bash
+# Daily backup of config and sessions
+0 3 * * * tar -czf ~/backups/aleph-$(date +\%Y\%m\%d).tar.gz \
+    ~/.aleph/config.toml \
+    ~/.aleph/sessions/
+```
+
+For Docker volumes, use `docker cp` or mount the volume to a backup container.
+
+## Security Checklist
+
+Before exposing Aleph to the network:
+
+- [ ] **Bind address** — Set `gateway.bind` to `"127.0.0.1"` unless you need external access
+- [ ] **Authentication** — Enable `gateway.require_auth = true`
+- [ ] **TLS** — Always use HTTPS/WSS in production
+- [ ] **Firewall** — Only open port 443 (via reverse proxy), never expose 18790 directly
+- [ ] **Master key** — Set `ALEPH_MASTER_KEY` to encrypt the secret vault
+- [ ] **Allowlists** — Configure `channel.telegram.allow_from` to restrict access
+
+## Next Steps
+
+- [Configuration](./configuration) — Full reference for `config.toml`
+- [Security](/docs/en/security/overview) — In-depth security model
+- [Gateway Protocol](/docs/en/gateway/protocol) — WebSocket JSON-RPC API

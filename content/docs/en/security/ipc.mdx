@@ -1,0 +1,279 @@
+---
+title: "IPC Protocol"
+description: "HMAC-SHA256 authenticated Unix socket protocol for secure approval communication between Gateway and desktop clients"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+Aleph uses a Unix domain socket IPC (Inter-Process Communication) protocol to securely route execution approval requests between the Gateway (server) and local UI clients such as the macOS desktop application. The protocol provides HMAC-SHA256 challenge-response authentication, newline-delimited JSON messaging, and keepalive support.
+
+This protocol solves a specific problem: when the AI agent wants to execute a shell command, the Gateway needs to ask the user for approval. If the user is interacting through the macOS desktop app (rather than a chat interface), the approval request must travel securely between two local processes.
+
+**Source locations:**
+- IPC protocol: `src/exec/ipc.rs`
+- Socket messages: `src/exec/socket.rs`
+- Approval bridge: `src/exec/bridge.rs`
+- Configuration: `src/exec/config.rs`
+
+## Architecture
+
+```
+┌──────────────────────┐          Unix Socket          ┌──────────────────────┐
+│       Gateway        │ ◄────────────────────────────► │     macOS App        │
+│    (IPC Server)      │   ~/.aleph/exec-approvals.sock │    (IPC Client)      │
+│                      │                                │                      │
+│  ExecApprovalManager │   ◄── Challenge/Response ──►   │  IpcClient           │
+│  IpcServer           │   ◄── Approval Requests ──►    │  IpcConnection       │
+│                      │   ◄── Decisions ──────────►    │                      │
+└──────────────────────┘                                └──────────────────────┘
+```
+
+The IPC server listens on a Unix domain socket at `~/.aleph/exec-approvals.sock` with permissions set to `0600` (owner-only read/write). Each incoming connection must complete HMAC-SHA256 authentication before any messages are exchanged.
+
+## Connection Lifecycle
+
+### Authentication Flow
+
+Every new connection must complete a three-step challenge-response handshake:
+
+```
+Server                                          Client
+  │                                                │
+  │──── Challenge { nonce: "a1b2c3..." } ────────►│
+  │                                                │
+  │◄─── ChallengeResponse { response: "d4e5..." }─│
+  │                                                │
+  │     [Server verifies HMAC-SHA256]              │
+  │                                                │
+  │──── AuthResult { success: true } ─────────────►│
+  │                                                │
+  │     [Authenticated session established]        │
+  │                                                │
+  │◄──► Messages (approvals, decisions, pings) ◄──►│
+  │                                                │
+```
+
+**Step 1: Challenge.** The server generates a 32-byte random nonce using a cryptographic RNG (`OsRng`) and sends it as a hex-encoded string.
+
+**Step 2: Response.** The client computes `HMAC-SHA256(shared_secret, nonce_bytes)` and sends the result hex-encoded.
+
+**Step 3: Verification.** The server independently computes the same HMAC and compares. If the values match, authentication succeeds. The comparison is not done in constant time at this layer (the token itself is a shared local secret, not a user-facing credential).
+
+```rust
+fn compute_hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut mac = HmacSha256::new_from_slice(key)
+        .expect("HMAC key size issue");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+```
+
+### Shared Secret
+
+The shared secret (token) is configured in `exec-approvals.json`:
+
+```json
+{
+  "socket": {
+    "path": "~/.aleph/exec-approvals.sock",
+    "token": "hex-encoded-32-byte-secret"
+  }
+}
+```
+
+If no token is configured, the Gateway generates a random 32-byte secret on first startup and persists it.
+
+## Message Format
+
+All messages are newline-delimited JSON. Each message is a single JSON object followed by `\n`. The `type` field (snake_case) determines the message variant:
+
+### Message Types
+
+```rust
+pub enum IpcMessage {
+    // Authentication
+    Challenge { nonce: String },
+    ChallengeResponse { response: String },
+    AuthResult { success: bool, error: Option<String> },
+
+    // Approval workflow
+    ApprovalRequest { id: String, request: ApprovalRequestPayload, timeout_ms: u64 },
+    ApprovalDecision { id: String, decision: ApprovalDecisionType, resolved_by: Option<String> },
+
+    // Pending query
+    GetPending,
+    PendingList { pending: Vec<PendingInfo> },
+
+    // Keepalive
+    Ping,
+    Pong,
+
+    // Error
+    Error { message: String },
+}
+```
+
+### Approval Request Payload
+
+When the Gateway needs approval for a command, it sends:
+
+```json
+{
+  "type": "approval_request",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "request": {
+    "command": "npm install express",
+    "cwd": "/Users/alice/project",
+    "agent_id": "main",
+    "session_key": "agent:main:main",
+    "executable": "npm",
+    "resolved_path": "/usr/local/bin/npm",
+    "segments": [
+      {
+        "raw": "npm install express",
+        "executable": "npm",
+        "resolved_path": "/usr/local/bin/npm",
+        "args": ["install", "express"]
+      }
+    ]
+  },
+  "timeout_ms": 120000
+}
+```
+
+The `segments` array supports piped commands -- each segment represents one command in a pipeline.
+
+### Approval Decision
+
+The client responds with:
+
+```json
+{
+  "type": "approval_decision",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "decision": "allow-once",
+  "resolved_by": "Alice (macOS App)"
+}
+```
+
+Decision values are kebab-case strings:
+
+| Value | Meaning |
+|-------|---------|
+| `allow-once` | Execute this command only |
+| `allow-always` | Execute and add to permanent allowlist |
+| `deny` | Block execution |
+
+### Pending Query
+
+Clients can request a list of all pending approvals:
+
+```json
+// Request
+{ "type": "get_pending" }
+
+// Response
+{
+  "type": "pending_list",
+  "pending": [
+    {
+      "id": "550e8400-...",
+      "command": "npm install",
+      "cwd": "/project",
+      "agent_id": "main",
+      "remaining_ms": 95000
+    }
+  ]
+}
+```
+
+This is used when the macOS app opens and needs to display any approval requests that are already waiting.
+
+### Keepalive
+
+Clients send periodic pings to keep the connection alive:
+
+```json
+// Client
+{ "type": "ping" }
+
+// Server
+{ "type": "pong" }
+```
+
+## Socket Security
+
+### File Permissions
+
+The socket file is created with mode `0600` (Unix permissions), restricting access to the socket owner:
+
+```rust
+#[cfg(unix)]
+{
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(&self.socket_path, perms)?;
+}
+```
+
+This prevents other users on the system from connecting to the socket.
+
+### Stale Socket Cleanup
+
+If a socket file exists from a previous Gateway run, the server removes it before binding:
+
+```rust
+if self.socket_path.exists() {
+    std::fs::remove_file(&self.socket_path)?;
+}
+```
+
+### Connection Isolation
+
+Each client connection is handled in an independent `tokio::spawn` task. A compromised or misbehaving client cannot affect other connections or the server's main loop.
+
+## Client Implementation
+
+The `IpcClient` struct provides a high-level API for connecting and interacting with the Gateway:
+
+```rust
+// Connect and authenticate
+let client = IpcClient::new("~/.aleph/exec-approvals.sock", secret);
+let mut conn = client.connect().await?;
+
+// Send a decision
+conn.send_decision("req-123", ApprovalDecisionType::AllowOnce, Some("Alice".into())).await?;
+
+// Query pending approvals
+let pending = conn.get_pending().await?;
+
+// Keepalive
+conn.ping().await?;
+```
+
+<Callout type="info">
+The IPC client is designed for the macOS desktop application but can be used by any local process that has access to the shared secret. The protocol is transport-agnostic -- while it currently uses Unix domain sockets, the message format could work over TCP or named pipes.
+</Callout>
+
+## Error Handling
+
+The protocol defines typed errors for common failure modes:
+
+| Error | Cause |
+|-------|-------|
+| `AuthFailed` | HMAC verification failed or unexpected message during handshake |
+| `InvalidMessage` | Received unexpected message type for current state |
+| `ConnectionClosed` | Remote end closed the socket (0 bytes read) |
+| `Timeout` | Operation did not complete within the expected timeframe |
+| `Io` | Underlying I/O error (socket not found, permission denied) |
+| `Json` | Message could not be serialized/deserialized |
+
+When authentication fails, the server sends an `AuthResult` with `success: false` and the error reason before closing the connection.
+
+## See Also
+
+- [Execution Approval](/docs/en/security/exec-approval) -- The approval system that generates IPC requests
+- [Device Pairing](/docs/en/security/pairing) -- How devices establish trust before connecting
+- [Gateway Protocol](/docs/en/gateway/protocol) -- The higher-level RPC protocol used by remote clients

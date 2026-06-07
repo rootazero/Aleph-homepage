@@ -1,0 +1,205 @@
+---
+title: "思考器"
+description: "LLM 交互层、29 层 PromptBuilder、节缓存与思考级别。"
+---
+
+# 思考器
+
+思考器负责所有 LLM 交互与决策。它是 Think→Act 循环的大脑。
+
+**位置**：`src/thinker/`
+
+唯一的公开入口点是 `thinker::PromptBuilder`，它包装了一个 `PromptPipeline`。旧的 `agent_loop::PromptBuilder` 已在 Harness 迁移期间（第 6/7 阶段）移除。
+
+---
+
+## 组件
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `Thinker` | `mod.rs` | Main thinker interface |
+| `PromptBuilder` | `prompt_builder.rs` | Construct prompts from context |
+| `DecisionParser` | `decision_parser.rs` | Parse LLM responses |
+| `ModelRouter` | `model_router.rs` | Select optimal model |
+| `ToolFilter` | `tool_filter.rs` | Filter available tools |
+| `StreamingHandler` | `streaming/` | Handle streaming responses |
+| `InteractionManifest` | `interaction.rs` | Channel capability awareness |
+| `SecurityContext` | `security_context.rs` | Policy-driven permissions |
+| `ContextAggregator` | `context.rs` | Reconcile interaction and security |
+| `SoulManifest` | `soul.rs` | Identity/personality definition |
+| `IdentityResolver` | `identity.rs` | Layered identity resolution |
+
+---
+
+## PromptBuilder
+
+```rust
+// Standard usage
+let builder = PromptBuilder::new(config);
+let prompt = builder.build_system_prompt(&tools);
+
+// With soul identity
+let prompt = builder.build_system_prompt_with_soul(&tools, &soul, profile);
+
+// Sub-agent usage (replaces old prompt_sections::resolve())
+let prompt = builder.build_for_agent(&agent_def, &tools, &soul);
+
+// Mode + budget control
+let result = builder.build_with_budget(&tools, &soul, profile, PromptMode::Compact, &budget);
+```
+
+---
+
+## 29 层
+
+提示词系统由 29 个有序层组装而成。层根据缓存资格分为两个区域。
+
+### 稳定区（优先级 50–1600）
+
+内容很少变化 —— 符合节级别缓存条件。
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 50 | `SoulLayer` | Identity / personality |
+| 55 | `AgentRoleLayer` | Sub-agent role header + protocol blocks |
+| 75 | `ProfileLayer` | Workspace profile overlay |
+| 100 | `RoleLayer` | Base assistant role |
+| 300 | `EnvironmentLayer` | OS, date, working directory |
+| 400 | `RuntimeCapabilitiesLayer` | Python, Node.js, FFmpeg, etc. |
+| 500 | `ToolsLayer` | Tool definitions (text schema) |
+| 501 | `HydratedToolsLayer` | Semantic-retrieval tool definitions |
+| 550 | `ToolUsageGrammarLayer` | Data-driven tool usage conventions |
+| 600 | `SecurityLayer` | Safety / security guidelines |
+| 700 | `ProtocolTokensLayer` | JSON-RPC protocol tokens |
+| 710 | `HeartbeatLayer` | Session keep-alive instructions |
+| 800 | `OperationalGuidelinesLayer` | Operational rules |
+| 900 | `CitationStandardsLayer` | Citation formatting |
+| 1000 | `GenerationModelsLayer` | Available image/video/audio models |
+| 1050 | `SkillInstructionsLayer` | Active skill instructions |
+| 1100 | `SpecialActionsLayer` | Special action syntax |
+| 1200 | `ResponseFormatLayer` | Response structure |
+| 1300 | `GuidelinesLayer` | General guidelines |
+| 1350 | `ThinkingGuidanceLayer` | Structured reasoning guidance |
+| 1400 | `SkillModeLayer` | Strict skill workflow enforcement |
+| 1500 | `CustomInstructionsLayer` | User custom instructions |
+| 1600 | `LanguageLayer` | Response language |
+
+### 动态区（优先级 1700–1750）
+
+每次请求，永不缓存。
+
+| Priority | Layer | Notes |
+|----------|-------|-------|
+| 1700 | `InboundContextLayer` | Sender, channel, session metadata |
+| 1710 | `VoiceModeLayer` | Voice-specific response instructions |
+| 1720 | `RuntimeContextLayer` | Current time, session info |
+| 1730 | `IdentityFilesLayer` | SOUL.md, IDENTITY.md workspace files |
+| 1740 | `MemoryAugmentationLayer` | Dual-path memory injection |
+| 1750 | `SessionContextGuideLayer` | Compressed session context guidance |
+
+---
+
+## 组装路径
+
+每个层声明其参与的路径。流水线在组装时按路径过滤。
+
+| Path | Description |
+|------|-------------|
+| `Basic` | Minimal — config + tool list only |
+| `Hydration` | Tools come from semantic retrieval (`HydrationResult`) |
+| `Soul` | Soul-enriched — includes identity / personality |
+| `Context` | Context-aware — uses `ResolvedContext` |
+| `Cached` | Pre-cached stable prefix |
+
+---
+
+## 提示词模式
+
+| Mode | Behavior |
+|------|----------|
+| `Full` (default) | All 29 layers participate |
+| `Compact` | Excludes 13 heavy layers (`RuntimeContextLayer`, `EnvironmentLayer`, `RuntimeCapabilitiesLayer`, `ProtocolTokensLayer`, `HeartbeatLayer`, `OperationalGuidelinesLayer`, `CitationStandardsLayer`, `GenerationModelsLayer`, `SkillInstructionsLayer`, `SpecialActionsLayer`, `GuidelinesLayer`, `ThinkingGuidanceLayer`, `SkillModeLayer`) |
+| `Minimal` | Only 5 core layers: `SoulLayer`, `ToolsLayer`, `HydratedToolsLayer`, `ResponseFormatLayer`, `LanguageLayer` |
+
+---
+
+## 节级别缓存
+
+`execute_cached()` 在首次调用后缓存每个 `LayerStability::Stable` 层的输出。动态层始终重新计算。29 层中约 23 层为 Stable。
+
+```rust
+pipeline.invalidate("soul");    // Invalidate one layer by name
+pipeline.invalidate_all();      // Clear all cached sections
+pipeline.cache_stats();         // CacheStats { hits, misses, entries }
+```
+
+---
+
+## 思考级别
+
+```rust
+pub enum ThinkingLevel {
+    Off,        // No extended thinking
+    Minimal,    // budget_tokens: 1024
+    Low,        // budget_tokens: 2048
+    Medium,     // budget_tokens: 4096 (default)
+    High,       // budget_tokens: 8192
+    XHigh,      // budget_tokens: 16384
+}
+```
+
+---
+
+## 提供者降级
+
+当提供者不支持扩展思考时，Aleph 会优雅地降级：
+
+```
+User requests: thinking = High
+    │
+    ├─▶ Claude Opus → ✓ Native extended thinking
+    │
+    ├─▶ GPT-4o → ✗ No support → Fallback to o1
+    │
+    └─▶ Gemini → ✗ No support → Use thinkingPreface prompt
+```
+
+---
+
+## 流式架构
+
+```
+LLM Response Stream
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ BlockStateManager                        │
+│   • Track current block type             │
+│   • Detect block boundaries              │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ BlockReplyChunker                        │
+│   • Split into semantic chunks           │
+│   • Handle code blocks, lists, etc.      │
+└─────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ BlockCoalescer                           │
+│   • Merge small chunks                   │
+│   • Emit complete blocks                 │
+└─────────────────────────────────────────┘
+    │
+    ▼
+Event: StreamChunk { content, block_type }
+```
+
+---
+
+## 另请参阅
+
+- [Harness](./harness) — Think→Act 循环
+- [Dispatcher](./dispatcher) — 任务编排
+- [Memory System](./memory) — 上下文增强

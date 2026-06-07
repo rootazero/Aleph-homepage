@@ -1,0 +1,363 @@
+---
+title: "mcp.*"
+description: "MCP 服务器管理 RPC 方法"
+---
+
+MCP（模型上下文协议）方法管理外部 MCP 服务器 —— 添加、更新、删除、启动、停止和查询通过 MCP 协议暴露工具、资源和提示的服务器。
+
+## 方法
+
+### mcp.list
+
+列出所有已配置的 MCP 服务器及其状态。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "mcp.list",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "servers": [
+      {
+        "id": "filesystem",
+        "name": "File System",
+        "transport": "stdio",
+        "status": "running",
+        "healthy": true,
+        "tools_count": 5,
+        "resources_count": 0,
+        "prompts_count": 0
+      }
+    ]
+  }
+}
+```
+
+### mcp.add
+
+添加新的 MCP 服务器配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "mcp.add",
+  "params": {
+    "config": {
+      "id": "filesystem",
+      "name": "File System",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["@modelcontextprotocol/server-filesystem", "/home/user"],
+      "requires_runtime": "node"
+    }
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "ok": true
+  }
+}
+```
+
+**配置字段：**
+
+| 字段 | 类型 | 必填 | 描述 |
+|-------|------|----------|-------------|
+| `id` | string | 是 | 唯一服务器标识符 |
+| `name` | string | 是 | 显示名称 |
+| `transport` | string | 是 | `"stdio"` 或 `"http"` |
+| `command` | string | 否 | 要运行的命令（stdio 用） |
+| `args` | string[] | 否 | 命令参数 |
+| `url` | string | 否 | HTTP URL（http 传输用） |
+| `env` | object | 否 | 环境变量 |
+| `requires_runtime` | string | 否 | 运行时要求（例如，`"node"`） |
+
+### mcp.update
+
+更新现有 MCP 服务器配置（使用 upsert 语义）。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "mcp.update",
+  "params": {
+    "config": {
+      "id": "filesystem",
+      "name": "File System Updated",
+      "args": ["@modelcontextprotocol/server-filesystem", "/home/user", "/tmp"]
+    }
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "ok": true
+  }
+}
+```
+
+### mcp.delete
+
+删除 MCP 服务器配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "mcp.delete",
+  "params": {
+    "id": "filesystem"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "ok": true
+  }
+}
+```
+
+### mcp.status
+
+获取特定 MCP 服务器的详细状态。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "mcp.status",
+  "params": {
+    "id": "filesystem"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "id": "filesystem",
+    "name": "File System",
+    "transport": "stdio",
+    "status": "running",
+    "pid": 12345,
+    "uptime_seconds": 3600,
+    "restart_count": 0
+  }
+}
+```
+
+### mcp.start
+
+启动已停止的 MCP 服务器。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "mcp.start",
+  "params": {
+    "id": "filesystem"
+  }
+}
+```
+
+### mcp.stop
+
+停止运行的 MCP 服务器。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "mcp.stop",
+  "params": {
+    "id": "filesystem"
+  }
+}
+```
+
+### mcp.restart
+
+重启 MCP 服务器。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "mcp.restart",
+  "params": {
+    "id": "filesystem"
+  }
+}
+```
+
+### mcp.tools
+
+列出所有健康 MCP 服务器暴露的工具（聚合视图）。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "mcp.tools",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read contents of a file",
+        "server": "filesystem"
+      }
+    ]
+  }
+}
+```
+
+### mcp.resources
+
+列出所有健康 MCP 服务器暴露的资源。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "mcp.resources",
+  "params": {}
+}
+```
+
+### mcp.prompts
+
+列出所有健康 MCP 服务器暴露的提示。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "method": "mcp.prompts",
+  "params": {}
+}
+```
+
+### mcp.list_pending_approvals
+
+列出所有待处理的 MCP 审批请求。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "mcp.list_pending_approvals",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "result": []
+}
+```
+
+:::note
+此方法当前返回空数组，因为审批处理程序集成尚未完成。
+:::
+
+### mcp.respond_approval
+
+提交用户对 MCP 审批请求的响应。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "method": "mcp.respond_approval",
+  "params": {
+    "request_id": "req-123",
+    "approved": true,
+    "reason": "Looks safe"
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `request_id` | string | 是 | 审批请求 ID |
+| `approved` | boolean | 是 | 是否批准 |
+| `reason` | string | 否 | 决策的可选原因 |
+
+### mcp.cancel_approval
+
+取消待处理的 MCP 审批请求。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 14,
+  "method": "mcp.cancel_approval",
+  "params": {
+    "request_id": "req-123"
+  }
+}
+```
+
+## 参见
+
+- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
+- [架构：网关](/docs/zh/architecture/gateway) -- 网关架构

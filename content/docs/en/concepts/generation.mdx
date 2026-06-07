@@ -1,0 +1,209 @@
+---
+title: "Generation"
+description: "Media generation provider abstraction supporting images, video, audio, and speech through a unified trait-based interface with multiple backend providers."
+---
+
+The `generation` module defines a unified interface for media generation backends. Whether the agent needs an image, a video clip, background music, or text-to-speech, all providers implement the same `GenerationProvider` trait for consistent interaction.
+
+## Design Philosophy
+
+The generation system follows three principles:
+
+1. **Trait-based abstraction** — All backends (DALL-E, Stable Diffusion, ElevenLabs, etc.) implement the same interface
+2. **Type-safe requests** — `GenerationRequest` carries type, prompt, and parameters in a single struct
+3. **Graceful degradation** — Optional features (progress checking, cancellation, image editing) have default "not supported" implementations
+
+---
+
+## Core Types
+
+### GenerationRequest
+
+```rust
+pub struct GenerationRequest {
+    pub generation_type: GenerationType,
+    pub prompt: String,
+    pub params: GenerationParams,
+    pub request_id: Option<String>,
+    pub user_id: Option<String>,
+}
+```
+
+**Builder pattern:**
+
+```rust
+let request = GenerationRequest::image("A sunset over mountains")
+    .with_params(
+        GenerationParams::builder()
+            .width(1024)
+            .height(1024)
+            .quality("hd")
+            .build()
+    )
+    .with_request_id("req-001");
+```
+
+### GenerationType
+
+```rust
+pub enum GenerationType {
+    Image,
+    Video,
+    Audio,
+    Speech,
+    Transcription,
+}
+```
+
+### GenerationOutput
+
+```rust
+pub struct GenerationOutput {
+    pub generation_type: GenerationType,
+    pub data: GenerationData,
+    pub metadata: GenerationMetadata,
+    pub request_id: Option<String>,
+}
+```
+
+**Data variants:**
+- `GenerationData::Url(String)` — Remote URL
+- `GenerationData::Base64(String)` — Inline base64 data
+- `GenerationData::Bytes(Vec<u8>)` — Raw bytes
+
+---
+
+## GenerationProvider Trait
+
+```rust
+pub trait GenerationProvider: Send + Sync {
+    fn generate(
+        &self,
+        request: GenerationRequest,
+    ) -> Pin<Box<dyn Future<Output = GenerationResult<GenerationOutput>> + Send + '_>>;
+
+    fn name(&self) -> &str;
+    fn supported_types(&self) -> Vec<GenerationType>;
+    fn supports(&self, gen_type: GenerationType) -> bool;
+    fn color(&self) -> &str;  // Brand color for UI
+    fn default_model(&self) -> Option<&str>;
+
+    // Optional features with default "not supported" implementations
+    fn check_progress(&self,
+        _job_id: &str,
+    ) -> Pin<Box<dyn Future<... >> { /* default: Err(UnsupportedFeature) */ }
+
+    fn cancel(&self,
+        _job_id: &str,
+    ) -> Pin<Box<dyn Future<... >> { /* default: Err(UnsupportedFeature) */ }
+
+    fn edit_image(&self,
+        _request: GenerationRequest,
+    ) -> Pin<Box<dyn Future<... >> { /* default: Err(UnsupportedFeature) */ }
+
+    fn list_voices(&self) -> Vec<VoiceInfo> { vec![] }
+}
+```
+
+**Thread safety:** The trait extends `Send + Sync` so providers can be stored in `Arc<dyn GenerationProvider>` and shared across async tasks.
+
+---
+
+## Provider Registry
+
+```rust
+pub struct GenerationProviderRegistry {
+    providers: HashMap<String, Arc<dyn GenerationProvider>>,
+}
+
+impl GenerationProviderRegistry {
+    pub fn register(
+        &mut self,
+        provider: Arc<dyn GenerationProvider>,
+    ) { /* ... */ }
+
+    pub fn get(
+        &self,
+        name: &str,
+    ) -> Option<Arc<dyn GenerationProvider>> { /* ... */ }
+
+    pub fn names_for_type(
+        &self,
+        gen_type: GenerationType,
+    ) -> Vec<String> { /* ... */ }
+}
+```
+
+**Determinism:** `names()` and `names_for_type()` return sorted vectors.
+
+---
+
+## Supported Providers
+
+| Provider | Image | Video | Audio | Speech |
+|---|---|---|---|---|
+| DALL-E | ✅ | — | — | — |
+| Stable Diffusion | ✅ | — | — | — |
+| Midjourney | ✅ | — | — | — |
+| Runway | — | ✅ | — | — |
+| Pika | — | ✅ | — | — |
+| Sora | — | ✅ | — | — |
+| Suno | — | — | ✅ | — |
+| Udio | — | — | ✅ | — |
+| ElevenLabs | — | — | — | ✅ |
+| OpenAI TTS | — | — | — | ✅ |
+
+---
+
+## Response Parsing
+
+The module includes a parser for extracting generation requests from agent responses:
+
+```rust
+pub fn parse_generation_requests(
+    text: &str,
+) -> ParseResult<Vec<ParsedGenerationRequest>>
+```
+
+This allows the agent to express generation intents in natural language, which are then parsed into structured `GenerationRequest` objects.
+
+---
+
+## Mock Provider
+
+For testing:
+
+```rust
+let provider = MockGenerationProvider::new("mock")
+    .with_color("#10a37f")
+    .with_types(vec![GenerationType::Image]);
+
+let request = GenerationRequest::image("test");
+let output = provider.generate(request).await.unwrap();
+```
+
+---
+
+## Safety Properties
+
+- **No `.expect()` on user paths** — `MidjourneyProvider::new()` returns `Result`, not panics
+- **Division by zero guarded** — `determine_aspect_ratio()` checks `h == 0`
+- **No silent truncation** — `u32::try_from(s).ok()` for seed conversion (returns `None` for out-of-range)
+- **No lock issues** — Module has no shared mutable state
+- **No `static mut`** — Uses `LazyLock` for regex patterns
+
+---
+
+## Code Location
+
+- `src/generation/mod.rs` — `GenerationProvider` trait and mock provider
+- `src/generation/types.rs` — Request/output types and builder
+- `src/generation/error.rs` — `GenerationError` typed errors
+- `src/generation/registry.rs` — Provider registry
+- `src/generation/response_parser.rs` — Natural language request parsing
+- `src/generation/providers/` — Provider implementations
+
+## See Also
+
+- [Builtin Tools](./builtin-tools) — How generation tools are exposed to the agent
+- [Media Processing](./media-processing) — How generated media is processed

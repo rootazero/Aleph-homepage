@@ -1,0 +1,325 @@
+---
+title: "Discord"
+description: "Discord Bot interface for Aleph -- bot creation, permissions, and guild configuration"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+The Discord interface connects Aleph to Discord using the [serenity](https://github.com/serenity-rs/serenity) framework. It supports guild (server) channels, direct messages, file attachments, embeds, reactions, Markdown formatting, and slash commands.
+
+## Capabilities
+
+| Feature | Status |
+|---------|--------|
+| Text messages | Supported |
+| Markdown | Supported |
+| File attachments | Supported (send and receive) |
+| Images | Supported (send and receive) |
+| Audio/Video | Supported (send and receive) |
+| Message reactions | Supported |
+| Reply threading | Supported |
+| Message editing | Supported (with channel context) |
+| Message deletion | Supported (with channel context) |
+| Typing indicator | Supported |
+| Embeds | Supported (outbound) |
+| Slash commands | Configurable |
+| Max message length | 2,000 characters |
+| Max attachment size | 25 MB (100 MB with Nitro) |
+
+## Prerequisites
+
+<Steps>
+<Step>
+
+### Create a Discord Application
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Click **New Application** and give it a name (e.g., "Aleph")
+3. Navigate to the **Bot** section in the left sidebar
+4. Click **Add Bot** and confirm
+5. Under the bot's token section, click **Copy** to get your bot token
+
+</Step>
+<Step>
+
+### Configure Bot Intents
+
+Still in the Developer Portal, under the **Bot** section:
+
+1. Scroll down to **Privileged Gateway Intents**
+2. Enable **Message Content Intent** (required to read message text)
+3. Enable **Server Members Intent** if you need member-related features
+4. Save changes
+
+<Callout type="warn">
+The **Message Content Intent** is a privileged intent. Without it, the bot cannot read message text in guild channels. Discord requires verification for bots in 100+ servers.
+</Callout>
+
+</Step>
+<Step>
+
+### Generate an Invite URL
+
+Navigate to **OAuth2 > URL Generator**:
+
+1. Under **Scopes**, select `bot` and `applications.commands`
+2. Under **Bot Permissions**, select:
+   - **Send Messages** (required)
+   - **View Channel** (required)
+   - **Read Message History** (required)
+   - **Embed Links** (recommended)
+   - **Attach Files** (recommended)
+   - **Add Reactions** (recommended)
+   - **Use Slash Commands** (optional)
+   - **Manage Messages** (optional, for cleanup)
+3. Copy the generated URL and open it in your browser to invite the bot to your server
+
+</Step>
+<Step>
+
+### Enable the Discord Feature
+
+Build Aleph with the `discord` feature flag:
+
+```bash
+cargo build --release --features discord
+# or for all interfaces:
+cargo build --release --features all-interfaces
+```
+
+</Step>
+</Steps>
+
+## Configuration
+
+### Minimal Configuration
+
+```toml
+[[channels]]
+id = "discord"
+channel_type = "discord"
+enabled = true
+
+[channels.config]
+bot_token = "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ.ABcDeF.1234567890abcdefghijklmnop"
+```
+
+### Full Configuration Reference
+
+```toml
+[[channels]]
+id = "discord"
+channel_type = "discord"
+enabled = true
+
+[channels.config]
+# Bot token from Discord Developer Portal (required)
+# Supports ${ENV_VAR} expansion
+bot_token = "${DISCORD_BOT_TOKEN}"
+
+# Application ID for slash commands registration (optional)
+application_id = 123456789012345678
+
+# Guild (server) allowlist -- empty means allow all guilds
+allowed_guilds = [123456789012345678]
+
+# Channel allowlist within guilds -- empty means allow all channels
+allowed_channels = [987654321098765432]
+
+# Allow direct messages (default: true)
+dm_allowed = true
+
+# Prefix for text commands (default: "!")
+command_prefix = "!"
+
+# Respond only when mentioned in guilds (default: true)
+respond_to_mentions = true
+
+# Register and use slash commands (default: true)
+slash_commands_enabled = true
+
+# Send typing indicator while processing (default: true)
+send_typing = true
+
+# Gateway intents configuration
+[channels.config.intents]
+guild_messages = true      # Receive guild messages (default: true)
+direct_messages = true     # Receive DMs (default: true)
+message_content = true     # Read message content (default: true, privileged)
+guild_members = false      # Track guild member events (default: false, privileged)
+```
+
+<Callout type="warn">
+Discord bot tokens are long Base64-encoded strings (typically 59+ characters). Aleph validates the token length at config load time.
+</Callout>
+
+### Environment Variable Mode
+
+```bash
+export DISCORD_BOT_TOKEN="MTIzNDU2..."
+export DISCORD_APPLICATION_ID="123456789012345678"  # Optional
+```
+
+## Permission Audit
+
+Aleph includes a built-in permission audit system that checks the bot's permissions in each guild. Permissions are categorized into three levels:
+
+### Required Permissions
+
+These are essential for basic operation:
+
+| Permission | Flag | Purpose |
+|-----------|------|---------|
+| Send Messages | `0x800` | Send responses |
+| View Channel | `0x400` | See channels the bot is in |
+| Read Message History | `0x40000` | Read conversation context |
+
+### Recommended Permissions
+
+These enable richer interaction:
+
+| Permission | Flag | Purpose |
+|-----------|------|---------|
+| Embed Links | `0x4000` | Rich message embeds |
+| Attach Files | `0x8000` | Send file attachments |
+| Add Reactions | `0x40` | React to messages |
+
+### Optional Permissions
+
+| Permission | Flag | Purpose |
+|-----------|------|---------|
+| Manage Messages | `0x2000` | Delete/pin messages |
+| Use Slash Commands | `0x80000000` | Register slash commands |
+
+The audit produces a traffic-light assessment:
+
+- **Green (Healthy)** -- All required and recommended permissions granted
+- **Yellow (Degraded)** -- Required permissions present, some recommended missing
+- **Red (Critical)** -- Missing required permissions; bot cannot function
+
+You can check permission status via the `interface.status` RPC method.
+
+## Message Routing
+
+### Guild Channel Messages
+
+In guild channels, the bot processes messages when:
+
+1. The message is **not from a bot** (prevents self-loops)
+2. The guild is in `allowed_guilds` (or the list is empty)
+3. The channel is in `allowed_channels` (or the list is empty)
+4. The bot is **mentioned**, or the message starts with `command_prefix`, or `respond_to_mentions` is `false`
+
+When `respond_to_mentions` is `true` (default), the bot only responds to messages that `@mention` it or use the command prefix. This prevents the bot from responding to every message in a busy channel.
+
+The mention text is automatically stripped from the message before routing to the agent.
+
+### Direct Messages
+
+DMs are processed whenever `dm_allowed` is `true`. No prefix or mention is required -- all DM text is forwarded directly to the agent.
+
+### Conversation IDs
+
+| Context | Conversation ID |
+|---------|----------------|
+| Guild channel | Channel ID (e.g., `987654321098765432`) |
+| Direct message | `dm:{user_id}` (e.g., `dm:123456789012345678`) |
+
+## Session Routing
+
+Each Discord conversation maps to a session key:
+
+| Context | Session Key |
+|---------|------------|
+| DM with user | `agent:main:dm:{user_id}` or `agent:main:discord:dm:{user_id}` |
+| Guild channel | `agent:main:discord:group:{channel_id}` |
+
+## Attachments
+
+### Receiving Attachments
+
+Discord attachments are extracted with full metadata:
+
+```rust
+Attachment {
+    id: "attachment_id",
+    mime_type: "image/png",      // From content_type or default
+    filename: Some("image.png"), // Original filename
+    size: Some(12345),           // Size in bytes
+    url: Some("https://cdn.discordapp.com/..."), // CDN URL
+}
+```
+
+### Sending Attachments
+
+Outbound attachments are sent as Discord file attachments. Currently, in-memory byte data is supported:
+
+```rust
+let msg = OutboundMessage::text("channel_id", "Here is the file")
+    .with_attachment(Attachment {
+        data: Some(file_bytes),
+        filename: Some("output.txt".to_string()),
+        ..Default::default()
+    });
+```
+
+## Reply Threading
+
+When the agent responds to a specific message, Discord's reply reference is used:
+
+- Inbound messages include `reply_to` if the user replied to a previous message
+- Outbound messages can set `reply_to` to create a reply chain
+
+This creates the visual reply indicator in Discord's UI.
+
+## Slash Commands
+
+When `slash_commands_enabled` is `true` and `application_id` is set, Aleph can register slash commands with Discord. These appear in the command picker when users type `/`:
+
+- `/ask` -- Send a message to Aleph
+- `/status` -- Check Aleph's status
+- `/help` -- Show available commands
+
+<Callout type="info">
+Slash command registration requires the `applications.commands` OAuth2 scope. Global commands may take up to an hour to propagate; guild-specific commands are instant.
+</Callout>
+
+## Error Handling
+
+| Error | Behavior |
+|-------|----------|
+| **Invalid bot token** | Client fails to build; channel enters `Error` state |
+| **Missing intents** | Bot connects but cannot read messages; check Developer Portal settings |
+| **Guild not in allowlist** | Messages from that guild are silently ignored |
+| **Channel not in allowlist** | Messages from that channel are silently ignored |
+| **Bot not mentioned** | Message is skipped when `respond_to_mentions` is `true` |
+| **Rate limiting** | Serenity handles Discord rate limits automatically |
+
+## Gateway Intents
+
+Discord requires bots to declare which events they want to receive. Aleph's intent configuration maps directly to Discord Gateway Intents:
+
+```toml
+[channels.config.intents]
+guild_messages = true      # GUILD_MESSAGES intent
+direct_messages = true     # DIRECT_MESSAGES intent
+message_content = true     # MESSAGE_CONTENT intent (privileged)
+guild_members = false      # GUILD_MEMBERS intent (privileged)
+```
+
+<Callout type="warn">
+**Privileged intents** (`message_content` and `guild_members`) must be enabled in the Discord Developer Portal before they can be used. If your bot is in 100+ guilds, Discord requires bot verification before granting these intents.
+</Callout>
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| Bot is online but does not respond | Enable **Message Content Intent** in the Developer Portal |
+| Bot ignores messages in a channel | Check `allowed_guilds` and `allowed_channels`; verify the bot has View Channel permission |
+| Bot responds to every message | Set `respond_to_mentions = true` or use a `command_prefix` |
+| "Failed to create Discord client" | Verify the bot token is valid and long enough (59+ characters) |
+| Slash commands do not appear | Ensure `application_id` is set and the bot was invited with `applications.commands` scope |
+| Permission audit shows Red | Use the audit's `fix_suggestions` to grant missing permissions in Server Settings |
+| Attachments fail to send | Check that the bot has the **Attach Files** permission in the target channel |

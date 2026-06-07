@@ -1,0 +1,117 @@
+---
+title: "Clarification System"
+description: "User clarification flows for parameter collection, supporting menu selection, text input, and multi-group questionnaires."
+---
+
+The `clarification` module implements the Phantom Flow interaction pattern for requesting missing parameters from users. It supports menu-driven selection, free-form text input, and multi-group questionnaires through the Halo overlay interface.
+
+## Design Philosophy
+
+1. **In-place interaction** — Clarifications appear within the Halo overlay, not as separate dialogs
+2. **Session lifecycle** — Create → get → complete/expire → cleanup
+3. **Timeout management** — Sessions auto-expire with `saturating_sub` to prevent underflow
+4. **Concurrency safe** — `tokio::sync::RwLock` protects the session map
+
+## Clarification Types
+
+### Select
+
+Menu-driven selection from predefined options:
+
+```rust
+let request = ClarificationRequest::select(
+    "style-choice",
+    "What style would you like?",
+    vec![
+        ClarificationOption::new("professional", "Professional"),
+        ClarificationOption::new("casual", "Casual"),
+    ],
+);
+```
+
+### Text
+
+Free-form text input with optional placeholder:
+
+```rust
+let request = ClarificationRequest::text(
+    "target-language",
+    "Enter target language:",
+    Some("e.g., Spanish, French..."),
+);
+```
+
+### MultiGroup
+
+Multiple question groups, each with single-select options:
+
+```rust
+let request = ClarificationRequest::multi_group(
+    "preferences",
+    "Select your preferences",
+    vec![
+        QuestionGroup {
+            label: "Theme",
+            options: vec!["Dark", "Light"],
+        },
+        QuestionGroup {
+            label: "Language",
+            options: vec!["EN", "ZH"],
+        },
+    ],
+);
+```
+
+## Session Lifecycle
+
+```
+┌─────────┐   create    ┌──────────┐   complete   ┌──────────┐
+│  Start  │ ─────────── │ Pending  │ ──────────── │ Complete │
+└─────────┘             └──────────┘              └──────────┘
+                              │
+                              │ timeout / expire
+                              ▼
+                         ┌──────────┐
+                         │ Expired  │ ──► cleanup
+                         └──────────┘
+```
+
+## ClarificationManager
+
+Manages all pending clarification sessions:
+
+```rust
+pub struct ClarificationManager {
+    sessions: RwLock<HashMap<String, PendingClarification>>,
+    config: SessionConfig,
+}
+```
+
+**Eviction policy**: When `max_sessions` is reached, the oldest session (by creation time) is removed using `min_by_key`.
+
+## SessionConfig
+
+```rust
+pub struct SessionConfig {
+    pub max_sessions: usize,      // Default: 100
+    pub default_timeout: Duration,// Default: 5 minutes
+}
+```
+
+## Safety
+
+- **No unwrap/expect** on user-facing paths
+- **Timeout safety** — `remaining_time()` uses `saturating_sub`
+- **Concurrent access** — `tokio::sync::RwLock` (non-poisoning)
+- **No SQL/LanceDB** — Pure in-memory session tracking
+
+## Key Source Files
+
+- `src/clarification/mod.rs` — Types and builder methods
+- `src/clarification/session.rs` — `ClarificationManager` and session lifecycle
+
+## See Also
+
+- [Wizard](/docs/concepts/wizard) — Step-by-step interaction builder
+- [Intent Detection](/docs/concepts/intent-detection) — Intent classification
+- [Messages](/docs/concepts/messages) — Message types and content blocks

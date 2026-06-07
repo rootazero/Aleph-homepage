@@ -1,0 +1,154 @@
+---
+title: "Teams"
+description: "Team management for multi-agent collaboration with lifecycle, plans, and approval workflows."
+---
+
+The `teams` module provides team management for multi-agent collaboration, enabling structured teamwork with lifecycle management, plan approval, and task tracking.
+
+## Overview
+
+Teams enables:
+- **Team creation** — Define teams of agents with specific roles
+- **Lifecycle management** — Track team state from formation to completion
+- **Plan approval** — Multi-stage approval for team plans
+- **Task tracking** — Per-team task assignment and progress
+- **SQLite persistence** — Durable storage for team data
+
+## Architecture
+
+```
+TeamStore (SQLite)
+  ├── Team — Team definition and metadata
+  ├── TeamMember — Membership and roles
+  ├── Plans — Team plans and approval state
+  ├── Sessions — Active team sessions
+  └── Artifacts — Deliverables and outputs
+```
+
+## Core Components
+
+### TeamStore
+
+SQLite-backed storage for team data:
+
+```rust
+// src/teams/store.rs
+pub trait TeamStore: Send + Sync {
+    fn create_team(&self, team: NewTeam) -> Result<TeamId>;
+    fn get_team(&self, id: TeamId) -> Result<Option<Team>>;
+    fn list_teams(&self) -> Result<Vec<TeamSummary>>;
+    fn add_member(
+        &self, 
+        team_id: TeamId, 
+        member: NewTeamMember
+    ) -> Result<()>;
+    fn update_status(
+        &self, 
+        id: TeamId, 
+        status: TeamStatus
+    ) -> Result<()>;
+}
+
+pub struct SqliteTeamStore {
+    conn: rusqlite::Connection,
+}
+```
+
+### Team Types
+
+```rust
+// src/teams/types.rs
+pub struct Team {
+    pub id: TeamId,
+    pub name: String,
+    pub description: String,
+    pub status: TeamStatus,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct TeamMember {
+    pub id: MemberId,
+    pub team_id: TeamId,
+    pub agent_id: AgentId,
+    pub role: TeamRole,
+    pub permissions: Permissions,
+}
+
+pub enum TeamStatus {
+    Forming,
+    Active,
+    Paused,
+    Completed,
+    Disbanded,
+}
+```
+
+### Lifecycle
+
+Team lifecycle management:
+
+```rust
+// src/teams/lifecycle.rs
+pub struct TeamLifecycle;
+
+impl TeamLifecycle {
+    pub fn can_transition(
+        from: TeamStatus,
+        to: TeamStatus,
+    ) -> bool;
+    
+    pub fn on_forming(team: &mut Team);
+    pub fn on_active(team: &mut Team);
+    pub fn on_completed(team: &mut Team);
+}
+```
+
+### Plans
+
+Plan approval workflow:
+
+```rust
+// src/teams/plans.rs
+pub struct TeamPlan {
+    pub id: PlanId,
+    pub team_id: TeamId,
+    pub title: String,
+    pub steps: Vec<PlanStep>,
+    pub approval_state: ApprovalState,
+}
+
+pub enum ApprovalState {
+    Draft,
+    PendingReview,
+    Approved,
+    Rejected,
+}
+```
+
+## Configuration
+
+```toml
+[teams]
+enabled = true
+max_team_size = 10
+require_plan_approval = true
+```
+
+## Code Location
+
+- `src/teams/mod.rs` — Module entry point
+- `src/teams/store.rs` — SQLite storage
+- `src/teams/types.rs` — Core types
+- `src/teams/lifecycle.rs` — Lifecycle management
+- `src/teams/plans.rs` — Plan approval
+- `src/teams/sessions.rs` — Active sessions
+- `src/teams/artifacts.rs` — Deliverables
+- `src/teams/messages.rs` — Team messaging
+- `src/teams/context.rs` — Shared context
+- `src/teams/events.rs` — Team events
+
+## See Also
+
+- [Group Chat](./groupchat) — Multi-persona conversations
+- [A2A](./a2a) — Agent-to-Agent protocol
+- [Orchestrator](./orchestrator) — Agent orchestration

@@ -1,0 +1,477 @@
+---
+title: "Sandboxing"
+description: "Capability-based execution sandboxing with per-tool permission declarations, filesystem controls, and platform-native enforcement"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+Aleph's sandboxing system enforces fine-grained security boundaries around tool execution. Rather than relying solely on approval prompts to prevent damage, sandboxing restricts *what a process can do* at the operating system level -- even if the command itself was approved.
+
+The sandbox model is **capability-based**: each tool declares the permissions it needs (filesystem paths, network access, memory limits), and the system generates a platform-native sandbox profile that enforces exactly those boundaries. A tool that declares "read-only access to `/tmp`" physically cannot write to `/tmp`, regardless of what command it runs.
+
+**Source locations:**
+- Capabilities: `src/sandbox/capabilities.rs`
+- Workspace: `src/sandbox/workspace.rs`
+- Driver: `src/sandbox/driver.rs`
+- Factory: `src/sandbox/factory.rs`
+- Config: `src/sandbox/config.rs`
+- macOS adapter: `src/exec/sandbox/executor.rs` (legacy path)
+- Approval gate: `src/sandbox/exec_approval/gate.rs`
+- Audit logging: `src/tools/middleware/audit.rs`
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Sandbox Execution Flow                     │
+│                                                               │
+│  Tool Declaration                                             │
+│  ┌────────────────────────────────────────────┐              │
+│  │ RequiredCapabilities {                      │              │
+│  │   base_preset: "file_processor",            │              │
+│  │   overrides: { network: AllowAll },         │              │
+│  │   parameter_bindings: { path → fs.rw }      │              │
+│  │ }                                           │              │
+│  └────────────────────┬───────────────────────┘              │
+│                       │                                       │
+│                       ▼                                       │
+│  ┌────────────────────────────────────────────┐              │
+│  │ Capability Resolver                         │              │
+│  │   Preset + Overrides + Bindings → Caps      │              │
+│  └────────────────────┬───────────────────────┘              │
+│                       │                                       │
+│                       ▼                                       │
+│  ┌────────────────────────────────────────────┐              │
+│  │ Trust Check (Draft → Trial → Verified)      │              │
+│  │   Escalation on scope violations            │              │
+│  └────────────────────┬───────────────────────┘              │
+│                       │                                       │
+│                       ▼                                       │
+│  ┌────────────────────────────────────────────┐              │
+│  │ Platform Adapter (macOS sandbox-exec)       │              │
+│  │   Generate .sb profile → Execute → Cleanup  │              │
+│  └────────────────────┬───────────────────────┘              │
+│                       │                                       │
+│                       ▼                                       │
+│  ┌────────────────────────────────────────────┐              │
+│  │ Audit Log                                   │              │
+│  └────────────────────────────────────────────┘              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Capabilities Model
+
+The `Capabilities` struct defines the four dimensions of a sandbox:
+
+```rust
+pub struct Capabilities {
+    pub filesystem: Vec<FileSystemCapability>,
+    pub network: NetworkCapability,
+    pub process: ProcessCapability,
+    pub environment: EnvironmentCapability,
+}
+```
+
+### Filesystem Capabilities
+
+Each filesystem capability grants access to a specific path with a specific mode:
+
+```rust
+pub enum FileSystemCapability {
+    ReadOnly { path: PathBuf },   // Read-only access to a path tree
+    ReadWrite { path: PathBuf },  // Full read/write access to a path tree
+    TempWorkspace,                // Auto-created temporary directory
+}
+```
+
+**TempWorkspace** creates a unique temporary directory under the system temp path (e.g., `/tmp/aleph-sandbox-Xk9mRa/`). The directory is automatically cleaned up after execution completes.
+
+### Network Capabilities
+
+```rust
+pub enum NetworkCapability {
+    Deny,                        // No network access
+    AllowDomains(Vec<String>),   // Allow specific domains only
+    AllowAll,                    // Unrestricted network access
+}
+```
+
+When `AllowDomains` is used, the sandbox profile denies all network by default and adds explicit allow rules for each domain:
+
+```
+(deny network*)
+(allow network-outbound (remote tcp "api.github.com:*"))
+(allow network-outbound (remote tcp "registry.npmjs.org:*"))
+```
+
+### Process Capabilities
+
+```rust
+pub struct ProcessCapability {
+    pub no_fork: bool,            // Prevent spawning child processes
+    pub max_execution_time: u64,  // Timeout in seconds
+    pub max_memory_mb: Option<u64>,  // Memory limit
+}
+```
+
+### Environment Capabilities
+
+```rust
+pub enum EnvironmentCapability {
+    None,        // No environment variables
+    Restricted,  // Only safe variables (PATH, HOME, USER)
+    Full,        // Full environment passthrough
+}
+```
+
+### Defaults
+
+The default capabilities are conservative:
+
+```rust
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self {
+            filesystem: vec![FileSystemCapability::TempWorkspace],
+            network: NetworkCapability::Deny,
+            process: ProcessCapability {
+                no_fork: true,
+                max_execution_time: 300,  // 5 minutes
+                max_memory_mb: Some(512),
+            },
+            environment: EnvironmentCapability::Restricted,
+        }
+    }
+}
+```
+
+<Callout type="warn">
+Default capabilities grant no filesystem access beyond a temporary workspace and deny all network access. Tools must explicitly request any access they need.
+</Callout>
+
+## Capability Presets
+
+To simplify tool declarations, the system provides preset templates that define common capability profiles:
+
+### `file_processor`
+
+For tools that process local files without network access.
+
+| Dimension | Value |
+|-----------|-------|
+| Filesystem | TempWorkspace |
+| Network | Deny |
+| Process | no_fork, 300s timeout, 512MB memory |
+| Environment | Restricted |
+| Immutable | `network` (cannot be overridden to allow) |
+
+### `web_scraper`
+
+For tools that fetch data from the web.
+
+| Dimension | Value |
+|-----------|-------|
+| Filesystem | TempWorkspace |
+| Network | AllowAll |
+| Process | no_fork, 600s timeout, 1024MB memory |
+| Environment | Restricted |
+| Immutable | `filesystem` (cannot add arbitrary paths) |
+
+### `code_analyzer`
+
+For static analysis tools that read project source code.
+
+| Dimension | Value |
+|-----------|-------|
+| Filesystem | ReadOnly `${WORKSPACE}` |
+| Network | Deny |
+| Process | no_fork, 900s timeout, 2048MB memory |
+| Environment | Restricted |
+| Immutable | `network` |
+
+### `data_transformer`
+
+For data processing tools that need both read access to data and a writable workspace.
+
+| Dimension | Value |
+|-----------|-------|
+| Filesystem | TempWorkspace + ReadOnly `${PROJECT_ROOT}/data` |
+| Network | Deny |
+| Process | no_fork, 1800s timeout, 4096MB memory |
+| Environment | Restricted |
+| Immutable | None |
+
+### Immutable Fields
+
+Each preset can declare fields that cannot be overridden. For example, the `file_processor` preset marks `network` as immutable, meaning a tool using this preset cannot override it to `AllowAll`. This prevents privilege escalation through override abuse.
+
+## Parameter Bindings
+
+Tools can declare dynamic filesystem access based on their input parameters. For example, a file conversion tool might receive an input path and an output path -- the sandbox should grant read access to the input and write access to the output:
+
+```rust
+pub struct ParameterBinding {
+    pub capability: String,      // "filesystem.read_only" or "filesystem.read_write"
+    pub validation: ValidationRule,  // is_file, is_directory, is_path
+    pub mapping: MappingType,    // single or each_element (for arrays)
+}
+```
+
+### Example Declaration
+
+```rust
+RequiredCapabilities {
+    base_preset: "file_processor",
+    description: "Convert image formats",
+    overrides: CapabilityOverrides::default(),
+    parameter_bindings: {
+        "input_path" => ParameterBinding {
+            capability: "filesystem.read_only",
+            validation: ValidationRule::IsFile,
+            mapping: MappingType::Single,
+        },
+        "output_dir" => ParameterBinding {
+            capability: "filesystem.read_write",
+            validation: ValidationRule::IsDirectory,
+            mapping: MappingType::Single,
+        },
+    },
+}
+```
+
+At execution time, the capability resolver substitutes the actual parameter values into the filesystem capabilities, producing a concrete `Capabilities` instance with the real paths.
+
+## Trust Stages
+
+The sandbox system implements progressive trust through three stages:
+
+```rust
+pub enum TrustStage {
+    Draft,     // Newly generated tool, awaiting first approval
+    Trial,     // Approved, awaiting first execution confirmation
+    Verified,  // Executed multiple times, enters silent mode
+}
+```
+
+### Stage Progression
+
+```
+Draft ──[owner approves capabilities]──► Trial ──[N successful executions]──► Verified
+```
+
+- **Draft**: The tool's capability declaration is shown to the owner for review. No execution is allowed.
+- **Trial**: The tool can execute, but each execution triggers an approval prompt showing what the tool is about to do.
+- **Verified**: The tool executes silently without prompts, using the previously approved capabilities.
+
+### Escalation
+
+If a verified tool attempts to exceed its declared capabilities, the system triggers an escalation:
+
+```rust
+pub enum EscalationReason {
+    PathOutOfScope,       // Parameter path outside approved range
+    SensitiveDirectory,   // Accessing ~/.ssh, ~/.gnupg, ~/.aws, etc.
+    UndeclaredBinding,    // Using parameter not declared in bindings
+    FirstExecution,       // Initial run of a Trial-stage tool
+}
+```
+
+Escalations reset the tool to the Draft stage, requiring re-approval:
+
+```rust
+pub struct EscalationTrigger {
+    pub reason: EscalationReason,
+    pub requested_path: Option<PathBuf>,
+    pub approved_paths: Vec<String>,
+}
+```
+
+### Sensitive Directory Detection
+
+The escalation system includes a built-in list of sensitive directories that always trigger escalation:
+
+| Directory | Content |
+|-----------|---------|
+| `~/.ssh/` | SSH keys and configuration |
+| `~/.gnupg/` | GPG keys |
+| `~/.aws/` | AWS credentials |
+| `Keychain.app` | macOS keychain |
+| `~/.config/gcloud` | Google Cloud credentials |
+
+## Platform: macOS sandbox-exec
+
+On macOS, sandboxing is enforced using Apple's `sandbox-exec` tool with Seatbelt profile language (.sb files).
+
+### Profile Generation
+
+The macOS adapter generates a Seatbelt profile from the `Capabilities` struct:
+
+```scheme
+(version 1)
+(allow default)
+
+;; Filesystem restrictions
+(deny file-write* (subpath "/Users/alice/project"))
+
+;; Network restrictions
+(deny network*)
+```
+
+<Callout type="info">
+The profile starts with `(allow default)` and selectively denies operations, rather than starting with `(deny default)` and selectively allowing. This is because macOS `sandbox-exec` kills processes that attempt disallowed operations via signal, which breaks basic utilities like `echo` and `sh`.
+</Callout>
+
+### Execution
+
+Commands are wrapped with `sandbox-exec`:
+
+```bash
+sandbox-exec -f /tmp/aleph-profile-Xk9m.sb echo "hello"
+```
+
+The adapter handles:
+1. Writing the profile to a temporary `.sb` file
+2. Executing the command via `sandbox-exec -f <profile>`
+3. Capturing stdout, stderr, and exit code with timeout
+4. Cleaning up the profile file and temporary workspace
+
+### Cleanup
+
+After execution (whether successful or failed), the adapter removes:
+- The temporary sandbox profile file
+- The temporary workspace directory (if TempWorkspace was used)
+
+```rust
+fn cleanup(&self, profile: &SandboxProfile) -> Result<()> {
+    if profile.path.exists() {
+        std::fs::remove_file(&profile.path)?;
+    }
+    if let Some(ref workspace) = profile.temp_workspace {
+        if workspace.exists() {
+            std::fs::remove_dir_all(workspace)?;
+        }
+    }
+    Ok(())
+}
+```
+
+## Fallback Policy
+
+When sandbox enforcement is unavailable (e.g., on Linux where `sandbox-exec` does not exist), the `FallbackPolicy` determines behavior:
+
+```rust
+pub enum FallbackPolicy {
+    Deny,              // Refuse to execute (default)
+    RequestApproval,   // Ask user before unsandboxed execution
+    WarnAndExecute,    // Log warning and execute without sandbox
+}
+```
+
+<Callout type="warn">
+The default fallback policy is `Deny`. Changing it to `WarnAndExecute` removes sandbox protection entirely on unsupported platforms. This should only be used in trusted development environments.
+</Callout>
+
+## Shell Command Sandboxing
+
+In addition to the capability-based sandbox for tools, Aleph provides a separate layer of sandboxing for direct shell command execution via the `CodeExecutor`:
+
+### Command Blocking
+
+A regex-based `CommandChecker` blocks known-dangerous patterns before execution:
+
+```rust
+const DEFAULT_BLOCKED: &[&str] = &[
+    r"rm\s+-rf\s+/\s*$",             // rm -rf /
+    r"sudo\s+",                      // any sudo command
+    r"chmod\s+777\s+/",              // chmod 777 /
+    r":\(\)\s*\{\s*:\|:&\s*\}\s*;:", // fork bomb
+    r">\s*/dev/sd[a-z]",             // overwrite disk
+    r"mkfs\.",                       // format filesystem
+    r"dd\s+if=.*of=/dev/",           // dd to device
+];
+```
+
+### Path Permission Checking
+
+The `PathPermissionChecker` validates file paths against allowed and denied lists using glob patterns:
+
+```rust
+pub struct PathPermissionChecker {
+    allowed_patterns: Vec<Pattern>,   // Allowed path globs
+    denied_patterns: Vec<Pattern>,    // Denied path globs (checked first)
+    max_file_size: u64,              // Size limit for file operations
+}
+```
+
+Default denied paths include sensitive credential directories:
+
+| Pattern | Content Protected |
+|---------|-------------------|
+| `~/.ssh/**` | SSH keys |
+| `~/.gnupg/**` | GPG keys |
+| `~/.aws/**` | AWS credentials |
+| `~/.kube/**` | Kubernetes config |
+| `/etc/passwd` | System users |
+| `/etc/shadow` | Password hashes |
+| `/etc/sudoers` | Sudo configuration |
+
+<Callout type="info">
+Denied paths take precedence over allowed paths. Even if `~/**` is in the allowed list, `~/.ssh/**` will still be denied by the default deny rules.
+</Callout>
+
+### Path Traversal Detection
+
+The system detects and rejects path traversal attempts:
+
+```rust
+fn has_path_traversal(&self, path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    path_str.contains("..") || path_str.contains("./")
+}
+```
+
+A request for `/tmp/../etc/passwd` is rejected before the path is even checked against the allow/deny lists.
+
+### Runtime Restrictions
+
+The `CodeExecutor` supports restricting which language runtimes are available:
+
+```rust
+pub struct CodeExecutor {
+    allowed_runtimes: Vec<String>,  // Empty = all allowed
+    timeout_seconds: u64,           // Execution timeout
+    // ...
+}
+```
+
+If `allowed_runtimes` is set to `["bash", "python3"]`, attempting to execute JavaScript via `node` will be rejected.
+
+## Audit Logging
+
+Every sandboxed execution is recorded in a structured audit log:
+
+```rust
+pub struct SandboxAuditLog {
+    pub skill_id: String,
+    pub capabilities: Capabilities,
+    pub status: ExecutionStatus,
+    pub platform: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+pub enum ExecutionStatus {
+    Success { exit_code: i32, duration_ms: u64 },
+    Timeout { duration_ms: u64 },
+    Error { error: String },
+}
+```
+
+This provides a complete record of what capabilities were granted, what platform enforced them, and whether execution succeeded.
+
+## See Also
+
+- [Execution Approval](/docs/en/security/exec-approval) -- The approval system that decides whether to execute
+- [IPC Protocol](/docs/en/security/ipc) -- How approval requests are communicated for sandboxed tools
+- [Tool System](/docs/en/architecture/tools) -- How tools declare and use sandbox capabilities

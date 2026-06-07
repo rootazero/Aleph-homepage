@@ -1,0 +1,115 @@
+---
+title: "heartbeat.*"
+description: "Health checking and heartbeat RPC methods"
+---
+
+Heartbeat methods manage health checks and heartbeat signals for monitoring system health, connectivity, and component status.
+
+## Methods
+
+### heartbeat.ping
+
+Simple ping/pong health check.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "heartbeat.ping",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "pong": true,
+    "timestamp": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+### heartbeat.status
+
+Get detailed heartbeat status of all components.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "heartbeat.status",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "healthy": true,
+    "components": [
+      {
+        "name": "gateway",
+        "status": "healthy",
+        "last_beat": "2024-01-15T10:30:00Z",
+        "latency_ms": 5
+      },
+      {
+        "name": "memory",
+        "status": "healthy",
+        "last_beat": "2024-01-15T10:29:58Z",
+        "latency_ms": 12
+      }
+    ]
+  }
+}
+```
+
+### heartbeat.check
+
+Check health of a specific component.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "heartbeat.check",
+  "params": {
+    "component": "mcp"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "component": "mcp",
+    "healthy": true,
+    "last_beat": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+## Health States
+
+| State | Description |
+|-------|-------------|
+| `healthy` | Component is functioning normally |
+| `degraded` | Component is slow or partially failing |
+| `unhealthy` | Component has failed |
+| `unknown` | No heartbeat received recently |
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

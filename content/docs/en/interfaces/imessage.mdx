@@ -1,0 +1,313 @@
+---
+title: "iMessage"
+description: "Native macOS iMessage integration for Aleph via Messages.app and SQLite polling"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+The iMessage interface provides native macOS integration by reading messages from the Messages.app SQLite database and sending replies via AppleScript. This is a platform-specific interface that only runs on macOS.
+
+## Architecture
+
+Unlike cloud-based interfaces (Telegram, Discord), the iMessage integration is entirely local:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     macOS System                         │
+│                                                          │
+│  ┌──────────────┐     ┌──────────────────────────────┐  │
+│  │ Messages.app │     │        Aleph Server           │  │
+│  │              │     │                               │  │
+│  │  chat.db ────┼─────┼──> SQLite Polling (read-only) │  │
+│  │  (SQLite)    │     │                               │  │
+│  │              │ <───┼─── AppleScript (send message) │  │
+│  └──────────────┘     └──────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Receiving messages:** Aleph polls the `~/Library/Messages/chat.db` SQLite database in read-only mode, detecting new rows since the last poll.
+
+**Sending messages:** Aleph uses `osascript` to execute AppleScript commands that control Messages.app, sending text and file attachments through the iMessage service.
+
+## Capabilities
+
+| Feature | Status |
+|---------|--------|
+| Text messages | Supported |
+| Rich text (Markdown) | Not supported (plain text only) |
+| Photos | Supported (send and receive) |
+| Documents | Supported (send and receive) |
+| Audio/Video | Supported (send and receive) |
+| Tapback reactions | Limited (send not fully supported via AppleScript) |
+| Reply threading | Not supported |
+| Message editing | Not supported |
+| Message deletion | Not supported |
+| Typing indicator | Not supported |
+| Read receipts | Not supported |
+| Max message length | ~20,000 characters |
+| Max attachment size | 100 MB |
+
+## Prerequisites
+
+<Steps>
+<Step>
+
+### macOS Requirement
+
+The iMessage interface only works on macOS. It is conditionally compiled with `#[cfg(target_os = "macos")]` and will not be available on Linux or Windows builds.
+
+</Step>
+<Step>
+
+### Full Disk Access
+
+Aleph needs **Full Disk Access** permission to read `~/Library/Messages/chat.db`:
+
+1. Open **System Settings > Privacy & Security > Full Disk Access**
+2. Click the **+** button
+3. Add the Aleph server binary (or Terminal.app if running from terminal)
+4. Restart the Aleph server
+
+Without this permission, the database open will fail with a "permission denied" error.
+
+</Step>
+<Step>
+
+### Automation Permission
+
+Aleph needs **Automation** permission to control Messages.app via AppleScript:
+
+1. The first time Aleph sends a message, macOS will show a permission dialog
+2. Click **Allow** to grant Automation access
+3. You can manage this in **System Settings > Privacy & Security > Automation**
+
+</Step>
+</Steps>
+
+## Configuration
+
+### Minimal Configuration
+
+```toml
+[[channels]]
+id = "imessage"
+channel_type = "imessage"
+enabled = true
+
+[channels.config]
+enabled = true
+```
+
+### Full Configuration Reference
+
+```toml
+[[channels]]
+id = "imessage"
+channel_type = "imessage"
+enabled = true
+
+[channels.config]
+# Enable the iMessage channel (default: false)
+enabled = true
+
+# Path to the Messages database (default: ~/Library/Messages/chat.db)
+db_path = "~/Library/Messages/chat.db"
+
+# Poll interval in milliseconds (default: 1000)
+poll_interval_ms = 1000
+
+# DM policy for incoming messages
+# Options: "pairing", "allowlist", "open", "disabled"
+dm_policy = "pairing"
+
+# Group message policy
+# Options: "open", "allowlist", "disabled"
+group_policy = "open"
+
+# Allowlist of phone numbers/emails for DMs
+allow_from = ["+15551234567", "user@example.com"]
+
+# Allowlist for group chats (by chat identifier)
+group_allow_from = []
+
+# Require @mention in group chats (default: true)
+require_mention = true
+
+# Bot's name for mention detection in groups
+bot_name = "Aleph"
+
+# Include attachments in inbound messages (default: true)
+include_attachments = true
+
+# Maximum attachment size in bytes (0 = unlimited)
+max_attachment_size = 0
+
+# Inbound message debounce in milliseconds (default: 500)
+# Prevents processing rapid bursts of messages
+inbound_debounce_ms = 500
+```
+
+## DM Policy
+
+The `dm_policy` setting controls how Aleph handles direct messages from unknown senders:
+
+| Policy | Behavior |
+|--------|----------|
+| **`pairing`** (default) | Unknown senders are prompted for a pairing code before Aleph responds |
+| **`allowlist`** | Only senders in `allow_from` are processed; all others are ignored |
+| **`open`** | All senders are accepted without restriction |
+| **`disabled`** | DMs are completely disabled |
+
+<Callout type="info">
+The **pairing** policy integrates with Aleph's invitation system. An owner can generate a pairing code, and when an unknown sender sends that code via iMessage, their phone number or email is automatically added to the allowlist.
+</Callout>
+
+### Group Policy
+
+| Policy | Behavior |
+|--------|----------|
+| **`open`** (default) | All group chats are accepted (with optional mention requirement) |
+| **`allowlist`** | Only groups in `group_allow_from` are processed |
+| **`disabled`** | Group messages are completely disabled |
+
+## How Message Polling Works
+
+The polling loop operates in a background Tokio task:
+
+1. **Open database** -- `chat.db` is opened in read-only mode with `SQLITE_OPEN_READ_ONLY`
+2. **Record last ROWID** -- On startup, the current maximum message ROWID is recorded as the baseline
+3. **Poll loop** -- Every `poll_interval_ms` milliseconds:
+   - Query for messages with `ROWID > last_seen` and `is_from_me = 0`
+   - For each new message, resolve the sender handle and chat info
+   - Extract attachments if `cache_has_attachments` is set
+   - Convert to an `InboundMessage` and send through the mpsc channel
+4. **Update marker** -- The last seen ROWID is updated after each batch
+
+### Apple Timestamps
+
+Messages.app uses "Apple Cocoa Core Data timestamps" -- nanoseconds since January 1, 2001 UTC. Aleph converts these to standard Unix timestamps:
+
+```
+unix_timestamp = apple_timestamp / 1,000,000,000 + 978,307,200
+```
+
+## Sending Messages
+
+Messages are sent via AppleScript controlling the Messages.app:
+
+### Text Messages
+
+```applescript
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+15551234567" of targetService
+    send "Hello from Aleph!" to targetBuddy
+end tell
+```
+
+### File Attachments
+
+```applescript
+tell application "Messages"
+    set targetService to 1st account whose service type = iMessage
+    set targetBuddy to participant "+15551234567" of targetService
+    set theFile to POSIX file "/path/to/file.png"
+    send theFile to targetBuddy
+end tell
+```
+
+### Group Chat Messages
+
+Group chats are addressed by chat ID rather than participant:
+
+```applescript
+tell application "Messages"
+    set targetChat to chat id "chat123456"
+    send "Hello group!" to targetChat
+end tell
+```
+
+## Media Handling
+
+### Receiving Attachments
+
+Attachments are detected via the `cache_has_attachments` flag in the message table and resolved through the `message_attachment_join` table:
+
+| Field | Source |
+|-------|--------|
+| `id` | Attachment GUID |
+| `mime_type` | From `attachment.mime_type` column |
+| `filename` | From `attachment.filename` or `transfer_name` |
+| `size` | From `attachment.total_bytes` |
+
+### Sending Attachments
+
+Outbound file attachments must be provided as local file paths. The file is sent via the AppleScript `send POSIX file` command.
+
+## Session Routing
+
+iMessage conversations map to session keys based on the chat context:
+
+| Context | Session Key |
+|---------|------------|
+| DM with +15551234567 | `agent:main:dm:+15551234567` or `agent:main:imessage:dm:+15551234567` |
+| Group chat (chat ID) | `agent:main:imessage:group:{chat_identifier}` |
+
+The `chat_identifier` is typically the phone number for DMs or an internal ID for group chats.
+
+## Database Schema
+
+Aleph reads from three primary tables in `chat.db`:
+
+### `message` Table
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `ROWID` | INTEGER | Auto-incrementing message ID |
+| `guid` | TEXT | Unique message identifier |
+| `text` | TEXT | Message body |
+| `handle_id` | INTEGER | FK to `handle` table |
+| `date` | INTEGER | Apple timestamp (nanoseconds) |
+| `is_from_me` | INTEGER | 1 if sent by the Mac owner |
+| `cache_has_attachments` | INTEGER | 1 if message has attachments |
+
+### `handle` Table
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `ROWID` | INTEGER | Handle ID |
+| `id` | TEXT | Phone number or email |
+| `service` | TEXT | "iMessage" or "SMS" |
+
+### `chat` Table
+
+| Column | Type | Purpose |
+|--------|------|---------|
+| `ROWID` | INTEGER | Chat ID |
+| `guid` | TEXT | Chat GUID |
+| `chat_identifier` | TEXT | Phone number or group ID |
+| `display_name` | TEXT | Group name (if set) |
+| `group_id` | TEXT | Non-null for group chats |
+
+## Limitations
+
+- **macOS only** -- Cannot run on Linux or Windows
+- **Full Disk Access required** -- The database is protected by macOS TCC (Transparency, Consent, and Control)
+- **No real-time delivery** -- Polling-based with configurable interval (minimum practical: ~500ms)
+- **No rich text** -- iMessage supports rich text internally but AppleScript sends plain text only
+- **No typing indicator** -- Would require deeper system integration
+- **Tapback reactions** -- Sending tapbacks via AppleScript is not reliably supported across macOS versions; receiving tapbacks is not yet implemented
+- **No message editing/deletion** -- AppleScript does not expose these operations
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| "Failed to open Messages database" | Grant Full Disk Access to the Aleph binary in System Settings |
+| "AppleScript execution failed" | Grant Automation permission; ensure Messages.app is installed and signed in |
+| Bot does not see new messages | Verify `db_path` points to the correct database; check that `is_from_me = 0` filter is working |
+| Messages.app opens unexpectedly | This is normal -- AppleScript may activate the app when sending |
+| Slow response time | Decrease `poll_interval_ms` (e.g., to 500); note this increases SQLite read frequency |
+| "Invalid target" error | Ensure the recipient is a valid phone number (with country code) or email address |
+| Group messages ignored | Check `group_policy` and `group_allow_from`; verify `require_mention` settings |

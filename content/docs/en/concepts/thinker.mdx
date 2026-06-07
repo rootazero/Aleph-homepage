@@ -1,0 +1,197 @@
+---
+title: "Thinker"
+description: "Prompt construction engine with layer-based architecture, streaming state machine, and provider-optimized output formatting."
+---
+
+The `thinker` module is Aleph's prompt construction engine. It builds the system prompt and manages the conversation context sent to the LLM. It uses a layer-based architecture where each layer contributes a section to the final prompt.
+
+## Design Philosophy
+
+1. **Layer-based composition** — Each concern (identity, skills, memory, tools) is a separate layer
+2. **Provider-specific optimization** — Different LLM providers receive differently formatted prompts
+3. **Streaming state machine** — Handles partial tokens from streaming responses
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│                  Thinker                     │
+├─────────────────────────────────────────────┤
+│                                             │
+│  Layer 1: Identity (who the agent is)       │
+│  Layer 2: Skills (available capabilities)   │
+│  Layer 3: Memory (relevant context)         │
+│  Layer 4: Tools (available tools)           │
+│  Layer 5: Rules (behavior guidelines)       │
+│  Layer 6: Conversation (message history)    │
+│                                             │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Core Components
+
+### Thinker
+
+Main prompt builder:
+
+```rust
+pub struct Thinker {
+    layers: Vec<Box<dyn PromptLayer>>,
+    provider: ProviderType,
+}
+
+impl Thinker {
+    pub async fn build_prompt(
+        &self,
+        context: &ThinkerContext,
+    ) -> Result<String> {
+        let mut prompt = String::new();
+        for layer in &self.layers {
+            let section = layer.render(context).await?;
+            prompt.push_str(&section);
+        }
+        Ok(prompt)
+    }
+}
+```
+
+### PromptLayer Trait
+
+```rust
+#[async_trait]
+pub trait PromptLayer: Send + Sync {
+    async fn render(
+        &self,
+        context: &ThinkerContext,
+    ) -> Result<String>;
+
+    fn priority(&self) -> i32;
+}
+```
+
+**Built-in layers:**
+- `IdentityLayer` — Agent name, personality, communication style
+- `SkillsLayer` — Available skills and triggers
+- `MemoryLayer` — Relevant memories from the knowledge base
+- `ToolsLayer` — Tool descriptions and schemas
+- `RulesLayer` — Behavioral rules and redlines
+- `ConversationLayer` — Recent message history
+
+### Streaming State Machine
+
+Handles partial tokens from LLM streaming:
+
+```rust
+pub struct BlockState {
+    buffer: String,
+    current_block: Option<BlockType>,
+}
+
+impl BlockState {
+    pub fn feed(&mut self,
+        token: &str,
+    ) -> Vec<BlockEvent> { /* ... */ }
+}
+```
+
+**Block types:**
+- `Text` — Plain text output
+- `ToolCall` — Tool invocation block
+- `Code` — Code fence block
+- `Thinking` — Chain-of-thought block
+
+### Prompt Sanitizer
+
+Cleans prompts before sending to the LLM:
+
+```rust
+pub fn sanitize(
+    prompt: &str,
+) -> String
+```
+
+**Removes:**
+- Duplicate system prompts
+- Excessive whitespace
+- Truncated tool definitions
+
+---
+
+## Provider-Specific Formatting
+
+Different providers receive different prompt formats:
+
+**OpenAI:**
+- System message + user/assistant alternating
+- Tool definitions in `tools` array
+- Function calling format
+
+**Anthropic:**
+- XML-style tags for structure
+- `\n\nHuman:` / `\n\nAssistant:` delimiters
+- Tool use in `<function_calls>` blocks
+
+**Ollama / Local:**
+- Simple text prompts
+- Minimal formatting overhead
+
+---
+
+## Soul
+
+The `soul.rs` module manages the agent's persistent identity:
+
+```rust
+pub struct Soul {
+    name: String,
+    personality: String,
+    values: Vec<String>,
+}
+```
+
+The soul is loaded from `~/.aleph/soul.md` and injected into every prompt via the IdentityLayer.
+
+---
+
+## User Profile
+
+Per-user customization:
+
+```rust
+pub struct UserProfile {
+    preferences: HashMap<String, String>,
+    custom_instructions: String,
+}
+```
+
+User profiles override default behavior without modifying the soul.
+
+---
+
+## Safety Properties
+
+- **UTF-8 safe** — All string slicing uses `.get(..n).unwrap_or_default()`
+- **Deterministic ordering** — Provider list sorted by ID
+- **No lock issues** — Uses `tokio::sync` locks with recovery
+- **No `static mut`** — Uses `OnceLock` and `LazyLock`
+
+---
+
+## Code Location
+
+- `src/thinker/mod.rs` — `Thinker` and layer orchestration
+- `src/thinker/layers/` — Prompt layer implementations
+- `src/thinker/streaming/` — Streaming state machine
+- `src/thinker/soul.rs` — Agent identity
+- `src/thinker/user_profile.rs` — User customization
+- `src/thinker/prompt_sanitizer.rs` — Prompt cleaning
+
+## See Also
+
+- [Prompt System](./prompt-system) — Prompt concepts
+- [Memory](./memory) — Knowledge base integration
+- [Skills](./skills) — Skill prompt injection

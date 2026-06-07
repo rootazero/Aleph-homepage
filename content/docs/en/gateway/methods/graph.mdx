@@ -1,0 +1,159 @@
+---
+title: "graph.*"
+description: "Knowledge graph RPC methods"
+---
+
+Graph methods manage the knowledge graph — a semantic network of entities, relations, and observations that represents structured knowledge extracted from conversations and documents.
+
+## Methods
+
+### graph.query
+
+Query the knowledge graph using a natural language or structured query.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "graph.query",
+  "params": {
+    "query": "What projects is Alice working on?",
+    "limit": 10
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "results": [
+      {
+        "entity": "Project Alpha",
+        "relation": "worked_on_by",
+        "target": "Alice",
+        "confidence": 0.95
+      }
+    ]
+  }
+}
+```
+
+### graph.entities
+
+List entities in the knowledge graph.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "graph.entities",
+  "params": {
+    "type": "person",
+    "limit": 50
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "entities": [
+      {
+        "id": "ent-1",
+        "name": "Alice",
+        "type": "person",
+        "observations": ["Software engineer", "Likes Rust"]
+      }
+    ]
+  }
+}
+```
+
+### graph.add_entity
+
+Add a new entity to the knowledge graph.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "graph.add_entity",
+  "params": {
+    "name": "Project Beta",
+    "type": "project",
+    "observations": ["AI documentation tool", "Built with Rust"]
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "entity_id": "ent-2",
+    "added": true
+  }
+}
+```
+
+### graph.add_relation
+
+Add a relation between two entities.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "graph.add_relation",
+  "params": {
+    "from_entity": "Alice",
+    "relation": "works_on",
+    "to_entity": "Project Beta"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "relation_id": "rel-1",
+    "added": true
+  }
+}
+```
+
+### graph.delete_entity
+
+Delete an entity and its relations.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "graph.delete_entity",
+  "params": {
+    "entity_id": "ent-2"
+  }
+}
+```
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [Architecture: Knowledge Graph](/docs/en/architecture/graph) -- Graph system architecture

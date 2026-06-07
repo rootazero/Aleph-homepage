@@ -1,0 +1,229 @@
+---
+title: "会话服务"
+description: "每个会话的仅追加事件日志，带有进程内 tokio actor。"
+---
+
+会话服务为每个 Aleph 会话提供持久、仅追加的事件存储。它用 SQLite 支持的结构化事件日志取代了传统的 `messages` 表，支持崩溃恢复、实时订阅和精确的状态重建。
+
+有关 Gateway 的会话管理，请参阅[Gateway 架构](/docs/zh/architecture/gateway)。有关 agent harness 如何消费事件，请参阅[Agent Harness](/docs/zh/architecture/harness)。
+
+---
+
+## 概述
+
+`InProcessActorSessionService` 是默认实现。它为每个会话生成一个 tokio 任务。每个任务（`SessionActor`）在启动时从 SQLite 重放事件，然后服务命令直到其收件箱关闭或空闲超时触发。
+
+**位置**: `src/session/in_process.rs`
+
+关键特性：
+
+- **仅追加**: 事件永远不会被修改或删除——仅追加到日志中。
+- **持久**: 所有事件在确认之前都持久化到 SQLite。
+- **每会话 Actor**: 每个会话都有自己的 tokio 任务用于排序和隔离。
+- **实时订阅**: 消费者可以订阅实时事件流。
+
+---
+
+## 公共接口
+
+`SessionService` trait 是公共接口：
+
+```rust
+#[async_trait]
+pub trait SessionService: Send + Sync + 'static {
+    /// 确保 actor 正在运行；返回当前 head seq。
+    async fn attach(&self, id: SessionId) -> Result<SessionHandle, SessionError>;
+
+    /// 追加 + 同步持久化；返回新的 seq。
+    async fn emit_event(&self, id: &SessionId, event: SessionEvent) -> Result<EventSeq, SessionError>;
+
+    /// 半开读取范围 [from, to)。
+    async fn get_events(
+        &self,
+        id: &SessionId,
+        from: Option<EventSeq>,
+        to: Option<EventSeq>,
+    ) -> Result<Vec<SessionEventRecord>, SessionError>;
+
+    /// 事件的实时扇出。
+    async fn subscribe(
+        &self,
+        id: &SessionId,
+    ) -> Result<broadcast::Receiver<SessionEventRecord>, SessionError>;
+
+    /// 强制替换 actor（崩溃恢复）。
+    async fn wake(&self, id: &SessionId) -> Result<SessionHandle, SessionError>;
+
+    /// 停止 actor，保留事件。
+    async fn detach(&self, id: &SessionId) -> Result<(), SessionError>;
+}
+```
+
+**位置**: `src/session/service.rs`
+
+`SessionId` 是 `crate::routing::session_key::SessionKey` 的别名——会话使用与 Gateway 中其他位置相同的密钥进行标识。
+
+---
+
+## 实现
+
+`InProcessActorSessionService` 拥有一个从 `SessionId` 到该会话 actor 的 mpsc 收件箱的路由器 map：
+
+```rust
+pub struct InProcessActorSessionService {
+    store: Arc<dyn SessionEventStore>,
+    senders: RwLock<HashMap<SessionId, mpsc::Sender<ActorCommand>>>,
+    broadcasters: RwLock<HashMap<SessionId, broadcast::Sender<SessionEventRecord>>>,
+    idle_timeout: Duration,
+}
+```
+
+**位置**: `src/session/in_process.rs`
+
+每个 `SessionActor`（在 `src/session/actor.rs` 中定义）在启动时从 SQLite 重放事件，维护内存状态（`src/session/state.rs`），并处理命令直到关闭。每个 actor 的状态位于 `src/session/state.rs`；事件类型位于 `src/session/events.rs`。
+
+---
+
+## 存储
+
+事件存储在 SQLite 表中：
+
+```sql
+CREATE TABLE session_events (
+    session_id   TEXT    NOT NULL,
+    seq          INTEGER NOT NULL,
+    turn_id      TEXT,
+    event_type   TEXT    NOT NULL,
+    payload_json TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (session_id, seq)
+);
+```
+
+**位置**: `src/session/store.rs`
+
+加上两个支持索引（`idx_session_events_session_turn`、`idx_session_events_session_type`）。
+
+| 属性 | 值 |
+|----------|-------|
+| 写入模式 | 同步（确认前 fsync） |
+| SQLite 模式 | WAL（预写日志） |
+| 排序 | `(session_id, seq)` 主键强制每会话单调排序 |
+
+---
+
+## 事件模式
+
+`SessionEvent` 是一个 `#[non_exhaustive]` 枚举，涵盖：
+
+| 类别 | 变体 |
+|----------|----------|
+| 生命周期 | `SessionStarted`, `SessionWoken`, `SessionEnded` |
+| 轮次边界 | `TurnStarted`, `TurnEnded` |
+| 消息 | `UserMessage`, `AssistantMessage`, `SystemMessage` |
+| LLM 交互 | `LlmRequested`, `LlmResponded`, `LlmError` |
+| 工具调用 | `ToolCalled`, `ToolResponded`, `ToolError` |
+| 子代理委托 | `SubagentSpawned`, `SubagentResult` |
+| 预算 / 压缩 | `BudgetUpdated`, `Compacted` |
+| 错误 | `Error` |
+
+**位置**: `src/session/events.rs`
+
+辅助类型：`EventSeq`、`TurnId`、`MessageContent`、`ToolOutput`、`TurnOutcome`、`TurnTrigger`、`ApprovalSource`、`ErrorKind`、`Timestamp`。
+
+---
+
+## 投影
+
+并非所有消费者都需要原始事件。`project_messages` 辅助函数将事件范围转换为经典的消息历史视图：
+
+```rust
+pub fn project_messages(
+    events: &[SessionEventRecord],
+) -> Vec<ProjectedMessage>;
+```
+
+**位置**: `src/session/projection.rs`
+
+这将 `TurnStarted`、`UserMessage`、`AssistantMessage`、`ToolCalled`、`ToolResponded` 和 `TurnEnded` 折叠成一个线性的 `Vec<ProjectedMessage>`，看起来像旧的 `messages` 表——对 LLM 上下文窗口和 UI 渲染很有用。
+
+---
+
+## wake() 语义
+
+`wake(session_id)` 是崩溃恢复机制：
+
+1. **关闭旧 actor**（如果有）并带有 5 秒宽限期。
+2. **捕获 `prior_head`** 在生成新 actor 之前。
+3. **生成新 actor** —— 它从 SQLite 重放所有持久化事件。
+4. **发出 `SessionWoken { prior_head }`** 标记到日志中。
+5. **返回新的 `SessionHandle`**。
+
+在轮次中间崩溃的 Harness 将表现为一个 `TurnStarted` 没有匹配的 `TurnEnded`——替换 Harness 决定是重试、放弃还是用 `Error` 事件关闭轮次。
+
+| 参数 | 值 |
+|-----------|-------|
+| 空闲超时 | 30 分钟 |
+| 关闭宽限期 | 5 秒 |
+
+**集成测试**: `tests/session_wake_recovery.rs`
+
+---
+
+## Gateway RPC 关系
+
+Gateway `session.*` RPC 方法保留在 `SessionManager` (`src/gateway/session_manager/`) 上。一个双写 shim (`src/session/shim.rs`) 将每个 `SessionManager` 追加镜像到 `SessionService`，因此 `session_events` 与遗留的 `messages` 表并行保持填充。
+
+```
+Gateway RPC (session.append, session.get, 等.)
+        │
+        ▼
+┌─────────────────┐     ┌──────────────────┐
+│  SessionManager │────►│  Legacy messages │
+│                 │     │  table           │
+└────────┬────────┘     └──────────────────┘
+         │
+         │ dual-write shim (src/session/shim.rs)
+         ▼
+┌─────────────────┐     ┌──────────────────┐
+│  SessionService │────►│  session_events  │
+│                 │     │  table           │
+└─────────────────┘     └──────────────────┘
+```
+
+未来的阶段将 Gateway RPC 直接迁移到 `SessionService` 并移除 shim。
+
+---
+
+## 消费者迁移状态
+
+| 消费者 | 状态 | 备注 |
+|----------|--------|-------|
+| `AgentHarness` | Ready | 独占使用 `SessionService` 进行历史读/写 |
+| `SubagentTool` | Ready | 使用 `SessionService` 进行临时子会话 |
+| Gateway `session.*` RPC | On `SessionManager` | 双写 shim 镜像到 `SessionService` |
+| Memory / Dream / other | 只读采用 | `SessionService::get_events` 可用；根据具体情况采用 |
+
+---
+
+## 源映射
+
+| 文件 | 角色 |
+|------|------|
+| `src/session/service.rs` | `SessionService` trait 定义 |
+| `src/session/in_process.rs` | `InProcessActorSessionService` 实现 |
+| `src/session/actor.rs` | `SessionActor` —— 每会话 tokio 任务 |
+| `src/session/state.rs` | 每 actor 内存状态 |
+| `src/session/events.rs` | `SessionEvent` 枚举和辅助类型 |
+| `src/session/store.rs` | SQLite 模式和 `SessionEventStore` trait |
+| `src/session/projection.rs` | `project_messages` 和其他读取端投影 |
+| `src/session/shim.rs` | 从 `SessionManager` 到 `SessionService` 的双写 shim |
+| `tests/session_wake_recovery.rs` | 崩溃恢复集成测试 |
+
+---
+
+## 相关页面
+
+- [Gateway 架构](/docs/zh/architecture/gateway) —— RPC 层和会话路由
+- [Agent Harness](/docs/zh/architecture/harness) —— Agent 如何消费会话事件
+- [内存系统](/docs/zh/architecture/memory) —— 内存工具和持久化

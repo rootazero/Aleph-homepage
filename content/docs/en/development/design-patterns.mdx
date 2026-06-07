@@ -1,0 +1,536 @@
+---
+title: "Design Patterns"
+description: "Aleph-specific design patterns — Context, Newtype, Builder, FromStr, trait-based APIs, error handling, and module organization."
+---
+
+This page documents the core design patterns used throughout the Aleph Rust codebase. These are not abstract recommendations — they are patterns actively in use, with concrete examples drawn from production code. Following them keeps the codebase consistent and makes it easier for new contributors to find their way.
+
+For related guidance on file and module structure, see the [Module Organization](#module-organization) section at the bottom of this page.
+
+## Context Pattern
+
+### Problem
+
+As APIs evolve, function signatures accumulate parameters. A function with seven arguments is hard to read, hard to extend, and easy to misuse:
+
+```rust
+// Before: 7 positional parameters
+pub async fn run(
+    &self,
+    request: String,
+    context: RequestContext,
+    tools: Vec<UnifiedTool>,
+    identity: IdentityContext,
+    callback: impl LoopCallback,
+    abort_signal: Option<watch::Receiver<bool>>,
+    initial_history: Option<String>,
+) -> LoopResult
+```
+
+### Solution
+
+Group related parameters into a **context struct**. Required parameters go in the constructor; optional parameters get builder-style `with_*` methods:
+
+```rust
+#[derive(Clone)]
+pub struct RunContext {
+    pub request: String,
+    pub context: RequestContext,
+    pub tools: Vec<UnifiedTool>,
+    pub identity: IdentityContext,
+    pub abort_signal: Option<watch::Receiver<bool>>,
+    pub initial_history: Option<String>,
+}
+
+impl RunContext {
+    pub fn new(
+        request: impl Into<String>,
+        context: RequestContext,
+        tools: Vec<UnifiedTool>,
+        identity: IdentityContext,
+    ) -> Self {
+        Self {
+            request: request.into(),
+            context,
+            tools,
+            identity,
+            abort_signal: None,
+            initial_history: None,
+        }
+    }
+
+    pub fn with_abort_signal(mut self, signal: watch::Receiver<bool>) -> Self {
+        self.abort_signal = Some(signal);
+        self
+    }
+
+    pub fn with_initial_history(mut self, history: impl Into<String>) -> Self {
+        self.initial_history = Some(history.into());
+        self
+    }
+}
+```
+
+The function signature becomes clean and stable:
+
+```rust
+// After: 2 parameters
+pub async fn run(
+    &self,
+    run_context: RunContext,
+    callback: impl LoopCallback,
+) -> LoopResult
+```
+
+### Usage
+
+```rust
+let run_context = RunContext::new(request, RequestContext::empty(), tools, identity)
+    .with_abort_signal(abort_rx)
+    .with_initial_history(history);
+
+let result = agent_loop.run(run_context, callback).await;
+```
+
+### When to Apply
+
+- Function has **5 or more** parameters
+- Multiple parameters are optional
+- Parameters form a logical group
+- The API is likely to evolve with new parameters
+- The function is called from many locations
+
+### Locations in Codebase
+
+- `agent_loop::RunContext` — agent loop execution parameters
+
+## Newtype Pattern
+
+### Problem
+
+Primitive types carry no semantic meaning. A function that takes two `String` arguments for different kinds of IDs compiles even when the arguments are swapped:
+
+```rust
+fn assign(experiment_id: String, variant_id: String) { ... }
+
+// Compiles, but wrong — arguments are swapped
+assign(variant_id, experiment_id);
+```
+
+### Solution
+
+Wrap primitive types in **newtype structs** that give them distinct identities at the type level:
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExperimentId(String);
+
+impl ExperimentId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Deref for ExperimentId {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Display for ExperimentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for ExperimentId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+```
+
+Now the compiler catches the mistake:
+
+```rust
+fn assign(experiment_id: ExperimentId, variant_id: VariantId) { ... }
+
+let exp = ExperimentId::new("exp-001");
+let var = VariantId::new("control");
+
+assign(exp, var);   // Correct
+assign(var, exp);   // Compile error!
+```
+
+### Collection Newtypes
+
+Newtypes also work well for collections with domain-specific operations:
+
+```rust
+#[derive(Debug, Clone)]
+pub struct Ruleset(Vec<PermissionRule>);
+
+impl Ruleset {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn add(&mut self, rule: PermissionRule) {
+        self.0.push(rule);
+    }
+
+    pub fn rules(&self) -> &[PermissionRule] {
+        &self.0
+    }
+}
+
+impl FromIterator<PermissionRule> for Ruleset {
+    fn from_iter<T: IntoIterator<Item = PermissionRule>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+```
+
+### Standard Trait Checklist
+
+Every newtype should implement a consistent set of traits:
+
+**Required:**
+- `Debug` — debugging output
+- `Clone` — value copying
+- `PartialEq`, `Eq` — equality comparisons
+- `Hash` — for use in `HashMap`/`HashSet`
+
+**Recommended:**
+- `Display` — user-facing string output
+- `From<T>` — ergonomic construction
+- `Deref` — transparent access to inner type
+- `Serialize`, `Deserialize` — JSON/TOML support
+
+**Optional:**
+- `FromStr` — parsing from strings
+- `FromIterator` — for collection newtypes
+- `Default` — if a sensible default exists
+
+### Newtype Catalog
+
+| Type | Inner | Purpose | Module |
+|------|-------|---------|--------|
+| `ExperimentId` | `String` | A/B testing experiment ID | `ab_testing/types` |
+| `VariantId` | `String` | A/B testing variant ID | `ab_testing/types` |
+| `ContextId` | `String` | Browser context ID | `browser/context_registry` |
+| `TaskId` | `String` | Browser task ID | `browser/context_registry` |
+| `SubscriptionId` | `String` | Event bus subscription ID | `event/global_bus` |
+| `Ruleset` | `Vec<PermissionRule>` | Permission rule collection | `permission/rule` |
+| `Answer` | `Vec<String>` | User question selections | `event/question` |
+
+## Builder Pattern
+
+### Problem
+
+Complex objects have many fields, some required and some optional. A constructor with 10 parameters is unusable, and filling every field manually is verbose and error-prone.
+
+### Solution
+
+Provide a **constructor for required parameters** and **fluent `with_*` methods** for optional ones:
+
+```rust
+impl RunContext {
+    // Required parameters in the constructor
+    pub fn new(
+        request: impl Into<String>,
+        context: RequestContext,
+        tools: Vec<UnifiedTool>,
+        identity: IdentityContext,
+    ) -> Self { ... }
+
+    // Optional parameters via builder methods
+    pub fn with_abort_signal(mut self, signal: watch::Receiver<bool>) -> Self {
+        self.abort_signal = Some(signal);
+        self
+    }
+
+    pub fn with_initial_history(mut self, history: impl Into<String>) -> Self {
+        self.initial_history = Some(history.into());
+        self
+    }
+}
+```
+
+Usage reads like a sentence:
+
+```rust
+let context = RunContext::new(request, ctx, tools, identity)
+    .with_abort_signal(abort_rx)
+    .with_initial_history(history);
+```
+
+### Benefits
+
+- **Fluent API** — method chaining reads naturally
+- **Self-documenting** — each `with_*` method names the parameter it sets
+- **Compile-time safety** — required parameters are enforced by the constructor
+- **Backwards-compatible** — adding a new `with_*` method does not break existing callers
+
+Note that in Aleph, the Builder pattern is typically combined with the Context pattern rather than used standalone with a separate `Builder` struct.
+
+## FromStr Trait Pattern
+
+### Problem
+
+Many types need to be parsed from strings — configuration values, enum variants, user input. Without a standard interface, each type invents its own `parse` or `from_string` method.
+
+### Solution
+
+Implement `FromStr` to integrate with Rust's standard `str::parse()`:
+
+```rust
+impl FromStr for TaskStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("Invalid TaskStatus: {}", s)),
+        }
+    }
+}
+```
+
+This enables the standard `.parse()` API and generic parsing functions:
+
+```rust
+// Direct parsing
+let status: TaskStatus = "pending".parse()?;
+
+// In configuration loading
+let status = config.get("status")?.parse::<TaskStatus>()?;
+
+// Generic helper
+fn parse_config<T: FromStr>(value: &str) -> Result<T, T::Err> {
+    value.parse()
+}
+```
+
+### Types with FromStr in Aleph
+
+The following types implement `FromStr` for consistent parsing:
+
+- **Task/Session types:** `TaskStatus`, `SessionStatus`, `TraceRole`
+- **Memory types:** `FactType`, `FactSpecificity`, `TemporalScope`
+- **Extension types:** `HookKind`, `HookPriority`, `PromptScope`
+- **Device types:** `DeviceType`, `DeviceRole`
+- **Runtime types:** `RuntimeKind`, `EvolutionStatus`, `EventType`
+- **Risk types:** `RiskLevel`, `Lane`
+
+### Convention
+
+- Use `to_lowercase()` for case-insensitive parsing
+- Return `String` as the error type (simple, no extra dependencies)
+- Match on all known variants and return `Err` for unknown values
+
+## Pattern Combinations
+
+Patterns in Aleph are rarely used in isolation. The most common combinations:
+
+### Context + Builder
+
+`RunContext` uses the Context pattern to group parameters and the Builder pattern for optional fields:
+
+```rust
+let run_context = RunContext::new(required_params)
+    .with_optional_param1(value1)
+    .with_optional_param2(value2);
+```
+
+### Newtype + FromStr
+
+Many newtypes implement `FromStr` so they can be parsed from configuration files:
+
+```rust
+let status: TaskStatus = "pending".parse()?;
+let device: DeviceType = config.get("device")?.parse()?;
+```
+
+### Newtype + Deref
+
+Newtypes that wrap `String` implement `Deref<Target = str>` for transparent access:
+
+```rust
+let id = ExperimentId::new("exp-001");
+if id.starts_with("exp-") { ... }  // Works via Deref to str
+```
+
+## Error Handling Conventions
+
+Aleph uses a two-tier approach to error handling:
+
+### Boundary Errors: `thiserror`
+
+For errors that cross module boundaries and need to be matched on by callers, use `thiserror` to derive structured error types:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum GatewayError {
+    #[error("authentication failed: {0}")]
+    AuthFailed(String),
+    #[error("session not found: {0}")]
+    SessionNotFound(String),
+    #[error("rate limit exceeded for client {client_id}")]
+    RateLimited { client_id: String },
+    #[error("internal error: {0}")]
+    Internal(#[from] anyhow::Error),
+}
+```
+
+### Internal Errors: `anyhow`
+
+For errors inside a module where the caller does not need to distinguish variants, use `anyhow::Result`:
+
+```rust
+use anyhow::{Context, Result};
+
+fn load_plugin(path: &Path) -> Result<Plugin> {
+    let bytes = std::fs::read(path)
+        .context("failed to read plugin file")?;
+    let manifest = parse_manifest(&bytes)
+        .context("invalid plugin manifest")?;
+    Ok(Plugin::from_manifest(manifest))
+}
+```
+
+### Rule of Thumb
+
+- If the error crosses a **crate boundary** or is part of a **public API**, use `thiserror`
+- If the error is handled within a **single module** or **binary entrypoint**, use `anyhow`
+- Use `.context()` on `anyhow` errors to add human-readable descriptions
+
+## Module Organization
+
+These principles govern how files and modules are structured. See also [Code Organization Guide](https://github.com/rootazero/Aleph/blob/main/docs/reference/CODE_ORGANIZATION.md) for the full reference.
+
+### Core Principles
+
+**Single Responsibility.** Each file owns exactly one concept. If you need the word "and" to describe what a file does, it needs to be split.
+
+**Separation of Concerns.** Split along natural fault lines:
+
+| Concern | Filename |
+|---------|----------|
+| Type definitions (struct/enum) | `types.rs` or `model.rs` |
+| Business logic | The main module file |
+| External integrations (DB, network) | `store.rs`, `executor.rs` |
+| Test doubles | `mock.rs` under `#[cfg(test)]` |
+| Error types | `error.rs` |
+
+**Visibility Minimization.** Use `pub(crate)` for cross-module access. Reserve `pub` for the crate's public API surface. Internal details should be `pub(super)` or private.
+
+### Standard File Names
+
+| Filename | Contents |
+|----------|----------|
+| `mod.rs` | Module entry point, re-exports (keep thin) |
+| `types.rs` | Enums and value objects |
+| `model.rs` | Aggregate roots and entities |
+| `pool.rs` | Connection/resource pools |
+| `factory.rs` | Constructor functions, builders |
+| `executor.rs` | Logic calling external systems |
+| `registry.rs` | Lookup and query logic |
+| `callback.rs` | Event handlers and hooks |
+| `mock.rs` | Test doubles (under `#[cfg(test)]`) |
+| `error.rs` | Domain-specific error enums |
+
+### When to Split a File
+
+**Must split** when:
+- Line count reaches 500+ and the file covers more than one concept
+- Multiple `impl Trait for T` blocks exist for different types
+- Production code is mixed with test doubles
+- A single struct has 20+ public methods spanning unrelated concerns
+
+**Consider splitting** when:
+- A single `impl` block exceeds 300 lines
+- A function exceeds 100 lines
+- The `use` imports span more than 3 unrelated modules
+
+### Module Patterns
+
+**Single-Struct Module** — for modules centered on one struct:
+```
+my_module/
+├── mod.rs      # MyStruct definition + core impl
+├── types.rs    # Supporting enums and value objects
+└── error.rs    # MyModuleError enum
+```
+
+**Domain Model Module** — for rich domain models with multiple types:
+```
+memory/
+├── mod.rs      # Module entry, re-exports
+├── types.rs    # FactType, MemoryLayer, MemoryCategory, etc.
+├── model.rs    # MemoryFact (aggregate root), CompressionSession
+├── anchor.rs   # ContextAnchor, MemoryEntry (query structures)
+└── store/      # Persistence implementations
+    └── lance/
+        └── facts.rs
+```
+
+**Manager Facade** — for large managers that delegate to sub-components:
+```
+extension/
+├── mod.rs          # ExtensionManager (thin facade, delegates)
+├── executor.rs     # PluginExecutor — tool/hook execution
+├── registry.rs     # SkillRegistry — skill/command lookup
+├── controller.rs   # ServiceController — start/stop/status
+├── loader.rs       # Plugin loading and discovery
+└── types.rs        # ExtensionConfig, LoadSummary
+```
+
+**Startup Builder** — for complex initialization sequences:
+```
+bin/aleph_server/commands/
+├── start.rs        # Entry point: parse args, call builder
+└── builder/
+    ├── mod.rs      # ServerBuilder struct
+    ├── providers.rs
+    ├── tools.rs
+    ├── gateway.rs
+    ├── channels.rs
+    └── config.rs
+```
+
+### Anti-Patterns to Avoid
+
+- **God Object:** A struct with 40+ methods spanning unrelated concerns. Split into a facade that delegates to focused sub-components.
+- **Flat Script:** A 700-line initialization function. Extract a builder with separate `initialize_*` methods.
+- **Type Dumping Ground:** 14 types and 31 impl blocks in one file. Separate into `types.rs`, `model.rs`, and domain-specific files.
+
+## Migration Guide
+
+### Adding the Context Pattern
+
+1. Identify a function with 5+ parameters (several optional)
+2. Create a context struct with required fields + `Option` for optional fields
+3. Implement `new()` with required parameters only
+4. Add `with_*` builder methods for each optional parameter
+5. Update the function signature to accept the context
+6. Update all call sites
+7. Export the context type in the module's public API
+
+### Adding a Newtype
+
+1. Identify a primitive type that carries semantic meaning
+2. Create a tuple struct wrapping the primitive
+3. Derive `Debug`, `Clone`, `PartialEq`, `Eq`, `Hash`
+4. Implement `new()`, `as_str()` (or equivalent accessor)
+5. Implement `Deref`, `Display`, `From<T>` as appropriate
+6. Update all usage sites to use the newtype
+7. Add the type to the newtype catalog

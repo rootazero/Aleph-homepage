@@ -1,0 +1,133 @@
+---
+title: "PII Protection"
+description: "Gateway-level PII filtering engine that detects and redacts personally identifiable information before it reaches LLM API providers."
+---
+
+The `pii` module provides gateway-level privacy protection that filters outbound messages before they reach LLM API providers. Unlike log-scrubbing utilities (which accept false positives), this engine is tuned for precision — false positives degrade LLM comprehension.
+
+## Design Philosophy
+
+1. **Precision over recall** — False positives harm agent performance; the engine favors accuracy
+2. **Rule-based detection** — Regex patterns for known PII types, not heuristic ML
+3. **Allowlist exemption** — Known-safe values can bypass filtering
+
+---
+
+## Core Components
+
+### PiiEngine
+
+The main filtering engine:
+
+```rust
+pub struct PiiEngine {
+    rules: Vec<Box<dyn PiiRule>>,
+    allowlist: PiiAllowlist,
+    action: PiiAction,
+}
+
+impl PiiEngine {
+    pub fn filter(&self,
+        text: &str,
+    ) -> FilterResult { /* ... */ }
+}
+```
+
+### PiiSeverity
+
+```rust
+pub enum PiiSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+```
+
+### FilterResult
+
+```rust
+pub struct FilterResult {
+    pub text: String,           // Filtered text (with replacements)
+    pub blocked_count: usize,   // Replaced matches
+    pub warned_count: usize,    // Logged but not replaced
+    pub matches: Vec<PiiMatch>,
+}
+```
+
+---
+
+## Detection Rules
+
+Built-in rules detect:
+
+| Type | Examples | Severity |
+|---|---|---|
+| **Email addresses** | `user@example.com` | Medium |
+| **Phone numbers** | `+1-555-123-4567` | High |
+| **Credit cards** | `4111-1111-1111-1111` | Critical |
+| **SSN / ID cards** | Chinese ID: `110101199001011234` | Critical |
+| **API keys** | `sk-abc123...` | Critical |
+| **SSH keys** | `ssh-rsa AAAA...` | High |
+| **IP addresses** | `192.168.1.1` | Low |
+
+### ID Card Validation
+
+Chinese ID card numbers are validated with:
+- Length check (18 digits)
+- Province code validation (first 2 digits)
+- Date validation (digits 7-14)
+- Checksum verification (last digit via weighted sum)
+
+**Safety:** Uses `.get(..n)` instead of byte slicing for UTF-8 safety.
+
+---
+
+## Allowlist
+
+Known-safe values can be exempted from filtering:
+
+```rust
+pub struct PiiAllowlist {
+    entries: Vec<Regex>,
+}
+```
+
+Allowlist entries are regex patterns matched against detected values before replacement.
+
+---
+
+## Actions
+
+```rust
+pub enum PiiAction {
+    Block,   // Replace with placeholder
+    Warn,    // Log but don't replace
+    Allow,   // Ignore
+}
+```
+
+**Platform policy:** Different providers may have different PII requirements. The engine respects `PlatformPiiPolicy` from configuration.
+
+---
+
+## Safety Properties
+
+- **UTF-8 safe** — `.get(..n)` for all string slicing, `char_indices()` for boundary checks
+- **Lock recovery** — `unwrap_or_else(|e| e.into_inner())` for RwLock
+- **No `static mut`** — Uses `OnceLock` for static regex
+- **Regex safety** — All regex literals use `.expect("valid regex literal")`
+
+---
+
+## Code Location
+
+- `src/pii/mod.rs` — Module entry point
+- `src/pii/engine.rs` — Core filtering engine
+- `src/pii/rules/` — Detection rules (email, phone, credit card, ID card, API key, SSH key, IP)
+- `src/pii/allowlist.rs` — Exemption management
+
+## See Also
+
+- [Security Primitives](./security-primitives) — Runtime guard integration
+- [Secret Management](./secret-management) — Encrypted credential storage

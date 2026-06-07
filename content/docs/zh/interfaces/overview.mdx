@@ -1,0 +1,205 @@
+---
+title: "接口概述"
+description: "多通道消息架构，驱动 Aleph 的多态通信。"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Aleph 通过**接口**（也称为通道）与用户通信——可插拔的适配器，将消息平台桥接到 Gateway 的统一消息总线。单个 Aleph 实例可以同时服务 Telegram、Discord、iMessage、WebChat 和 CLI，全部共享相同的 agent 大脑、内存和工具生态系统。
+
+## 架构
+
+每个接口遵循相同的数据流：
+
+```
+Platform API ──> Interface Adapter ──> InboundMessage ──> Gateway Router
+                                                               │
+                                                          Session Key
+                                                               │
+                                                           Harness
+                                                                │
+Platform API <── Interface Adapter <── OutboundMessage <── Response
+```
+
+Gateway 的 **ChannelRegistry** 管理所有活动接口的生命周期。当 Aleph 启动时，它读取通道配置，通过其 **ChannelFactory** 实例化每个启用的接口，并调用 `start()`。从那时起，入站消息通过 `mpsc` 通道流向 Gateway，出站响应通过同一个适配器分派回去。
+
+## Channel Trait
+
+所有接口都实现 `Channel` trait，无论底层平台如何，都提供统一的 API：
+
+```rust
+#[async_trait]
+pub trait Channel: Send + Sync {
+    /// 通道元数据（id、名称、类型、状态、能力）
+    fn info(&self) -> &ChannelInfo;
+
+    /// 启动通道（连接、认证、开始轮询/监听）
+    async fn start(&mut self) -> ChannelResult<()>;
+
+    /// 停止通道（断开连接、清理）
+    async fn stop(&mut self) -> ChannelResult<()>;
+
+    /// 通过此通道发送消息
+    async fn send(&self, message: OutboundMessage) -> ChannelResult<SendResult>;
+
+    /// 获取入站消息接收器
+    fn inbound_receiver(&self) -> Option<mpsc::Receiver<InboundMessage>>;
+
+    /// 发送输入指示器
+    async fn send_typing(&self, conversation_id: &ConversationId) -> ChannelResult<()>;
+
+    /// 对消息做出反应
+    async fn react(&self, message_id: &MessageId, reaction: &str) -> ChannelResult<()>;
+
+    /// 编辑先前发送的消息
+    async fn edit(&self, message_id: &MessageId, new_text: &str) -> ChannelResult<()>;
+
+    /// 删除消息
+    async fn delete(&self, message_id: &MessageId) -> ChannelResult<()>;
+}
+```
+
+每个接口还有一个 **ChannelFactory**，在运行时从 JSON/TOML 配置创建实例，当配置文件更改时启用热重载。
+
+## 通道能力
+
+并非每个平台都支持每个功能。每个通道声明一个 `ChannelCapabilities` 结构体，以便 agent 可以调整其行为：
+
+```rust
+pub struct ChannelCapabilities {
+    pub attachments: bool,
+    pub images: bool,
+    pub audio: bool,
+    pub video: bool,
+    pub reactions: bool,
+    pub replies: bool,
+    pub editing: bool,
+    pub deletion: bool,
+    pub typing_indicator: bool,
+    pub read_receipts: bool,
+    pub rich_text: bool,
+    pub max_message_length: usize,
+    pub max_attachment_size: u64,
+}
+```
+
+### 通道比较表
+
+| 功能 | Telegram | Discord | iMessage | WebChat | CLI |
+|---------|:--------:|:-------:|:--------:|:-------:|:---:|
+| **富文本 (Markdown)** | Yes | Yes | No | Yes | Yes |
+| **附件** | Yes | Yes | Yes | Yes | No |
+| **图片** | Yes | Yes | Yes | Yes | No |
+| **音频/视频** | Yes | Yes | Yes | No | No |
+| **反应** | Limited | Yes | Tapbacks | No | No |
+| **回复线程** | Yes | Yes | No | No | No |
+| **消息编辑** | Yes | Yes | No | No | No |
+| **消息删除** | Yes | Yes | No | No | No |
+| **输入指示器** | Yes | Yes | No | No | No |
+| **内联键盘** | Yes | No | No | No | No |
+| **最大消息长度** | 4,096 | 2,000 | ~20,000 | Unlimited | Unlimited |
+| **最大附件大小** | 50 MB | 25 MB | 100 MB | Configurable | N/A |
+| **配置键** | `telegram` | `discord` | macOS only | `gateway` | `cli` |
+| **设置难度** | Easy | Medium | Medium | Included | Included |
+
+## InteractionManifest
+
+除了原始能力之外，Aleph 使用 **InteractionManifest** 系统来通知 AI 当前通道可以做什么。每个通道属于一个 `InteractionParadigm`：
+
+| 范式 | 通道 | 能力 |
+|----------|----------|-------------|
+| **CLI** | Terminal | 富文本、代码高亮、流式传输 |
+| **WebRich** | WebChat、Desktop apps | 完整的交互式 UI、画布、mermaid 图表、流式传输 |
+| **Messaging** | Telegram、Discord、iMessage | 富文本、内联图片 |
+| **Background** | Cron jobs、webhooks | 仅静默回复 |
+| **Embedded** | 最小 UI 上下文 | 无特殊能力 |
+
+清单告诉 AI 是否可以使用 Mermaid 图表、交互式按钮、画布绘图或流式传输——因此它将其输出格式定制为在用户屏幕上实际渲染的内容。
+
+## Session Key 解析
+
+当消息到达任何接口时，Gateway 解析一个 **SessionKey**，确定加载哪个对话历史。会话密钥编码完整上下文：
+
+| 会话类型 | 键格式 | 示例 |
+|-------------|-----------|---------|
+| **Main** | `agent:{id}:main` | `agent:main:main` |
+| **DM (per-peer)** | `agent:{id}:dm:{peer}` | `agent:main:dm:user123` |
+| **DM (per-channel-peer)** | `agent:{id}:{channel}:dm:{peer}` | `agent:main:telegram:dm:user123` |
+| **Group** | `agent:{id}:{channel}:group:{peer}` | `agent:main:discord:group:guild456` |
+| **Task** | `agent:{id}:{type}:{task}` | `agent:main:cron:daily-summary` |
+| **Ephemeral** | `agent:{id}:ephemeral:{uuid}` | `agent:main:ephemeral:a1b2c3` |
+
+**DmScope** 策略控制直接消息如何隔离：
+
+- **`Main`** -- 所有 DM 共享主会话（跨用户的对话合并）
+- **`PerPeer`** -- 每个用户获得自己的会话，跨通道共享（默认）
+- **`PerChannelPeer`** -- 每个通道上的每个用户获得一个单独的会话
+
+<Callout type="info">
+**Identity Links** 允许你跨通道映射同一个人。如果 Telegram 上的用户 `123` 和 Discord 上的用户 `456` 都是 "john"，他们的 DM 会话可以在 `agent:main:dm:john` 下统一。
+</Callout>
+
+## 路由绑定
+
+你可以使用路由绑定将特定通道、用户或公会绑定到不同的 agent。解析遵循优先级链：
+
+1. **Peer** -- 特定用户/聊天匹配（最高优先级）
+2. **Guild** -- Discord 公会或 Slack 工作区匹配
+3. **Team** -- 团队级匹配
+4. **Account** -- 特定账户匹配
+5. **Channel** -- 通道类型匹配（例如，所有 Telegram 到一个 agent）
+6. **Default** -- 回退到默认 agent
+
+```toml
+# 将所有 Telegram 消息路由到 "personal" agent
+[[bindings]]
+agent_id = "personal"
+[bindings.match_rule]
+channel = "telegram"
+account_id = "*"
+
+# 将特定 Discord 公会路由到 "work" agent
+[[bindings]]
+agent_id = "work"
+[bindings.match_rule]
+channel = "discord"
+guild_id = "123456789"
+```
+
+## 功能编译
+
+Aleph 默认编译所有生产功能。接口通过配置启用（而不是编译时功能）。只需在 `~/.aleph/config.toml` 中启用你需要的通道。
+
+iMessage 接口仅针对 macOS 条件编译（`#[cfg(target_os = "macos")]`）。
+
+## 通道配置
+
+所有通道都通过 Aleph 配置文件 (`~/.aleph/config.toml`) 进行配置。更改由文件监视器检测并在 600ms 内通过热重载应用：
+
+```toml
+[channels.telegram]
+enabled = true
+token = "${TELEGRAM_BOT_TOKEN}"
+allowed_chats = []
+
+[channels.discord]
+enabled = true
+token = "${DISCORD_BOT_TOKEN}"
+allowed_guilds = [123456789]
+
+[channels.webchat]
+enabled = true
+port = 18790
+cors_origins = ["http://localhost:*"]
+```
+
+配置支持 `${ENV_VAR}` 扩展用于密钥，因此 token 永远不需要以明文存储。
+
+## 下一步
+
+深入了解各个接口指南：
+
+- [Telegram](/docs/interfaces/telegram) -- Bot 设置、允许列表、媒体处理
+- [Discord](/docs/interfaces/discord) -- 公会权限、斜杠命令、嵌入
+- [iMessage](/docs/interfaces/imessage) -- 通过 Messages.app 的 macOS 原生集成
+- [WebChat](/docs/interfaces/webchat) -- 带有 WebSocket 流式传输的嵌入式网页聊天

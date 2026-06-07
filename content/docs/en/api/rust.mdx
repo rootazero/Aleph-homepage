@@ -1,0 +1,388 @@
+---
+title: "Rust API"
+description: "Core crate reference for embedding Aleph as a library"
+---
+
+The `alephcore` crate is the Rust library that powers every Aleph component -- the Gateway daemon, CLI, desktop app, and messaging interfaces. You can also use it directly as a library to embed Aleph's AI agent capabilities in your own Rust applications.
+
+```toml
+# Cargo.toml
+[dependencies]
+alephcore = { path = "../Aleph/core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+## Crate Metadata
+
+| Field | Value |
+|-------|-------|
+| Crate name | `alephcore` |
+| Edition | 2021 |
+| Minimum Rust | 1.92 |
+| Crate types | `rlib`, `cdylib` |
+| Async runtime | Tokio (multi-threaded) |
+
+## Module Hierarchy
+
+The crate is organized into domain-specific modules. All public modules are re-exported from `lib.rs`.
+
+```text
+alephcore
+  ├── agent_loop      # OTAF execution engine
+  ├── agents          # Agent definitions, sub-agents, swarm
+  ├── approval        # User approval workflows
+  ├── browser         # CDP browser automation
+  ├── builtin_tools   # Built-in tool implementations
+  ├── capability      # Capability detection
+  ├── cli             # CLI helpers (inquire prompts)
+  ├── command         # Command definitions
+  ├── components      # Reusable components
+  ├── compressor      # Context compression
+  ├── conversation    # Multi-turn conversation management
+  ├── daemon          # Proactive AI daemon (worldmodel, perception)
+  ├── desktop         # Desktop integration
+  ├── discovery       # Service discovery
+  ├── dispatcher      # Unified tool registry & dispatch
+  ├── domain          # Domain modeling types
+  ├── engine          # Engine coordination
+  ├── event           # Event types
+  ├── exec            # Command execution & security kernel
+  ├── executor        # Task executors
+  ├── extension       # Plugin/extension system
+  ├── gateway*        # WebSocket JSON-RPC server (feature-gated)
+  ├── generation      # Content generation providers
+  ├── intent          # Intent routing
+  ├── logging         # Structured logging with PII scrubbing
+  ├── markdown        # Markdown processing
+  ├── mcp             # Model Context Protocol integration
+  ├── memory          # Memory storage & retrieval
+  ├── metrics         # Performance telemetry
+  ├── payload         # Request/response payloads
+  ├── permission      # Permission management
+  ├── pii             # PII detection & scrubbing
+  ├── poe             # Principle-Operation-Evaluation tasks
+  ├── prompt          # Prompt construction
+  ├── providers       # AI provider abstraction
+  ├── resilient       # Resilient task execution
+  ├── routing         # Session key routing
+  ├── runtimes        # Capability probe/ledger (detect & bootstrap external tools)
+  ├── scheduler       # Task scheduling
+  ├── search          # Search providers
+  ├── secrets         # Secret management
+  ├── skill           # Individual skill types
+  ├── skills          # Skills registry & management
+  ├── skill_evolution # Skill solidification & evolution
+  ├── spec_driven     # Spec-driven development workflow
+  ├── supervisor      # PTY process supervision
+  ├── thinker         # LLM decision-making layer
+  ├── tools           # Tool trait system
+  ├── video           # Video transcript extraction
+  ├── vision          # Vision/image processing
+  └── wizard          # Configuration wizard flows
+```
+
+Modules marked with `*` are feature-gated. See [Feature Flags](#feature-flags) below.
+
+## Key Public Types
+
+### Configuration
+
+| Type | Module | Description |
+|------|--------|-------------|
+| `Config` | `config` | Main configuration struct (parsed from `config.toml`) |
+| `FullConfig` | `config` | Complete configuration including all sections |
+| `ProviderConfig` | `config` | Per-provider settings (model, API key, base URL) |
+| `MemoryConfig` | `config` | Memory system settings |
+| `BehaviorConfig` | `config` | Agent behavior tuning |
+| `RoutingRuleConfig` | `config` | Intent routing rules |
+| `GeneralConfig` | `config` | General application settings |
+
+### Agent Loop
+
+| Type | Module | Description |
+|------|--------|-------------|
+| `AgentLoop` | `agent_loop` | Core OTAF execution engine |
+| `AgentLoopBuilder` | `agent_loop::builder` | Builder pattern for `AgentLoop` construction |
+| `LoopConfig` | `agent_loop::config` | Loop execution parameters (max iterations, timeouts) |
+| `LoopResult` | `agent_loop` | Final result of an agent loop run |
+| `LoopState` | `agent_loop::state` | Mutable state carried across iterations |
+| `RequestContext` | `agent_loop::state` | Per-request metadata (session, identity, attachments) |
+| `Message` | `agent_loop::message_builder` | Chat message with role and content |
+| `ToolCall` | `agent_loop::message_builder` | Tool invocation record |
+| `Decision` | `agent_loop::decision` | Parsed LLM decision (respond, call tool, delegate, stop) |
+
+### Thinker (LLM Layer)
+
+| Type | Module | Description |
+|------|--------|-------------|
+| `Thinker<P>` | `thinker` | Generic LLM decision engine parameterized over `ProviderRegistry` |
+| `ThinkerConfig` | `thinker` | Prompt, filter, routing, and compression settings |
+| `ProviderRegistry` | `thinker` | Trait for provider lookup and selection |
+| `SingleProviderRegistry` | `thinker` | Simple registry wrapping a single `AiProvider` |
+| `PromptBuilder` | `thinker::prompt_builder` | Builds system + user prompts from context |
+| `ThinkerModelSelector` | `thinker::model_router` | Routes requests to models based on rules |
+
+### Tool System
+
+| Type | Module | Description |
+|------|--------|-------------|
+| `AlephTool` | `tools` | Static dispatch trait -- compile-time typed tools |
+| `AlephToolDyn` | `tools` | Dynamic dispatch trait -- runtime-loaded tools (MCP, plugins) |
+| `AlephToolServer` | `tools` | Hot-reload enabled tool server |
+| `AlephToolServerHandle` | `tools` | Thread-safe handle to a running tool server |
+| `ToolRegistry` | `dispatcher` | Unified registry aggregating all tool sources |
+| `ToolDefinition` | `dispatcher` | Tool metadata (name, description, JSON Schema, category) |
+| `UnifiedTool` | `dispatcher` | Wrapper unifying native, MCP, skill, and plugin tools |
+| `ToolResult` | `dispatcher` | Execution result from any tool |
+
+### Providers
+
+| Type | Module | Description |
+|------|--------|-------------|
+| `AiProvider` | `providers` | Core trait for AI backends (process, process_with_tools, stream) |
+| `HttpProvider` | `providers::http_provider` | Protocol-agnostic HTTP provider |
+| `OllamaProvider` | `providers::ollama` | Native Ollama integration |
+| `FailoverProvider` | `providers::failover` | Automatic provider failover |
+| `AuthProfileManager` | `providers::profile_manager` | Multi-profile credential rotation |
+
+### Error Handling
+
+| Type | Module | Description |
+|------|--------|-------------|
+| `AlephError` | `error` | Unified error enum with 20+ variants |
+| `Result<T>` | `error` | Type alias for `std::result::Result<T, AlephError>` |
+
+Every `AlephError` variant carries an optional `suggestion` field with user-friendly remediation advice. Call `.suggestion()` to retrieve it, or `.user_friendly_message()` for a formatted display string.
+
+## Core Traits
+
+### `AlephTool` -- Static Tool Trait
+
+```rust
+#[async_trait]
+pub trait AlephTool: Clone + Send + Sync + 'static {
+    const NAME: &'static str;
+    const DESCRIPTION: &'static str;
+
+    type Args: Serialize + DeserializeOwned + JsonSchema + Send;
+    type Output: Serialize + Send;
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output>;
+
+    // Provided methods
+    fn category(&self) -> ToolCategory { ToolCategory::Builtin }
+    fn requires_confirmation(&self) -> bool { false }
+    fn examples(&self) -> Option<Vec<String>> { None }
+    fn definition(&self) -> ToolDefinition { /* auto-generates JSON Schema */ }
+}
+```
+
+A blanket implementation converts any `AlephTool` into `AlephToolDyn`, so static tools can be stored in dynamic collections:
+
+```rust
+let tools: Vec<Box<dyn AlephToolDyn>> = vec![
+    Box::new(SearchTool::new()),
+    Box::new(WebFetchTool::new()),
+];
+```
+
+### `AiProvider` -- LLM Backend Trait
+
+```rust
+pub trait AiProvider: Send + Sync {
+    fn process(&self, input: &str, system_prompt: Option<&str>)
+        -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>>;
+
+    fn process_with_tools(&self, messages: Vec<Message>, tools: Vec<ToolDefinition>, ...)
+        -> Pin<Box<dyn Future<Output = Result<LlmResponse>> + Send + '_>>;
+
+    fn name(&self) -> &str;
+    fn color(&self) -> &str;
+    fn model_id(&self) -> &str;
+}
+```
+
+Aleph ships adapters for OpenAI-compatible, Anthropic, Gemini, and Ollama protocols. Add new providers by implementing this trait or by registering a YAML-defined protocol adapter.
+
+### `LoopCallback` -- Agent Loop Events
+
+```rust
+pub trait LoopCallback: Send + Sync {
+    fn on_event(&self, event: LoopEvent);
+}
+```
+
+Implement this trait to receive real-time events during agent execution: iteration start/end, tool calls, thinking steps, errors, and final results. Built-in implementations include `LoggingCallback`, `CollectingCallback`, and `NoOpLoopCallback`.
+
+## Feature Flags
+
+| Feature | Description | Dependencies |
+|---------|-------------|--------------|
+| `gateway` (default) | WebSocket JSON-RPC server | tokio-tungstenite, axum, clap |
+| `telegram` | Telegram bot interface | teloxide |
+| `discord` | Discord bot interface | serenity |
+| `whatsapp` | WhatsApp interface | (gateway) |
+| `all-channels` | All messaging channels | telegram + discord + whatsapp |
+| `cron` | Cron job scheduler | cron, chrono-tz |
+| `cli` | Interactive CLI prompts | inquire |
+| `control-plane` | Embedded web UI | rust-embed |
+| `plugin-wasm` | WebAssembly plugin runtime | extism |
+| `plugin-nodejs` | Node.js plugin runtime | (placeholder) |
+| `plugin-all` | All plugin runtimes | plugin-wasm + plugin-nodejs |
+| `test-helpers` | Test utilities | -- |
+
+Use feature combinations to control binary size:
+
+```toml
+# Minimal library usage (no server, no channels)
+alephcore = { path = "...", default-features = false }
+
+# Gateway + Telegram only
+alephcore = { path = "...", features = ["gateway", "telegram"] }
+
+# Everything
+alephcore = { path = "...", features = ["gateway", "all-channels", "cron", "plugin-all"] }
+```
+
+## Usage Example
+
+### Running an Agent Loop
+
+```rust
+use alephcore::{
+    AgentLoop, AgentLoopConfig, RequestContext,
+    Thinker, ThinkerConfig, SingleProviderRegistry,
+    ContextCompressor,
+};
+use alephcore::agent_loop::NoOpLoopCallback;
+use alephcore::providers::{create_provider, ProviderConfig};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> alephcore::Result<()> {
+    // 1. Initialize logging
+    alephcore::init_logging();
+
+    // 2. Create an AI provider
+    let config = ProviderConfig::test_config("claude-sonnet-4-20250514");
+    let provider = create_provider("anthropic", config)?;
+
+    // 3. Build the Thinker (LLM layer)
+    let registry = SingleProviderRegistry::new(provider);
+    let thinker = Thinker::new(
+        Arc::new(registry),
+        ThinkerConfig::default(),
+    );
+
+    // 4. Create the Agent Loop
+    let loop_config = AgentLoopConfig::default();
+    let compressor = ContextCompressor;
+    let agent = AgentLoop::new(thinker, compressor, loop_config);
+
+    // 5. Run
+    let result = agent.run(
+        "What is the weather in Tokyo?".to_string(),
+        RequestContext::empty(),
+        vec![], // tools
+        NoOpLoopCallback,
+    ).await;
+
+    println!("Result: {:?}", result);
+    Ok(())
+}
+```
+
+### Implementing a Custom Tool
+
+```rust
+use alephcore::tools::AlephTool;
+use alephcore::error::Result;
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone)]
+struct WeatherTool;
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct WeatherArgs {
+    /// City name to check weather for
+    city: String,
+    /// Temperature unit (celsius or fahrenheit)
+    unit: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WeatherOutput {
+    temperature: f64,
+    condition: String,
+    city: String,
+}
+
+#[async_trait]
+impl AlephTool for WeatherTool {
+    const NAME: &'static str = "weather";
+    const DESCRIPTION: &'static str = "Get current weather for a city";
+
+    type Args = WeatherArgs;
+    type Output = WeatherOutput;
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output> {
+        // Your implementation here
+        Ok(WeatherOutput {
+            temperature: 22.0,
+            condition: "Sunny".into(),
+            city: args.city,
+        })
+    }
+
+    fn examples(&self) -> Option<Vec<String>> {
+        Some(vec![
+            "weather(city='Tokyo')".into(),
+            "weather(city='London', unit='celsius')".into(),
+        ])
+    }
+}
+```
+
+## Error Handling
+
+`AlephError` is a `thiserror`-based enum. Every variant includes structured context:
+
+```rust
+match result {
+    Err(AlephError::AuthenticationError { provider, message, suggestion }) => {
+        eprintln!("Auth failed for {}: {}", provider, message);
+        if let Some(hint) = suggestion {
+            eprintln!("Hint: {}", hint);
+        }
+    }
+    Err(AlephError::RateLimitError { .. }) => {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        // retry...
+    }
+    Err(e) => eprintln!("{}", e.user_friendly_message()),
+    Ok(val) => { /* success */ }
+}
+```
+
+Key error variants: `NetworkError`, `AuthenticationError`, `RateLimitError`, `ProviderError`, `Timeout`, `NoProviderAvailable`, `InvalidConfig`, `ConfigError`, `ToolNotFound`, `Cancelled`, `RuntimeError`, `ExecutionTimeout`, `SandboxUnavailable`.
+
+## Async Runtime
+
+Aleph uses Tokio with the `rt-multi-thread` feature. All public async APIs return `Send` futures compatible with Tokio's multi-threaded runtime. Key Tokio features used:
+
+- `rt-multi-thread` -- Work-stealing thread pool
+- `sync` -- Channels, mutexes, RwLocks, semaphores
+- `time` -- Timeouts, intervals, sleep
+- `process` -- Child process management
+- `fs` -- Async filesystem operations
+- `signal` -- Unix signal handling
+- `net` -- TCP/UDP networking
+
+## See Also
+
+- [JSON-RPC API](/docs/en/api/jsonrpc) -- WebSocket RPC method reference
+- [Architecture](/docs/en/architecture/overview) -- System architecture overview
+- [Tool System](/docs/en/tools/overview) -- Tool design and built-in tools
+- [Gateway](/docs/en/gateway/overview) -- Gateway server documentation

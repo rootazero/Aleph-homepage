@@ -1,0 +1,153 @@
+---
+title: "ClawHub"
+description: "HTTP client and types for the ClawHub skill registry at clawhub.ai."
+---
+
+The `clawhub` module provides an HTTP client and type definitions for interacting with the ClawHub skill registry. ClawHub is a public repository where users can browse, search, and download skills for use with Aleph and compatible agents.
+
+## Design Philosophy
+
+The ClawHub integration follows two principles:
+
+1. **Read-only access** — The client fetches skills from the registry; it does not upload or modify registry contents. Authentication is not required for public API access.
+2. **Clean type separation** — Raw API types are converted to internal unified types via `From` implementations, keeping the HTTP layer decoupled from domain logic.
+
+---
+
+## Core Components
+
+### ClawHubClient
+
+The main HTTP client for registry operations:
+
+```rust
+pub struct ClawHubClient {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl ClawHubClient {
+    pub fn new() -> Self { /* ... */ }
+    
+    pub async fn browse(
+        &self,
+        category: Option<String>,
+    ) -> Result<Vec<SkillSummary>> { /* ... */ }
+    
+    pub async fn search(
+        &self,
+        query: &str,
+    ) -> Result<Vec<SkillSummary>> { /* ... */ }
+    
+    pub async fn download(
+        &self,
+        slug: &str,
+    ) -> Result<Vec<u8>> { /* ... */ }
+}
+```
+
+**Key behaviors:**
+- Browse falls back to search when the browse endpoint returns empty
+- Download sanitizes the slug (replacing `/` with `-`) before using it in temp filenames
+- All methods use `?` or `map_err` for error propagation
+
+### Types
+
+Core registry types:
+
+```rust
+pub struct SkillSummary {
+    pub slug: String,           // "owner/skill" format
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    pub downloads: u64,
+}
+
+pub struct SkillDetail {
+    pub summary: SkillSummary,
+    pub readme: String,
+    pub manifest: SkillManifest,
+}
+```
+
+---
+
+## API Operations
+
+### Browse
+
+Lists skills by category. Falls back to search if the category endpoint returns empty:
+
+```rust
+let client = ClawHubClient::new();
+let skills = client.browse(Some("productivity".to_string())).await?;
+```
+
+### Search
+
+Full-text search across the registry:
+
+```rust
+let results = client.search("file organizer").await?;
+```
+
+### Download
+
+Fetches a skill package as a ZIP archive:
+
+```rust
+let zip_bytes = client.download("aleph/file-organizer").await?;
+// slug "aleph/file-organizer" becomes temp file "clawhub-aleph-file-organizer-{uuid}.zip"
+```
+
+---
+
+## Utility Functions
+
+### URL Encoding
+
+```rust
+pub fn encode_slug_path(slug: &str) -> String
+```
+
+Encodes the slug for use in URLs with per-segment percent-encoding.
+
+### Version Comparison
+
+```rust
+pub fn is_newer_version(current: &str, latest: &str) -> bool
+```
+
+Compares two semantic version strings. Falls back to string comparison for non-semver inputs.
+
+### Timestamp Conversion
+
+```rust
+pub fn unix_ms_to_rfc3339(ts: i64) -> String
+```
+
+Converts Unix milliseconds to RFC 3339 format. Returns empty string for invalid timestamps.
+
+---
+
+## Error Handling
+
+The client uses `reqwest` for HTTP and returns `Result<T, ClawHubError>` from all operations. Errors include:
+- Network failures
+- HTTP non-2xx status codes
+- Invalid response parsing
+- Filesystem errors during download
+
+---
+
+## Code Location
+
+- `src/clawhub/mod.rs` — Module entry point
+- `src/clawhub/client.rs` — HTTP client implementation
+- `src/clawhub/types.rs` — Registry types and conversions
+
+## See Also
+
+- [Skills](./skills) — How skills work within Aleph
+- [Extensions](./extensions) — Plugin architecture for adding capabilities

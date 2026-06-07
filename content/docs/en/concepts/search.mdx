@@ -1,0 +1,174 @@
+---
+title: "Search"
+description: "Real-time web search with multiple provider backends including Tavily, SearXNG, Brave, Google CSE, Bing, and Exa.ai for up-to-date information beyond training data."
+---
+
+The `search` module provides real-time web search for Aleph, enabling the agent to access current information beyond its training data cutoff. It supports multiple search backends through a unified trait interface.
+
+## Design Philosophy
+
+The search system follows three principles:
+
+1. **Provider abstraction** — All search backends implement the same `SearchProvider` trait
+2. **Privacy-first** — Self-hosted SearXNG is supported alongside commercial providers
+3. **Failover routing** — The registry tries providers until one succeeds
+
+---
+
+## Core Types
+
+### SearchResult
+
+Unified result structure for all providers:
+
+```rust
+pub struct SearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub source: String,      // Provider name
+}
+```
+
+### SearchOptions
+
+Configuration for search behavior:
+
+```rust
+pub struct SearchOptions {
+    pub max_results: usize,
+    pub include_images: bool,
+    pub time_range: Option<TimeRange>,
+    pub safe_search: bool,
+}
+```
+
+### SearchProvider Trait
+
+```rust
+#[async_trait]
+pub trait SearchProvider: Send + Sync {
+    async fn search(
+        &self,
+        query: &str,
+        options: &SearchOptions,
+    ) -> Result<Vec<SearchResult>>;
+
+    fn name(&self) -> &str;
+    fn test_connection(&self,
+    ) -> Pin<Box<dyn Future<Output = ProviderTestResult> + Send>>;
+}
+```
+
+---
+
+## SearchRegistry
+
+Manages multiple providers with failover:
+
+```rust
+pub struct SearchRegistry {
+    providers: Vec<Box<dyn SearchProvider>>,
+}
+
+impl SearchRegistry {
+    pub async fn search(
+        &self,
+        query: &str,
+        options: &SearchOptions,
+    ) -> Result<Vec<SearchResult>> {
+        // Try each provider in order until one succeeds
+        for provider in &self.providers {
+            match provider.search(query, options).await {
+                Ok(results) => return Ok(results),
+                Err(e) => {
+                    tracing::warn!(
+                        provider = provider.name(),
+                        error = %e,
+                        "Search provider failed, trying next"
+                    );
+                }
+            }
+        }
+        Err(SearchError::AllProvidersFailed)
+    }
+}
+```
+
+**Privacy note:** User queries are not included in error messages to prevent accidental logging of sensitive search terms.
+
+---
+
+## Supported Providers
+
+| Provider | Self-hosted | API Key | Notes |
+|---|---|---|---|
+| **Tavily** | — | ✅ | AI-optimized search, recommended default |
+| **SearXNG** | ✅ | — | Privacy-first, fully self-hosted |
+| **Brave** | — | ✅ | Privacy + quality balance |
+| **Google CSE** | — | ✅ | Comprehensive coverage |
+| **Bing** | — | ✅ | Cost-effective |
+| **Exa.ai** | — | ✅ | Semantic/neural search |
+
+---
+
+## Provider Testing
+
+Test configuration without saving credentials:
+
+```rust
+pub struct SearchProviderTestConfig {
+    pub provider_type: String,  // "tavily", "brave", "searxng", etc.
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,      // Required for SearXNG
+    pub engine_id: Option<String>,    // Required for Google CSE
+}
+```
+
+Returns `ProviderTestResult` with latency, error type, and success status.
+
+---
+
+## Usage Example
+
+```rust
+use alephcore::search::{SearchProvider, SearchOptions};
+use alephcore::search::providers::TavilyProvider;
+
+let provider = TavilyProvider::new("tvly-xxx".to_string())?;
+let options = SearchOptions::default();
+
+let results = provider.search("Rust programming language", &options).await?;
+
+for result in results {
+    println!("Title: {}", result.title);
+    println!("URL: {}", result.url);
+    println!("Snippet: {}\n", result.snippet);
+}
+```
+
+---
+
+## Safety Properties
+
+- **No query leakage** — Error messages use fixed strings, not user queries
+- **Safe truncation** — Latency uses `.min(u32::MAX as u128)` for saturation
+- **No duplicate headers** — `reqwest` handles `Content-Type` automatically
+- **No lock issues** — Uses `unwrap_or_else(|e| e.into_inner())`
+- **No SQL injection** — No database queries
+
+---
+
+## Code Location
+
+- `src/search/mod.rs` — Module entry point and re-exports
+- `src/search/provider.rs` — `SearchProvider` trait
+- `src/search/registry.rs` — `SearchRegistry` with failover
+- `src/search/options.rs` — `SearchOptions` and `QuotaInfo`
+- `src/search/result.rs` — `SearchResult` type
+- `src/search/providers/` — Provider implementations
+
+## See Also
+
+- [Builtin Tools](./builtin-tools) — Search tool exposed to agents
+- [Configuration](./configuration) — Search provider configuration

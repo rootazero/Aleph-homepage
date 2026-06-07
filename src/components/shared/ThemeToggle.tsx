@@ -6,6 +6,10 @@ import { useEffect, useState } from "react";
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  // Defer rendering until mounted to avoid a hydration mismatch with
+  // next-themes (the theme is unknown during SSR). This intentional one-shot
+  // setState is the documented next-themes pattern.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
   if (!mounted) return <div className="w-8 h-8" />;
 

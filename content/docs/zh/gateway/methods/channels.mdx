@@ -1,0 +1,192 @@
+---
+title: "channels.*"
+description: "通信通道管理 RPC 方法"
+---
+
+通道方法管理通信通道 —— 连接到外部消息平台和通知服务（Discord、Slack、邮件等）。
+
+## 方法
+
+### channels.list
+
+列出所有已配置的通道。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "channels.list",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "channels": [
+      {
+        "id": "discord-main",
+        "name": "Discord Main",
+        "type": "discord",
+        "status": "connected",
+        "guild_id": "123456789"
+      },
+      {
+        "id": "slack-alerts",
+        "name": "Slack Alerts",
+        "type": "slack",
+        "status": "disconnected"
+      }
+    ]
+  }
+}
+```
+
+### channels.status
+
+获取特定通道的状态。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "channels.status",
+  "params": {
+    "channel_id": "discord-main"
+  }
+}
+```
+
+### channels.add
+
+添加新通道配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "channels.add",
+  "params": {
+    "id": "discord-second",
+    "name": "Discord Secondary",
+    "type": "discord",
+    "config": {
+      "token": "bot-token-here",
+      "guild_id": "987654321"
+    }
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `id` | string | 是 | 唯一通道标识符 |
+| `name` | string | 是 | 显示名称 |
+| `type` | string | 是 | 通道类型：`"discord"`、`"slack"`、`"email"`、`"webhook"` |
+| `config` | object | 是 | 类型特定配置 |
+
+### channels.update
+
+更新通道配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "channels.update",
+  "params": {
+    "channel_id": "discord-main",
+    "config": {
+      "token": "new-bot-token"
+    }
+  }
+}
+```
+
+### channels.delete
+
+删除通道配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "channels.delete",
+  "params": {
+    "channel_id": "slack-alerts"
+  }
+}
+```
+
+### channels.connect
+
+连接断开的通道。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "channels.connect",
+  "params": {
+    "channel_id": "slack-alerts"
+  }
+}
+```
+
+### channels.disconnect
+
+断开连接的通道。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "channels.disconnect",
+  "params": {
+    "channel_id": "discord-main"
+  }
+}
+```
+
+### channels.send
+
+通过通道发送消息。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "channels.send",
+  "params": {
+    "channel_id": "discord-main",
+    "message": "Hello from Aleph!",
+    "target": "general"
+  }
+}
+```
+
+## 通道类型
+
+| 类型 | 描述 | 所需配置 |
+|------|-------------|----------------|
+| `discord` | Discord 机器人集成 | `token`、`guild_id` |
+| `slack` | Slack 机器人/应用集成 | `token`、`channel` |
+| `email` | 邮件通知 | `smtp_host`、`from_address` |
+| `webhook` | 通用 HTTP Webhook | `url`、`headers` |
+
+## 参见
+
+- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间

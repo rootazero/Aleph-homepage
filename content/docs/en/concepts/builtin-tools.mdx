@@ -1,0 +1,235 @@
+---
+title: "Builtin Tools"
+description: "Built-in tool system implementing rig's Tool trait for AI-callable functions including file operations, code execution, web fetch, search, PDF generation, and progress callbacks."
+---
+
+The `builtin_tools` module implements Aleph's built-in tool system. All tools implement rig's `Tool` trait, making them directly callable by the AI agent. This module contains 40+ tool implementations covering file operations, code execution, web interaction, media generation, and system management.
+
+## Design Philosophy
+
+The tool system follows two principles:
+
+1. **Uniform interface** — Every tool implements the same `Tool` trait, so the agent calls them identically regardless of what they do
+2. **Progress visibility** — Tool execution emits callbacks for real-time UI updates
+
+---
+
+## Tool Categories
+
+### File Operations
+
+File system tools for reading, writing, and manipulating files:
+
+```rust
+pub struct FileOpsTool;
+pub struct FileReadTool;
+pub struct FileWriteTool;
+pub struct FileEditTool;
+```
+
+**Capabilities:**
+- `list` — List directory contents
+- `read` — Read file contents
+- `write` — Write or overwrite files
+- `move` / `copy` — File relocation
+- `delete` — Remove files and directories
+- `mkdir` — Create directories
+- `search` — Find files by pattern
+
+**Safety:** Path traversal is prevented via boundary validation — `canonicalize` is called after directory creation, and paths are validated against allowed boundaries.
+
+### Code Execution
+
+Execute code in sandboxed environments:
+
+```rust
+pub struct CodeExecTool;
+```
+
+**Languages:** Python, JavaScript, Shell
+
+**Security:**
+- Working directory is created and validated before execution
+- Path traversal blocked via canonicalization
+- Error propagation uses `?` — never silently swallows failures
+
+### Web Fetch
+
+Retrieve web page content:
+
+```rust
+pub struct WebFetchTool;
+```
+
+Fetches URLs and returns cleaned text content for the agent to analyze.
+
+### Search
+
+Web search via multiple backends:
+
+```rust
+pub struct SearchTool;
+```
+
+**Providers:** SearXNG (privacy-first, self-hosted)
+
+### PDF Generation
+
+Generate PDFs from text or Markdown:
+
+```rust
+pub struct PdfGenerateTool;
+```
+
+Uses a browser engine to render HTML and export to PDF. Temp files use `AtomicU64` counters for unique filenames to prevent race conditions in concurrent calls.
+
+### Media Generation
+
+Generate images and speech:
+
+```rust
+pub struct ImageGenerateTool;
+pub struct SpeechGenerateTool;
+```
+
+**Providers:** DALL-E, Stable Diffusion, Midjourney, ElevenLabs, OpenAI TTS
+
+### Desktop Operations
+
+Interact with the desktop environment:
+
+```rust
+pub struct DesktopTool;
+```
+
+**Capabilities:**
+- Accessibility tree queries (by role, focused element, full tree)
+- Permission checks
+- Screenshot capture
+
+### Memory Tools
+
+Access the agent's memory system:
+
+```rust
+pub struct MemorySearchTool;
+pub struct MemoryBrowseTool;
+pub struct MemoryReflectTool;
+pub struct MemoryExploreTool;
+pub struct MemoryTimelineTool;
+```
+
+### Meta Tools
+
+Tools for tool discovery:
+
+```rust
+pub struct ListToolsTool;      // List available tools by category
+pub struct GetToolSchemaTool;  // Get JSON Schema for a specific tool
+```
+
+### MCP Wrappers
+
+Wrap MCP server tools as rig-compatible tools:
+
+```rust
+pub struct McpToolWrapper;
+```
+
+---
+
+## Tool Progress Callbacks
+
+Tool execution can be monitored via a global callback system:
+
+```rust
+pub trait ToolProgressCallback: Send + Sync {
+    fn on_tool_start(&self, tool_name: &str, args_summary: &str);
+    fn on_tool_result(
+        &self,
+        tool_name: &str,
+        result_summary: &str,
+        success: bool,
+    );
+    fn on_tool_streaming_chunk(&self, tool_name: &str, chunk: &str,
+    );
+}
+```
+
+**Usage:**
+
+```rust
+let handler = Arc::new(MyHandler::new());
+set_tool_progress_handler(Some(handler));
+// ... execute agent operations ...
+set_tool_progress_handler(None); // Clear after done
+```
+
+**Thread safety:** The callback is stored in a `Mutex<Option<Arc<...>>>`. For streaming chunks, the `Arc` is cloned under a brief lock to avoid holding the mutex during the callback.
+
+---
+
+## Tool Output Compression
+
+The `tool_output` module compresses verbose tool outputs before sending to the LLM:
+
+```rust
+pub fn compress_snapshot(output: &str, max_chars: usize) -> String
+```
+
+**Strategies:**
+- JSON arrays — truncated with element count
+- JSON objects — key summary with value truncation
+- Plain text — character-safe truncation at boundary
+- Empty input — returned as-is
+
+**Safety:** Uses `is_char_boundary()` for UTF-8 safe truncation. No byte-level slicing.
+
+---
+
+## Error Handling
+
+All tools return `Result<T, ToolError>`:
+
+```rust
+pub enum ToolError {
+    Execution(String),
+    InvalidArgs(String),
+    NotFound(String),
+    PermissionDenied(String),
+    Timeout,
+}
+```
+
+---
+
+## Safety Properties
+
+- **No path traversal** — `canonicalize` + boundary validation in file operations
+- **No race conditions** — `AtomicU64` for temp filenames
+- **UTF-8 safe** — `chars().count()` for length, not `.len()` bytes
+- **Lock recovery** — `unwrap_or_else(|e| e.into_inner())` pattern
+- **No `static mut`** — None found
+
+---
+
+## Code Location
+
+- `src/builtin_tools/mod.rs` — Module entry point and progress callbacks
+- `src/builtin_tools/file_ops/` — File operation tools
+- `src/builtin_tools/code_exec.rs` — Code execution
+- `src/builtin_tools/web_fetch.rs` — Web fetching
+- `src/builtin_tools/search.rs` — Search tool
+- `src/builtin_tools/pdf_generate/` — PDF generation
+- `src/builtin_tools/generation.rs` — Media generation wrappers
+- `src/builtin_tools/browser_tools/` — Browser automation
+- `src/builtin_tools/memory_*.rs` — Memory tools
+- `src/builtin_tools/meta_tools.rs` — Tool discovery
+- `src/builtin_tools/mcp_wrapper.rs` — MCP integration
+- `src/tool_output/compressor.rs` — Output compression
+
+## See Also
+
+- [Generation](./generation) — Media generation providers
+- [Media Processing](./media-processing) — Attachment processing pipeline
+- [Search](./search) — Search provider implementations

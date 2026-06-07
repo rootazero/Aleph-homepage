@@ -1,0 +1,271 @@
+---
+title: "Contributing"
+description: "How to contribute to Aleph — workflow, code style, commit conventions, and review process."
+---
+
+Aleph welcomes contributions from the community. Whether you are fixing a typo, adding a feature, or improving documentation, this guide explains the process from fork to merge.
+
+## Getting Started
+
+1. **Fork** the repository at [github.com/rootazero/Aleph](https://github.com/rootazero/Aleph)
+2. **Clone** your fork locally:
+   ```bash
+   git clone https://github.com/<your-username>/Aleph.git
+   cd Aleph
+   ```
+3. **Set upstream** to stay in sync with the main repository:
+   ```bash
+   git remote add upstream https://github.com/rootazero/Aleph.git
+   ```
+4. **Install prerequisites** — see the [Building](./building) guide for toolchain setup
+5. **Run the tests** to confirm your environment works:
+   ```bash
+   cargo test --workspace
+   ```
+
+## Development Workflow
+
+### Branch Naming
+
+Create a branch from `main` with a descriptive name:
+
+| Prefix | Purpose | Example |
+|--------|---------|---------|
+| `feat/` | New feature | `feat/telegram-voice-messages` |
+| `fix/` | Bug fix | `fix/memory-search-timeout` |
+| `refactor/` | Code restructuring | `refactor/extension-manager-split` |
+| `docs/` | Documentation changes | `docs/tool-system-guide` |
+| `test/` | Test additions or fixes | `test/gateway-integration` |
+| `chore/` | Build, CI, dependency updates | `chore/update-tokio-1.36` |
+
+```bash
+git checkout main
+git pull upstream main
+git checkout -b feat/my-feature
+```
+
+### Making Changes
+
+1. Make focused, incremental changes — one logical change per commit
+2. Run the check suite before pushing:
+   ```bash
+   # Format
+   cargo fmt --all
+
+   # Lint
+   cargo clippy --workspace --all-targets -- -D warnings
+
+   # Test
+   cargo test --workspace
+   ```
+3. Push to your fork:
+   ```bash
+   git push origin feat/my-feature
+   ```
+
+### Pull Request Process
+
+1. Open a PR against `main` on the upstream repository
+2. Fill in the PR template with:
+   - **What** the change does
+   - **Why** it is needed
+   - **How** to test it
+3. Ensure CI passes (format, lint, tests)
+4. Request a review from a maintainer
+5. Address review feedback with new commits (do not force-push during review)
+6. Once approved, a maintainer will squash-merge the PR
+
+## Code Style
+
+### Formatting
+
+Aleph uses `rustfmt` with the default configuration. Run it before every commit:
+
+```bash
+cargo fmt --all
+```
+
+CI will reject PRs where `cargo fmt --all -- --check` fails.
+
+### Linting
+
+Clippy is the standard Rust linter. All warnings are treated as errors in CI:
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Common Clippy fixes:
+
+- Prefer `&str` over `&String` in function parameters
+- Use `if let` instead of `match` with a single arm and a wildcard
+- Replace `.clone()` with borrowing when the value is not consumed
+- Use `?` operator instead of explicit `match` on `Result`
+
+### Naming Conventions
+
+| Item | Convention | Example |
+|------|-----------|---------|
+| Crate names | `kebab-case` | `aleph-protocol` |
+| Module names | `snake_case` | `agent_loop` |
+| Types (struct, enum) | `PascalCase` | `RunContext`, `TaskStatus` |
+| Functions, methods | `snake_case` | `execute_tool`, `parse_config` |
+| Constants | `SCREAMING_SNAKE_CASE` | `DEFAULT_PORT`, `MAX_RETRIES` |
+| Feature flags | `kebab-case` | `control-plane`, `plugin-wasm` |
+| Type parameters | Single uppercase letter or short `PascalCase` | `T`, `Cb` |
+
+### Visibility
+
+Follow the principle of minimal visibility:
+
+```rust
+// Prefer pub(crate) for internal cross-module access
+pub(crate) fn internal_helper() { ... }
+
+// Use pub(super) for parent-module access
+pub(super) fn module_helper() { ... }
+
+// Reserve pub for the crate's public API surface
+pub fn public_api_method() { ... }
+```
+
+### Error Handling
+
+Aleph uses a two-tier error strategy:
+
+- **`thiserror`** for domain-specific error types that cross module boundaries:
+  ```rust
+  #[derive(Debug, thiserror::Error)]
+  pub enum MemoryError {
+      #[error("fact not found: {0}")]
+      NotFound(String),
+      #[error("vector search failed: {0}")]
+      SearchFailed(#[from] lancedb::Error),
+  }
+  ```
+- **`anyhow`** for internal functions where the error type does not matter to callers:
+  ```rust
+  use anyhow::Result;
+
+  fn load_config() -> Result<Config> {
+      let text = std::fs::read_to_string("~/.aleph/config.toml")?;
+      let config: Config = toml::from_str(&text)?;
+      Ok(config)
+  }
+  ```
+
+### Module Organization
+
+See [Design Patterns](./design-patterns) for detailed patterns. Key rules:
+
+- Keep files under 500 lines when they contain multiple concepts
+- Separate type definitions (`types.rs`) from business logic
+- Use `mod.rs` as a thin entry point with re-exports, not a dumping ground
+- Gate test doubles (`MockFoo`) under `#[cfg(test)]`
+
+## Commit Message Conventions
+
+### Format
+
+```
+<scope>: <description>
+
+[optional body]
+
+[optional footer]
+```
+
+### Scope
+
+Use the module or area being changed:
+
+| Scope | Area |
+|-------|------|
+| `core` | Core library changes |
+| `gateway` | Gateway/WebSocket server |
+| `agent` | Agent loop and AI logic |
+| `memory` | Memory system |
+| `tools` | Tool system |
+| `extension` | Extension/plugin system |
+| `cli` | CLI application |
+| `desktop` | Desktop (Tauri) application |
+| `protocol` | Shared protocol types |
+| `docs` | Documentation |
+| `ci` | CI/CD pipeline |
+| `deps` | Dependency updates |
+
+### Examples
+
+```
+gateway: add rate limiting to WebSocket connections
+
+Implement per-client rate limiting using a token bucket algorithm.
+Connections exceeding 100 requests/minute receive a JSON-RPC error
+response with code -32005.
+
+Closes #42
+```
+
+```
+memory: fix fact deduplication during compression
+
+Facts with identical content but different timestamps were not
+being deduplicated, causing the memory database to grow unbounded.
+```
+
+```
+deps: update tokio to 1.36
+```
+
+### Rules
+
+- Use **imperative mood** ("add", "fix", "update" — not "added", "fixes", "updates")
+- Keep the first line under **72 characters**
+- Do not end the subject line with a period
+- Separate the subject from the body with a blank line
+- Reference issue numbers in the footer with `Closes #N` or `Refs #N`
+
+## Issue Labels
+
+| Label | Meaning |
+|-------|---------|
+| `bug` | Something is not working correctly |
+| `feature` | New functionality request |
+| `enhancement` | Improvement to existing functionality |
+| `documentation` | Documentation additions or corrections |
+| `good first issue` | Suitable for new contributors |
+| `help wanted` | Maintainers want community input |
+| `breaking` | Involves a breaking API change |
+| `P0` / `P1` / `P2` / `P3` | Priority level (critical to low) |
+
+## Documentation Contributions
+
+Documentation improvements are always welcome. The docs site is a separate project ([AlephDocs](https://github.com/rootazero/AlephDocs)) built with Next.js and Fumadocs.
+
+### Where Docs Live
+
+| Content | Location |
+|---------|----------|
+| Reference docs (source of truth) | `Aleph/docs/reference/*.md` |
+| Website docs (MDX pages) | `AlephDocs/content/docs/en/**/*.mdx` |
+| Inline API docs | `///` comments in Rust source files |
+
+### Writing Style
+
+- Use **present tense** ("The server starts" not "The server will start")
+- Use **active voice** ("The agent executes tools" not "Tools are executed by the agent")
+- Prefer **short paragraphs** (3-4 sentences max)
+- Include **code examples** for any non-obvious API
+- Annotate code blocks with the language (`rust`, `bash`, `toml`)
+
+## Community Guidelines
+
+- **Be respectful.** Technical disagreements are fine; personal attacks are not.
+- **Be patient.** Maintainers review PRs in their spare time.
+- **Be specific.** Bug reports should include steps to reproduce, expected behavior, and actual behavior.
+- **Search first.** Check existing issues and PRs before opening a duplicate.
+- **Start small.** If you are new to the project, pick a `good first issue` to familiarize yourself with the codebase and workflow.
+
+## License
+
+Aleph is licensed under the **MIT License**. By contributing, you agree that your contributions will be licensed under the same terms.

@@ -1,0 +1,131 @@
+---
+title: "run.*"
+description: "Run lifecycle and queue RPC methods"
+---
+
+Run methods manage the lifecycle of active agent executions and support human-in-the-loop scenarios by queueing messages to running agents.
+
+## Methods
+
+### run.wait
+
+Wait for a run to complete, fail, or be cancelled. Blocks until the run ends or the timeout expires.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "run.wait",
+  "params": {
+    "run_id": "run-uuid-123",
+    "timeout_ms": 30000
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "status": "completed",
+    "output": "Task completed successfully",
+    "input_tokens": 0,
+    "output_tokens": 150,
+    "duration_ms": 500
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | Yes | The run ID to wait for |
+| `timeout_ms` | number | No | Maximum wait time in milliseconds. Default: 30000, Max: 300000 |
+
+**Status Values:**
+
+| Status | Description |
+|--------|-------------|
+| `completed` | Run finished successfully |
+| `failed` | Run failed with an error |
+| `cancelled` | Run was cancelled by user |
+| `timeout` | Wait timed out before run completed |
+| `not_found` | Run ID not found |
+
+### run.queue_message
+
+Queue a message to an active run for human-in-the-loop scenarios. The message is delivered to the agent when it next requests input.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "run.queue_message",
+  "params": {
+    "run_id": "run-uuid-123",
+    "message": "Yes, proceed with the file deletion"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "success": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | Yes | The run ID to send the message to |
+| `message` | string | Yes | The message content to queue |
+
+**Error Cases:**
+
+| Error | Description |
+|-------|-------------|
+| `Run not found` | The specified run_id does not exist |
+| `Input queue is full` | The run's input queue has reached capacity |
+| `Run has ended` | The run has already completed or been cancelled |
+
+## Use Cases
+
+### Synchronous Execution
+
+Use `run.wait` to block until an agent run completes, useful for scripting or when you need the final result before proceeding:
+
+```json
+// 1. Start a run
+{ "jsonrpc": "2.0", "id": 1, "method": "agent.run", "params": { "message": "Analyze this data" } }
+
+// 2. Wait for completion (blocks up to 30s)
+{ "jsonrpc": "2.0", "id": 2, "method": "run.wait", "params": { "run_id": "run-uuid-123" } }
+```
+
+### Human-in-the-Loop
+
+Use `run.queue_message` to respond to agent approval requests:
+
+```json
+// Agent sends approval request via event
+{ "topic": "approval.request", "data": { "run_id": "run-uuid-123", "message": "Approve rm -rf /tmp?" } }
+
+// User responds via queue_message
+{ "jsonrpc": "2.0", "id": 3, "method": "run.queue_message", "params": { "run_id": "run-uuid-123", "message": "yes" } }
+```
+
+## See Also
+
+- [agent.*](/docs/en/gateway/methods/agent) -- Start and control agent runs
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

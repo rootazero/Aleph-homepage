@@ -1,0 +1,170 @@
+---
+title: "logs.*"
+description: "System logs and diagnostics RPC methods"
+---
+
+Log methods provide access to system logs, diagnostics, and tracing information for monitoring and debugging Aleph operations.
+
+## Methods
+
+### logs.list
+
+List available log files or recent log entries.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "logs.list",
+  "params": {
+    "limit": 100,
+    "level": "info"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "entries": [
+      {
+        "timestamp": "2024-01-15T10:30:00Z",
+        "level": "info",
+        "component": "gateway",
+        "message": "RPC request: agent.run"
+      }
+    ],
+    "total": 1
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | number | No | Maximum entries to return |
+| `level` | string | No | Filter by level: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` |
+| `component` | string | No | Filter by component name |
+| `since` | string | No | ISO timestamp for start of range |
+
+### logs.get
+
+Get a specific log entry or log file contents.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "logs.get",
+  "params": {
+    "log_id": "log-1"
+  }
+}
+```
+
+### logs.tail
+
+Stream recent log entries (for real-time monitoring).
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "logs.tail",
+  "params": {
+    "lines": 50,
+    "follow": false
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "entries": [
+      {
+        "timestamp": "2024-01-15T10:30:00Z",
+        "level": "info",
+        "message": "Session started: session-uuid-123"
+      }
+    ]
+  }
+}
+```
+
+### logs.levels
+
+Get current log levels for all components.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "logs.levels",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "levels": {
+      "gateway": "info",
+      "agent": "debug",
+      "memory": "warn"
+    }
+  }
+}
+```
+
+### logs.set_level
+
+Set the log level for a component.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "logs.set_level",
+  "params": {
+    "component": "agent",
+    "level": "trace"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `component` | string | Yes | Component name or `"*"` for all |
+| `level` | string | Yes | Log level: `"trace"`, `"debug"`, `"info"`, `"warn"`, `"error"` |
+
+## Log Levels
+
+| Level | Description |
+|-------|-------------|
+| `trace` | Verbose tracing information |
+| `debug` | Debug information |
+| `info` | General operational information |
+| `warn` | Warning messages |
+| `error` | Error messages |
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

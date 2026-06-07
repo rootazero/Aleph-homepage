@@ -1,0 +1,205 @@
+---
+title: "Daemon"
+description: "System service management for Aleph, enabling persistent background operation with resource governance and cross-platform service integration."
+---
+
+The `daemon` module manages Aleph as a persistent system service across platforms. It handles service installation, lifecycle management, resource monitoring, inter-process communication, and event-driven proactive actions.
+
+## Design Philosophy
+
+The daemon follows three principles:
+
+1. **Cross-platform abstraction** — Platform-specific service APIs are hidden behind the `ServiceManager` trait
+2. **Resource awareness** — The daemon monitors system load and throttles operations when resources are scarce
+3. **Event-driven proactivity** — OS-level events trigger agent actions without user intervention
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────┐
+│           Daemon Module                      │
+├─────────────────────────────────────────────┤
+│                                             │
+│  ┌──────────────┐  ┌──────────────────┐   │
+│  │ ServiceManager│  │ ResourceGovernor │   │
+│  │  (launchd)   │  │  (CPU/Mem/Bat)   │   │
+│  └──────────────┘  └──────────────────┘   │
+│                                             │
+│  ┌──────────────────────────────────────┐  │
+│  │        IPC Server                     │  │
+│  │  (Unix Socket + JSON-RPC 2.0)        │  │
+│  └──────────────────────────────────────┘  │
+│                                             │
+│  ┌──────────────────────────────────────┐  │
+│  │        Event Bus                      │  │
+│  │  (Process/File/Time/System)          │  │
+│  └──────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## Core Components
+
+### ServiceManager
+
+Cross-platform trait for system service management:
+
+```rust
+pub trait ServiceManager: Send + Sync {
+    async fn install(&self, config: &DaemonConfig) -> Result<()>;
+    async fn start(&self) -> Result<()>;
+    async fn stop(&self) -> Result<()>;
+    async fn status(&self) -> ServiceStatus;
+}
+```
+
+**Implementations:**
+- `LaunchdService` (macOS) — Manages launchd plist and service lifecycle
+- `SystemdService` (Linux) — Planned
+- `WindowsService` (Windows) — Planned
+
+### ResourceGovernor
+
+Monitors system resources and makes execution decisions:
+
+```rust
+pub struct ResourceGovernor {
+    limits: ResourceLimits,
+}
+
+impl ResourceGovernor {
+    pub async fn is_safe_to_run(&self,
+    ) -> bool { /* ... */ }
+    
+    pub fn current_pressure(&self) -> PressureLevel { /* ... */ }
+}
+```
+
+**Monitors:**
+- CPU usage
+- Memory consumption
+- Battery level
+- System load average
+
+### IPC Server
+
+JSON-RPC 2.0 server over Unix Domain Socket:
+
+```rust
+pub struct IpcServer {
+    socket_path: PathBuf,
+}
+```
+
+**Socket path:** `~/.aleph/daemon.sock`
+
+**Methods:**
+- `daemon.status` — Get daemon status
+- `daemon.ping` — Health check
+- `daemon.shutdown` — Graceful shutdown
+
+### Event Bus
+
+Publishes OS-level events for the perception layer:
+
+```rust
+pub struct DaemonEventBus {
+    sender: broadcast::Sender<DaemonEvent>,
+}
+```
+
+**Event types:**
+- `ProcessEvent` — Application launch/exit
+- `FsEvent` — File creation/modification/deletion
+- `TimeTrigger` — Scheduled time-based events
+- `SystemEvent` — Battery, network, display state changes
+
+---
+
+## CLI Commands
+
+```bash
+# Install daemon as system service
+aleph daemon install
+
+# Start daemon
+aleph daemon start
+
+# Check status
+aleph daemon status
+
+# Stop daemon
+aleph daemon stop
+
+# Uninstall daemon
+aleph daemon uninstall
+
+# Run in foreground (development)
+aleph daemon run
+```
+
+---
+
+## Configuration
+
+Default configuration:
+
+```rust
+DaemonConfig {
+    socket_path: "~/.aleph/daemon.sock",
+    binary_path: "~/.aleph/bin/aleph-daemon",
+    log_dir: "~/.aleph/logs",
+    nice_value: 10,
+    soft_mem_limit: 512 * 1024 * 1024,  // 512MB
+    hard_mem_limit: 1024 * 1024 * 1024, // 1GB
+}
+```
+
+---
+
+## Dispatcher
+
+The `Dispatcher` routes events to appropriate actions:
+
+```rust
+pub struct Dispatcher {
+    policy_engine: PolicyEngine,
+    action_executor: ActionExecutor,
+}
+```
+
+**Flow:**
+1. Raw OS event enters the event bus
+2. `PolicyEngine` evaluates risk and decides action
+3. `ActionExecutor` performs the action (or queues it if resources are constrained)
+
+---
+
+## Safety Properties
+
+- **Minimal unsafe** — Only `libc::kill` for SIGTERM signaling
+- **UTF-8 safe** — No byte-level string slicing
+- **Lock recovery** — Uses `unwrap_or_else(|e| e.into_inner())` pattern
+- **No SQL injection** — Daemon does not use database queries
+
+---
+
+## Code Location
+
+- `src/daemon/mod.rs` — Module entry point
+- `src/daemon/cli.rs` — CLI command definitions
+- `src/daemon/service_manager.rs` — Service management trait
+- `src/daemon/platforms/launchd.rs` — macOS launchd implementation
+- `src/daemon/resource_governor.rs` — Resource monitoring
+- `src/daemon/ipc/` — IPC server and protocol
+- `src/daemon/dispatcher/` — Event dispatch and policy engine
+- `src/daemon/event_bus.rs` — Event distribution
+- `src/daemon/worldmodel/` — World state tracking
+
+## See Also
+
+- [Event System](./event-system) — Event distribution patterns
+- [Configuration](./configuration) — Daemon configuration options

@@ -1,0 +1,286 @@
+---
+title: Intent Detection
+description: Three-layer intent classification and execution routing that determines whether user input triggers task execution or conversational response.
+---
+
+Intent Detection is the decision-making subsystem that classifies every user message before it reaches the LLM. Its core question is simple: **should this input trigger an executable action, or is it a conversational message?** By resolving this upfront, prompts only need to describe *how* to execute, never *whether* to execute.
+
+## Three-Layer Architecture
+
+Classification proceeds through three layers of increasing latency and sophistication. The pipeline short-circuits as soon as any layer produces a confident match.
+
+```
+User Input
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L1: Regex Matching (<5ms, confidence = 1.0)                 │
+│     Fast pattern matching for explicit commands             │
+│     Example: "整理文件夹里的文件" → FileOrganize            │
+└─────────────────────────────────────────────────────────────┘
+    │ no match
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L2: Keyword Matching (<20ms, confidence = 0.5-0.95)         │
+│     KeywordIndex with weighted scoring + CJK tokenization   │
+│     Configurable via KeywordPolicy in config.toml           │
+│     Fallback: static keyword sets                           │
+└─────────────────────────────────────────────────────────────┘
+    │ no match
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L3: AI Classification (optional, 1-3s)                      │
+│     LLM-based detection for complex/ambiguous cases         │
+│     Language-agnostic, extracts parameters (path, etc.)     │
+└─────────────────────────────────────────────────────────────┘
+    │ no match or AI disabled
+    ▼
+ExecutionIntent::Conversational
+```
+
+### L1: Regex Matching
+
+The fastest layer uses pre-compiled regex patterns to match explicit task commands in both Chinese and English. Matches carry full confidence (`1.0`) since regex patterns only fire on unambiguous requests.
+
+```rust
+pub static EXECUTABLE_PATTERNS: Lazy<Vec<(Regex, TaskCategory)>> = Lazy::new(|| {
+    vec![
+        // FileOrganize: organize/sort/classify + file
+        (
+            Regex::new(r"(?i)(整理|归类|分类|organize|sort|classify).*(文件|files?|folder)")
+                .unwrap(),
+            TaskCategory::FileOrganize,
+        ),
+        // FileTransfer: move/copy/transfer + to
+        (
+            Regex::new(r"(?i)(移动|复制|拷贝|转移|move|copy|transfer).*(到|to)")
+                .unwrap(),
+            TaskCategory::FileTransfer,
+        ),
+        // CodeExecution: run/execute + script/code
+        (
+            Regex::new(r"(?i)(运行|执行|跑一下|run|execute).*(脚本|代码|script|code)")
+                .unwrap(),
+            TaskCategory::CodeExecution,
+        ),
+        // ... additional patterns for FileCleanup, DocumentGenerate, etc.
+    ]
+});
+```
+
+L1 also extracts file paths from input using a dedicated path regex that handles Unix paths (`/path`, `~/path`) and Windows paths (`C:\path`).
+
+### L2: Keyword Matching
+
+When regex fails, the keyword layer uses two strategies:
+
+**Static keyword sets** -- Predefined verb-noun combinations for each task category. Both a verb and a noun must match for the category to fire (confidence `0.85`).
+
+**KeywordIndex (enhanced)** -- A configurable index loaded from `KeywordPolicy` in `config.toml`. Each rule carries weighted keywords and a minimum score threshold:
+
+```rust
+let mut rule = KeywordRule::new("file_organize", "FileOrganize");
+rule = rule
+    .with_keyword("整理", 1.0)    // organize (Chinese)
+    .with_keyword("文件", 0.8)    // file
+    .with_keyword("organize", 1.0)
+    .with_match_mode(KeywordMatchMode::Weighted)
+    .with_min_score(0.5);
+```
+
+Match modes include `Any` (first keyword wins), `All` (every keyword required), and `Weighted` (sum of matched keyword weights against threshold).
+
+### L3: AI Classification
+
+For ambiguous inputs that escape L1 and L2, an optional LLM-based detector (`AiIntentDetector`) provides language-agnostic classification. It returns structured results including the intent type, confidence score, and extracted parameters:
+
+```rust
+pub struct AiIntentResult {
+    pub intent: String,           // e.g., "file_organize"
+    pub confidence: f64,          // 0.0 - 1.0
+    pub params: HashMap<String, String>,  // e.g., {"path": "/Downloads"}
+    pub missing: Vec<String>,     // parameters still needed
+}
+```
+
+L3 maps its output to the same `TaskCategory` enum used by L1 and L2, so downstream routing is uniform regardless of which layer classified the input.
+
+## Exclusion Patterns
+
+A critical safety feature: inputs containing **analysis or understanding verbs** are excluded from agent mode before any layer runs. This prevents requests like "analyze this file" or "summarize this document" from triggering destructive file operations.
+
+Exclusion verbs include:
+- **Chinese**: 分析, 理解, 解释, 总结, 摘要, 描述, 概括, 看看
+- **English**: analyze, understand, explain, summarize, describe, review
+
+The exclusion check runs at constant time and takes priority over all classification layers.
+
+## TaskCategory
+
+The `TaskCategory` enum represents the 20 categories of executable tasks that Aleph can handle. Each category maps to specific tools and prompt templates:
+
+```rust
+pub enum TaskCategory {
+    General,              // Explicit /agent command
+    FileOrganize,         // Sort, classify files
+    FileOperation,        // Read, write, search
+    FileTransfer,         // Move, copy
+    FileCleanup,          // Delete, archive
+    CodeExecution,        // Run scripts/commands
+    AppLaunch,            // Open applications
+    AppAutomation,        // UI automation
+    DocumentGeneration,   // Create documents
+    ImageGeneration,      // Generate images
+    VideoGeneration,      // Generate video
+    AudioGeneration,      // Generate audio
+    SpeechGeneration,     // Text-to-speech
+    WebSearch,            // Search the web
+    WebFetch,             // Fetch page content
+    SystemInfo,           // System queries
+    MediaDownload,        // YouTube, etc.
+    TextProcessing,       // Translation, summarization
+    DataProcess,          // Data transformation
+}
+```
+
+Categories expose semantic helpers: `is_file_related()`, `is_generation()`, and `is_read_only()` that downstream systems use for risk assessment and tool filtering.
+
+## ExecutionIntent
+
+The three-valued classification result that drives all downstream behavior:
+
+```rust
+pub enum ExecutionIntent {
+    /// Trigger Agent mode with tools
+    Executable(ExecutableTask),
+    /// Need one clarifying question
+    Ambiguous { task_hint: String, clarification: String },
+    /// Normal conversational response
+    Conversational,
+}
+
+pub struct ExecutableTask {
+    pub category: TaskCategory,
+    pub action: String,
+    pub target: Option<String>,   // extracted path or object
+    pub confidence: f32,          // 0.0 - 1.0
+}
+```
+
+## ExecutionIntentDecider
+
+The `ExecutionIntentDecider` is a higher-level decision system that extends classification into routing. It determines not just *whether* to execute, but *how* -- routing to the appropriate execution mode:
+
+```
+User Input
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ ExecutionIntentDecider                                       │
+│                                                             │
+│  L0: Slash Commands (/screenshot, /ocr) → DirectTool        │
+│  L1: Regex Patterns → Execute(category)                     │
+│  L2: Context Signals (selected file) → Execute(category)    │
+│  L3: Semantic Analysis (optional LLM) → Execute | Converse  │
+│  L4: Default Fallback → Execute (bias toward action)        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+    ExecutionMode
+```
+
+### ExecutionMode
+
+The decider routes to one of six execution modes:
+
+| Mode | Description | Example |
+|------|-------------|---------|
+| **DirectTool** | Built-in tool invocation | `/screenshot`, `/search` |
+| **Skill** | Skill with injected instructions | `/knowledge-graph` |
+| **Mcp** | MCP server tool execution | `/git status` |
+| **Custom** | Custom command with system prompt | `/translate` |
+| **Execute** | AI with tools (by TaskCategory) | "organize my files" |
+| **Converse** | Pure conversation, no tools | "what is machine learning?" |
+
+### Context Signals
+
+The L2 layer of `ExecutionIntentDecider` uses ambient context to inform routing without requiring explicit commands:
+
+```rust
+pub struct ContextSignals {
+    pub selected_file: Option<String>,    // file selected in UI
+    pub active_app: Option<String>,       // current application
+    pub ui_mode: Option<String>,          // panel/mode state
+    pub clipboard_type: Option<String>,   // "image", "text", etc.
+}
+```
+
+For example, if the user has selected a `.jpg` file and says "process this", the context layer routes to `ImageGeneration` without any keyword matching.
+
+## IntentCache
+
+The `IntentCache` provides fast-path routing for repeated patterns. It uses an LRU cache with time-based confidence decay and success/failure tracking:
+
+```rust
+pub struct IntentCache {
+    cache: Arc<RwLock<LruCache<u64, CachedIntent>>>,
+    config: CacheConfig,
+    metrics: Arc<RwLock<CacheMetrics>>,
+}
+```
+
+Key behaviors:
+- **Confidence decay**: Entries lose confidence over time using exponential decay with configurable half-life (default: 1 hour)
+- **Adaptive learning**: `record_success()` and `record_failure()` track execution outcomes, adjusting the effective confidence via `adjusted_confidence = decayed_confidence * success_rate`
+- **Auto-eviction**: Entries with more than 3 failures and zero successes are automatically removed
+- **Input normalization**: Keys are hashed from lowercase, trimmed, first-100-character input for fuzzy matching
+
+### Configuration
+
+```rust
+pub struct CacheConfig {
+    pub capacity: usize,        // default: 1000
+    pub half_life_secs: f32,    // default: 3600 (1 hour)
+    pub min_confidence: f32,    // default: 0.5
+    pub enabled: bool,          // default: true
+}
+```
+
+## Confidence Calibration
+
+The `ConfidenceCalibrator` adjusts raw classification scores using historical execution data. It tracks which routing layers (L1, L2, L3) produce reliable results for specific tool types and applies learned adjustments:
+
+```rust
+pub struct CalibratedSignal {
+    pub intent_type: String,
+    pub tool_name: String,
+    pub raw_confidence: f32,
+    pub calibrated_confidence: f32,
+    pub layer: RoutingLayer,
+}
+```
+
+The `IntentAggregator` then combines calibrated signals into a final `AggregatedIntent` with an action recommendation: `Execute`, `Confirm`, `Clarify`, or `GeneralChat`.
+
+## Classification Flow Summary
+
+```
+User Input
+    │
+    ├─ length < 3 chars ──────────────────► Conversational
+    │
+    ├─ check IntentCache ──── hit ────────► Cached route
+    │
+    ├─ L1 Regex (<5ms) ──── match ────────► Executable (1.0)
+    │
+    ├─ L2 Enhanced Keywords ── match ─────► Executable (0.5-0.95)
+    │
+    ├─ L2 Static Keywords ── match ───────► Executable (0.85)
+    │
+    ├─ L3 AI Detector ──── match ─────────► Executable (AI conf.)
+    │
+    └─ no match ──────────────────────────► Conversational
+```
+
+After classification, the `IntentRouter` wraps the result for the Agent Loop: slash commands and direct tools become `DirectRoute` (bypassing LLM thinking entirely), while category-matched and ambiguous inputs become `NeedsThinking` with optional category hints that guide tool filtering and prompt selection.

@@ -1,0 +1,122 @@
+---
+title: "Orchestrator"
+description: "AgentDef and FlowSpec resolution, HarnessDeps assembly, and dispatch to the Harness runtime."
+---
+
+# Orchestrator
+
+The Orchestrator is the bridge between the **Gateway** (chat ingress, protocol adapters) and the **AgentHarness** (Think→Act loop). It resolves the agent's configuration, assembles execution dependencies, and dispatches the flow.
+
+## Role in the Architecture
+
+```
+Gateway FlowRequest
+     │
+     ▼
+┌─────────────┐
+│ Orchestrator │
+│              │
+│ • Resolve    │
+│ • Build      │
+│ • Dispatch   │
+└──────┬───────┘
+       │ HarnessRunner::run
+       ▼
+┌─────────────┐
+│   Harness   │
+└─────────────┘
+```
+
+**Location**: `src/orchestrator/`
+
+---
+
+## AgentDef Resolution
+
+`AgentDef` defines the agent's behavior — its model, available tools, system prompt, and personality. The Orchestrator resolves it from:
+
+- **Static configuration** — `aleph.toml` or `.aleph/agent.toml`
+- **Dynamic override** — per-request parameters (e.g., `model`, `thinking`)
+- **Identity context** — owner vs. guest permissions
+
+The resolved `AgentDef` is passed into the flow as part of `FlowSpec`.
+
+---
+
+## FlowSpec Resolution
+
+`FlowSpec` defines the execution flow for a single request:
+
+| Field | Description |
+|-------|-------------|
+| `agent_id` | Target agent identifier |
+| `input` | User message or command |
+| `identity` | IdentityContext (owner / guest / anonymous) |
+| `abort_signal` | Cancellation token |
+| `tool_filter` | Optional tool whitelist / blacklist |
+| `context_budget` | Token budget override |
+
+The Orchestrator merges request-level overrides with the resolved `AgentDef` to produce the final `FlowSpec`.
+
+---
+
+## HarnessDeps Assembly
+
+Once `AgentDef` and `FlowSpec` are resolved, the Orchestrator builds `HarnessDeps` — the complete dependency bundle for the Harness runtime:
+
+```rust
+pub struct HarnessDeps {
+    pub session: Arc<dyn SessionService>,       // Append-only history
+    pub tools: Arc<dyn ToolService>,            // Tool catalog + execution
+    pub sandbox: Arc<dyn Sandbox>,              // Exec environment, capability ledger
+    pub llm: Arc<dyn AiProvider>,               // LLM provider
+    pub stop_hooks: Option<Arc<Vec<Arc<dyn StopHookHandler>>>>, // Optional stop hooks
+    pub context_budget: Option<Arc<Mutex<ContextBudget>>>,      // Optional pressure sensor
+    pub context_compactor: Option<Arc<ContextCompactor>>,       // Optional LLM-based compactor
+    pub skill_prefetcher: Option<Arc<SkillPrefetcher>>,         // Optional skill discovery
+    pub trace_sink: Option<Arc<dyn TraceSink>>,                 // Optional observability sink
+    pub system_prompt: Option<String>,          // Optional system prompt override
+    pub max_iterations: Option<usize>,          // Optional hard iteration cap
+    pub power: Option<Arc<dyn PowerCapability>>, // Optional sleep inhibitor (macOS)
+}
+```
+
+All dependencies are injected as `Arc<dyn Trait>` (or `Option<Arc<...>>` for optional features), allowing test doubles and runtime swapping.
+
+---
+
+## Dispatch Flow
+
+```
+FlowRequest { agent_id, input, identity, ... }
+     │
+     ▼
+Resolve AgentDef + FlowSpec
+     │
+     ▼
+Build HarnessDeps
+     │
+     ▼
+HarnessRunner::run(flow, deps) → FlowOutcome
+```
+
+The `HarnessRunner::run` function takes ownership of both the `FlowRequest` and `HarnessDeps`, drives the Think→Act loop to completion, and returns a `FlowOutcome` containing the final response, stream events, and any errors.
+
+---
+
+## Key Types
+
+| Type | Purpose | Location |
+|------|---------|----------|
+| `FlowRequest` | Incoming request from Gateway | `src/orchestrator/` |
+| `HarnessDeps` | Assembled dependency bundle | `src/orchestrator/` |
+| `FlowOutcome` | Execution result (response, events, errors) | `src/orchestrator/` |
+| `HarnessRunner` | Entry point for Harness execution | `src/harness/` |
+
+---
+
+## See Also
+
+- [Harness](./harness) — Think→Act loop runtime
+- [Session Service](./session-service) — Append-only event log
+- [Thinker](./thinker) — LLM interaction layer

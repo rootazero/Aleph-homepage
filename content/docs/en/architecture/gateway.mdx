@@ -1,0 +1,487 @@
+---
+title: "Gateway Architecture"
+description: "WebSocket control plane on port 18790, JSON-RPC 2.0 protocol, multi-channel routing, middleware pipeline, event distribution, and connection lifecycle."
+---
+
+The Gateway is the single entry point for all communication with Aleph. It runs a WebSocket server on `ws://127.0.0.1:18790/ws`, speaks JSON-RPC 2.0, and routes requests from any connected client -- whether a native macOS app, a Telegram bot, or the terminal CLI -- to the appropriate handler. This page covers the protocol layer, message pipeline, multi-channel routing, and the event system that powers real-time streaming.
+
+For how sessions are managed once a request arrives, see [Session Service](./session-service). For what happens after routing reaches the agent, see [Agent Harness](./harness).
+
+---
+
+## Gateway Components
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Gateway Server                               │
+│                  ws://127.0.0.1:18790/ws                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐        │
+│  │   Inbound    │     │   Handler    │     │   Outbound   │        │
+│  │   Router     │ ──▶ │   Registry   │ ──▶ │   Emitter    │        │
+│  │              │     │              │     │              │        │
+│  │ • Parse req  │     │ • Route      │     │ • Stream     │        │
+│  │ • Validate   │     │ • Execute    │     │ • Events     │        │
+│  └──────────────┘     └──────────────┘     └──────────────┘        │
+│                                                                     │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐        │
+│  │   Session    │     │    Event     │     │  Interface   │        │
+│  │   Manager    │     │     Bus      │     │   Registry   │        │
+│  │              │     │              │     │              │        │
+│  │ • SQLite     │     │ • Pub/Sub    │     │ • Telegram   │        │
+│  │ • Compaction │     │ • Topics     │     │ • Discord    │        │
+│  │ • History    │     │ • Subscribe  │     │ • iMessage   │        │
+│  └──────────────┘     └──────────────┘     └──────────────┘        │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The Gateway has six core components:
+
+- **Inbound Router** -- Parses incoming JSON-RPC frames, validates structure, and dispatches to the correct handler
+- **Handler Registry** -- Maps method names (e.g., `agent.run`, `session.list`) to handler functions
+- **Outbound Emitter** -- Sends streaming events and final responses back to the client
+- **Session Manager** -- Persists conversation history in SQLite, handles compaction
+- **Event Bus** -- Pub/sub system for real-time event distribution with glob-pattern subscriptions
+- **Interface Registry** -- Tracks active chat integrations (Telegram, Discord, iMessage)
+
+---
+
+## JSON-RPC 2.0 Protocol
+
+All communication uses [JSON-RPC 2.0](https://www.jsonrpc.org/specification) over WebSocket frames. There are three message types.
+
+### Request (Client to Gateway)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "uuid-xxx",
+  "method": "agent.run",
+  "params": {
+    "message": "Hello, what can you do?",
+    "session_key": "agent:main:main"
+  }
+}
+```
+
+The `id` field is a client-generated UUID. The Gateway returns the same `id` in the response so the client can match request to response.
+
+### Response (Gateway to Client)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "uuid-xxx",
+  "result": {
+    "run_id": "run-123",
+    "status": "running"
+  }
+}
+```
+
+For `agent.run`, the initial response confirms the run has started. The actual AI output arrives via streaming events.
+
+### Event (Gateway to Client, no id)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "stream.chunk",
+    "data": {
+      "run_id": "run-123",
+      "content": "Hello! I can help you with..."
+    }
+  }
+}
+```
+
+Events are server-initiated notifications (no `id` field). Clients subscribe to event topics via the `events.subscribe` method.
+
+---
+
+## RPC Method Reference
+
+### Agent Methods
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `agent.run` | Start agent execution | `message`, `session_key`, `thinking?`, `model?` |
+| `agent.status` | Get run status | `run_id` |
+| `agent.cancel` | Cancel a running agent | `run_id` |
+| `agent.abort` | Force-abort immediately | `run_id` |
+
+### Session Methods
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `session.get` | Get session info | `session_key` |
+| `session.list` | List all sessions | `filter?` |
+| `session.history` | Get message history | `session_key`, `limit?` |
+| `session.compact` | Trigger compression | `session_key` |
+| `session.delete` | Delete a session | `session_key` |
+
+### Configuration Methods
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `config.get` | Get current config | -- |
+| `config.patch` | Partial update (JSON Merge Patch) | `patch` |
+| `config.apply` | Full config replace | `config` |
+| `config.reload` | Reload from disk | -- |
+
+### Event Methods
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `events.subscribe` | Subscribe to event topic | `pattern` (glob) |
+| `events.unsubscribe` | Unsubscribe | `pattern` |
+| `events.list` | List active subscriptions | -- |
+
+### Memory Methods
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `memory.store` | Store a fact | `content`, `metadata?` |
+| `memory.search` | Search facts | `query`, `limit?` |
+| `memory.delete` | Delete a fact | `fact_id` |
+| `memory.stats` | Get memory statistics | -- |
+
+### Browser Methods (CDP)
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `browser.navigate` | Go to URL | `url` |
+| `browser.click` | Click element | `selector` |
+| `browser.type` | Type text | `selector`, `text` |
+| `browser.screenshot` | Take screenshot | `selector?` |
+| `browser.evaluate` | Run JavaScript | `script` |
+
+### Other Method Domains
+
+| Domain | Methods |
+|--------|---------|
+| `auth.*` | `connect`, `pairing.approve`, `pairing.reject`, `devices.list` |
+| `interface.*` | `status`, `config`, `login` |
+| `mcp.*` | `start`, `stop`, `list`, `call` |
+| `plugins.*` | `install`, `uninstall`, `list`, `enable`, `disable` |
+| `skills.*` | `list`, `install`, `activate` |
+| `runs.*` | `list`, `status`, `wait`, `queue` |
+| `models.*` | `list`, `config` |
+| `generation.*` | `image`, `video` |
+| `cron.*` | `list`, `add`, `remove`, `run` |
+
+---
+
+## Message Pipeline
+
+When a WebSocket frame arrives, the Gateway processes it through a layered middleware pipeline:
+
+```
+WebSocket Frame
+    │
+    ▼
+┌────────────────────────────────┐
+│ 1. Frame Parsing               │
+│    • Deserialize JSON-RPC      │
+│    • Validate structure        │
+│    • Extract method + params   │
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 2. Middleware Pipeline         │
+│    • TraceLayer (span/req-id)  │
+│    • MetricsLayer (timing)     │
+│    • AuthLayer (auth check)    │
+│    • RateLimitLayer (quota)    │
+│    • ValidateLayer (schema)    │
+│    • HandlerService (dispatch) │
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 3. Handler Dispatch            │
+│    • Look up method in registry│
+│    • agent.run → ExecutionEngine│
+│    • session.* → SessionManager│
+│    • config.* → ConfigManager  │
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 4. Execution                   │
+│    • Handler processes request │
+│    • May spawn AgentLoop       │
+│    • Streams events via EventBus│
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 5. Response                    │
+│    • JSON-RPC result frame     │
+│    • Or JSON-RPC error frame   │
+└────────────────────────────────┘
+```
+
+The middleware pipeline runs for every JSON-RPC request in this order:
+
+1. **TraceLayer** -- Attaches request spans and trace IDs for observability
+2. **MetricsLayer** -- Records request timing and method-level metrics
+3. **AuthLayer** -- Validates authentication (skipped when `auth.mode = "none"`)
+4. **RateLimitLayer** -- Enforces per-identity, per-scope rate limits
+5. **ValidateLayer** -- Validates request schema before reaching the handler
+6. **HandlerService** -- Dispatches to the registered handler for execution
+
+---
+
+## Multi-Channel Routing
+
+Aleph supports multiple chat interfaces simultaneously. Each interface (Telegram, Discord, iMessage, etc.) translates its platform-specific messages into the unified JSON-RPC protocol and forwards them to the Gateway.
+
+### Interface Trait
+
+Every channel adapter implements the `Interface` trait:
+
+```rust
+#[async_trait]
+pub trait Interface: Send + Sync {
+    fn name(&self) -> &str;
+    async fn start(&self) -> Result<()>;
+    async fn stop(&self) -> Result<()>;
+    async fn send_message(
+        &self,
+        target: &InterfaceTarget,
+        message: &str,
+    ) -> Result<()>;
+    fn is_running(&self) -> bool;
+}
+```
+
+### Available Interfaces
+
+| Interface | Feature Flag | Platform |
+|-----------|-------------|----------|
+| CLI | `cli` | All platforms |
+| Telegram | `telegram` | All platforms |
+| Discord | `discord` | All platforms |
+| iMessage | (built-in) | macOS only |
+| WebChat | `gateway` | All platforms |
+
+### Session Key Resolution
+
+Each channel produces a unique session key that determines whether conversations are shared or isolated:
+
+| Session Key Format | Use Case |
+|-------------------|----------|
+| `agent:main:main` | Cross-channel shared session (Main) |
+| `agent:main:telegram:dm:user123` | Per-user Telegram DM (DirectMessage) |
+| `agent:main:discord:group:guild-id` | Discord server channel (Group) |
+| `agent:main:cron:daily-summary` | Cron job / webhook (Task) |
+| `subagent:agent:main:translator` | Sub-agent delegation (Subagent) |
+| `agent:main:ephemeral:uuid` | Temporary, no persistence (Ephemeral) |
+
+DM scope can be configured per interface:
+
+```rust
+pub enum DmScope {
+    Main,           // All DMs share the main session
+    PerPeer,        // Isolated session per user (default)
+    PerChannelPeer, // Isolated per channel + user
+}
+```
+
+---
+
+## Event System
+
+The EventBus provides a pub/sub mechanism for real-time event distribution. Clients subscribe using glob patterns.
+
+### Event Topics
+
+| Pattern | Events |
+|---------|--------|
+| `stream.*` | All streaming events |
+| `stream.chunk` | Text content chunks |
+| `stream.agent_trace` | Structured loop-originated execution trace |
+| `stream.tool_start` | Tool execution started |
+| `stream.tool_end` | Tool execution completed |
+| `agent.*` | Agent lifecycle events |
+| `agent.started` | Run started |
+| `agent.completed` | Run completed |
+| `agent.error` | Run error |
+| `session.*` | Session events |
+| `config.*` | Configuration change events |
+| `system.tick` | Periodic heartbeat (uptime, connections, state version) |
+| `system.shutdown` | Server shutdown notification |
+
+### Subscribing to Events
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "sub-1",
+  "method": "events.subscribe",
+  "params": { "pattern": "stream.*" }
+}
+```
+
+After subscribing, the client receives all matching events as server-initiated notifications until it unsubscribes.
+
+---
+
+## Connection Lifecycle
+
+### Authentication Flow
+
+```
+Client WebSocket Connect
+    │
+    ▼
+┌─────────────────────────────────┐
+│ require_auth enabled?           │
+│   Yes → First frame must be     │
+│         "connect" method        │
+│   No  → Direct access allowed   │
+└─────────────────────────────────┘
+    │
+    ▼ (if auth required)
+┌─────────────────────────────────┐
+│ Validate credentials            │
+│   • Bearer token                │
+│   • Device fingerprint          │
+│   • Public key signature        │
+└─────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────┐
+│ Grant session token             │
+│ Set client role (operator/node) │
+└─────────────────────────────────┘
+```
+
+Authentication mode defaults to `Token`. Set `auth.mode = "none"` in config to disable authentication entirely. The legacy `require_auth` field is still accepted for backward compatibility.
+
+### Connect Request
+
+When authentication is enabled, the client must send a `connect` message as the first frame:
+
+```json
+{
+  "method": "connect",
+  "params": {
+    "minProtocol": 1,
+    "maxProtocol": 1,
+    "client": {
+      "id": "macos-app",
+      "version": "1.0.0",
+      "platform": "macos"
+    },
+    "role": "operator",
+    "auth": {
+      "token": "bearer_token"
+    }
+  }
+}
+```
+
+---
+
+## OpenAI-Compatible Routes
+
+In addition to the WebSocket JSON-RPC API, the Gateway exposes an OpenAI-compatible HTTP API on the same port (`18790`). This allows existing clients and tools that speak the OpenAI API format to connect to Aleph without modification.
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/v1/models` | GET | List available models |
+| `/v1/models/{model_id}` | GET | Get model details |
+| `/v1/chat/completions` | POST | Chat completions (streaming + non-streaming) |
+| `/v1/embeddings` | POST | Text embeddings |
+| `/v1/responses` | POST | OpenAI Responses API |
+| `/v1/health` | GET | API health check |
+
+These routes support bearer token authentication (same token as WebSocket auth when `auth.mode = "token"`). In development mode (`auth.mode = "none"`), the endpoints are open.
+
+---
+
+## Hot Reload
+
+The Gateway watches `~/.aleph/config.toml` for changes and applies them without restarting:
+
+```
+~/.aleph/config.toml modified
+    │
+    ▼
+┌─────────────────────────────────┐
+│ Debounce (500ms)                │
+└─────────────────┬───────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────┐
+│ Parse + validate new config     │
+└─────────────────┬───────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────┐
+│ Apply changes:                  │
+│ • Restart affected interfaces   │
+│ • Update routing rules          │
+│ • Emit config.changed event     │
+└─────────────────────────────────┘
+```
+
+Protocol adapter definitions in `~/.aleph/protocols/` are also hot-reloaded with a similar mechanism (see [Architecture Overview](./overview) for details on the protocol adapter system).
+
+---
+
+## HTTP Endpoints
+
+Alongside the WebSocket server, the Gateway also serves HTTP endpoints on the same port:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/ws` | WebSocket upgrade endpoint |
+| `/health` | Health check (returns 200 OK) |
+| `/metrics` | Prometheus-compatible metrics |
+| `/` | Static files for built-in WebChat UI (ControlPlane) |
+| `/login` | Session-cookie login page |
+| `/auth/login` | Login form submission |
+| `/auth/logout` | Logout (clears session cookie) |
+
+When A2A (Agent-to-Agent) is enabled, additional A2A routes are mounted on the same HTTP server.
+
+---
+
+## Interface Configuration Example
+
+```json
+{
+  "interfaces": {
+    "telegram": {
+      "token": "BOT_TOKEN",
+      "allowFrom": ["+1234567890"],
+      "groups": {
+        "*": { "requireMention": true }
+      }
+    },
+    "discord": {
+      "token": "BOT_TOKEN",
+      "guilds": ["guild-id-1"]
+    }
+  }
+}
+```
+
+Each interface has its own authentication and scope configuration. Telegram can restrict which phone numbers are allowed; Discord can restrict which guilds the bot joins.
+
+---
+
+## Related Pages
+
+- [Architecture Overview](./overview) -- Full system diagram and module map
+- [Agent Harness](./harness) -- What happens after the Gateway dispatches to the agent
+- [Session Service](./session-service) -- Session key resolution and persistence
+- [Tool Architecture](./tools) -- Tool execution triggered by agent requests

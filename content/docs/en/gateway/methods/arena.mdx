@@ -1,0 +1,154 @@
+---
+title: "arena.*"
+description: "Evaluation and benchmarking RPC methods"
+---
+
+Arena methods manage the evaluation arena — a system for benchmarking AI models, comparing outputs, and running evaluation tasks against test datasets.
+
+## Methods
+
+### arena.list
+
+List available evaluation tasks and benchmarks.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "arena.list",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "benchmarks": [
+      {
+        "id": "coding-bench",
+        "name": "Coding Benchmark",
+        "description": "Tests code generation and debugging",
+        "tasks_count": 50
+      }
+    ]
+  }
+}
+```
+
+### arena.run
+
+Run an evaluation benchmark.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "arena.run",
+  "params": {
+    "benchmark_id": "coding-bench",
+    "model": "claude-sonnet-4-20250514",
+    "parallel": 4
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "run_id": "arena-run-1",
+    "status": "running",
+    "progress": {
+      "completed": 0,
+      "total": 50
+    }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `benchmark_id` | string | Yes | Benchmark to run |
+| `model` | string | Yes* | Model to evaluate (if benchmark supports model selection) |
+| `parallel` | number | No | Number of parallel tasks |
+
+### arena.status
+
+Get status of a running evaluation.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "arena.status",
+  "params": {
+    "run_id": "arena-run-1"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "run_id": "arena-run-1",
+    "status": "completed",
+    "progress": {
+      "completed": 50,
+      "total": 50
+    },
+    "results": {
+      "accuracy": 0.92,
+      "avg_latency_ms": 1200
+    }
+  }
+}
+```
+
+### arena.results
+
+Get detailed results of a completed evaluation.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "arena.results",
+  "params": {
+    "run_id": "arena-run-1"
+  }
+}
+```
+
+### arena.compare
+
+Compare results across multiple model runs.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "arena.compare",
+  "params": {
+    "run_ids": ["arena-run-1", "arena-run-2"]
+  }
+}
+```
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

@@ -1,0 +1,309 @@
+---
+title: "JSON-RPC API"
+description: "Complete method reference for the WebSocket JSON-RPC 2.0 interface"
+---
+
+This page is a compact quick-reference for every JSON-RPC method exposed by the Aleph Gateway. For detailed request/response examples, follow the links to the individual method pages.
+
+## Transport
+
+All methods are invoked over a **WebSocket** connection to the Gateway server (default `ws://127.0.0.1:18790`). The protocol is JSON-RPC 2.0 -- every request requires `jsonrpc`, `method`, and `id` fields. Notifications (no `id`) are used for server-to-client events.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "agent.run",
+  "params": { "message": "Hello" }
+}
+```
+
+## Authentication
+
+When `require_auth` is enabled in the Gateway config, the **first message** on a new WebSocket connection must be `connect`. All subsequent requests are rejected until authentication succeeds.
+
+| Method | Description | Parameters |
+|--------|-------------|------------|
+| `connect` | Authenticate a WebSocket connection | `token` (string), `client_id` (string, optional) |
+
+## Method Index
+
+### agent.* -- Agent Execution
+
+[Full documentation](/docs/en/gateway/methods/agent)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `agent.run` | Start an agent run with streaming | `message`, `session_key?`, `thinking?`, `model?` | `{ run_id, status, session_key }` |
+| `agent.cancel` | Cancel a running agent | `run_id` | `{ cancelled, run_id }` |
+| `agent.status` | Get run status (polling) | `run_id` | `{ run_id, status, iterations, tokens_used }` |
+| `agent.list` | List available agent configurations | -- | `{ agents[] }` |
+| `agent.respondToInput` | Send follow-up input to a waiting run | `run_id`, `message` | `{ queued }` |
+
+### session.* -- Session Management
+
+[Full documentation](/docs/en/gateway/methods/session)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `session.list` | List sessions with filters | `filter?`, `limit?`, `offset?` | `{ sessions[], total }` |
+| `session.history` | Get raw message history | `session_key`, `limit?` | `{ messages[], token_count }` |
+| `session.compact` | Trigger manual compaction | `session_key` | `{ tokens_before, tokens_after, facts_extracted }` |
+| `session.delete` | Permanently delete a session | `session_key` | `{ deleted, messages_removed }` |
+
+### config.* -- Configuration
+
+[Full documentation](/docs/en/gateway/methods/config)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `config.get` | Get active configuration | -- | `{ config, source, loaded_at }` |
+| `config.reload` | Reload from disk | -- | `{ reloaded, changed_keys }` |
+| `config.validate` | Validate without applying | `config` | `{ valid, errors[], warnings[] }` |
+| `config.schema` | Get configuration JSON Schema | -- | JSON Schema object |
+
+### exec.* -- Command Execution Security
+
+[Full documentation](/docs/en/gateway/methods/exec)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `exec.approval.request` | Request command approval | `command`, `cwd`, `agent_id`, `timeout_ms?` | `{ id, approved, decision }` |
+| `exec.approval.resolve` | Resolve a pending approval | `id`, `decision`, `resolved_by?` | `{ resolved }` |
+| `exec.approvals.get` | Get approval configuration | -- | `{ config, hash }` |
+| `exec.approvals.set` | Update approval config | `config`, `base_hash` | `{ applied }` |
+| `exec.approvals.pending` | List pending approvals | -- | `{ pending[] }` |
+
+### events.* -- Event Subscriptions
+
+[Full documentation](/docs/en/gateway/methods/events)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `events.subscribe` | Subscribe to event topics | `patterns[]` | `{ subscribed[], active_patterns[] }` |
+| `events.unsubscribe` | Remove subscriptions | `patterns[]` | `{ unsubscribed[], active_patterns[] }` |
+| `events.list` | List active subscriptions | -- | `{ patterns[], total }` |
+
+### wizard.* -- Setup Wizards
+
+[Full documentation](/docs/en/gateway/methods/wizard)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `wizard.start` | Start a wizard session | `wizard_type`, `initial_data?` | `{ session_id, step, status }` |
+| `wizard.answer` | Answer current step | `session_id`, `step_id`, `value` | `{ done, step?, status }` |
+| `wizard.next` | Advance past informational step | `session_id` | `{ done, step?, status }` |
+| `wizard.cancel` | Cancel a wizard | `session_id` | `{ cancelled }` |
+| `wizard.status` | Get wizard status | `session_id` | `{ status }` |
+
+### cron.* -- Scheduled Jobs
+
+[Full documentation](/docs/en/gateway/methods/cron)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `cron.create` | Create a scheduled job | `name`, `schedule`, `agent_id`, `prompt` | `{ job_id, next_run_at }` |
+| `cron.list` | List all jobs | `filter?` | `{ jobs[], total }` |
+| `cron.get` | Get job details + run history | `job_id` | Job object with `recent_runs[]` |
+| `cron.delete` | Delete a job | `job_id` | `{ deleted }` |
+| `cron.trigger` | Manually trigger a job | `job_id` | `{ triggered, run_id }` |
+| `cron.pause` | Pause a job | `job_id` | `{ paused }` |
+| `cron.resume` | Resume a paused job | `job_id` | `{ resumed, next_run_at }` |
+| `cron.status` | Get scheduler status | -- | Scheduler state |
+
+### browser.* -- Browser Automation
+
+[Full documentation](/docs/en/gateway/methods/browser)
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `browser.navigate` | Navigate to a URL | `url`, `wait_until?`, `timeout_ms?` | `{ url, title, status }` |
+| `browser.click` | Click an element | `target` (ActionTarget) | `{ clicked }` |
+| `browser.type` | Type text into an element | `target`, `text`, `clear?` | `{ typed }` |
+| `browser.screenshot` | Capture a screenshot | `target?`, `full_page?`, `format?` | `{ data_base64, width, height }` |
+| `browser.evaluate` | Execute JavaScript | `script`, `timeout_ms?` | `{ value, type }` |
+| `browser.snapshot` | Take ARIA accessibility snapshot | -- | `{ elements[], page_title }` |
+
+### chat.* -- Chat Control
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `chat.send` | Send a chat message | `message`, `session_key?` | Run info |
+| `chat.abort` | Abort current chat generation | `run_id?` | `{ aborted }` |
+| `chat.history` | Get chat history | `session_key?`, `limit?` | `{ messages[] }` |
+| `chat.clear` | Clear chat history | `session_key?` | `{ cleared }` |
+
+### models.* -- Model Discovery
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `models.list` | List available models | -- | `{ models[] }` |
+| `models.get` | Get model details | `model_id` | Model metadata |
+| `models.capabilities` | Get model capabilities | `model_id` | Capability flags |
+
+### memory.* -- Memory Operations
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `memory.search` | Search stored memories | `query`, `limit?` | `{ results[] }` |
+
+### skills.* -- Skills Management
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `skills.list` | List installed skills | -- | `{ skills[] }` |
+| `skills.install` | Install a skill | `name`, `source` | Install result |
+
+### plugins.* -- Plugin Lifecycle
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `plugins.list` | List installed plugins | -- | `{ plugins[] }` |
+| `plugins.load` | Load a plugin into runtime | `path` | `{ loaded }` |
+| `plugins.unload` | Unload a plugin | `plugin_id` | `{ unloaded }` |
+| `plugins.enable` | Enable a plugin | `plugin_id` | `{ enabled }` |
+| `plugins.disable` | Disable a plugin | `plugin_id` | `{ disabled }` |
+| `plugins.status` | Get plugin status | `plugin_id` | Plugin status |
+
+### services.* -- Background Services
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `services.list` | List background services | -- | `{ services[] }` |
+| `services.start` | Start a service | `name` | `{ started }` |
+| `services.stop` | Stop a service | `name` | `{ stopped }` |
+| `services.status` | Get service status | `name` | `{ status }` |
+
+### mcp.* -- MCP Approval
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `mcp.list_pending_approvals` | List pending MCP approvals | -- | `{ approvals[] }` |
+| `mcp.respond_approval` | Respond to an MCP approval | `id`, `approved` | `{ responded }` |
+| `mcp.cancel_approval` | Cancel an MCP approval | `id` | `{ cancelled }` |
+
+### markdown_skills.* -- Markdown Skill Runtime
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `markdown_skills.load` | Load a markdown skill | `path` | `{ loaded }` |
+| `markdown_skills.reload` | Reload a skill | `name` | `{ reloaded }` |
+| `markdown_skills.list` | List loaded skills | -- | `{ skills[] }` |
+| `markdown_skills.unload` | Unload a skill | `name` | `{ unloaded }` |
+
+### poe.* -- Principle-Operation-Evaluation
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `poe.run` | Run a POE task | `spec`, `agent_id?` | `{ run_id }` |
+| `poe.status` | Get POE run status | `run_id` | `{ status, progress }` |
+| `poe.cancel` | Cancel a POE run | `run_id` | `{ cancelled }` |
+| `poe.list` | List POE runs | -- | `{ runs[] }` |
+| `poe.prepare` | Prepare a POE contract | `spec` | `{ contract_id, terms }` |
+| `poe.sign` | Sign a POE contract | `contract_id` | `{ signed }` |
+| `poe.reject` | Reject a POE contract | `contract_id` | `{ rejected }` |
+| `poe.pending` | List pending contracts | -- | `{ contracts[] }` |
+
+### identity.* -- Identity/Soul Management
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `identity.get` | Get current identity | -- | Identity object |
+| `identity.set` | Set identity fields | `fields` | `{ updated }` |
+| `identity.clear` | Reset to default identity | -- | `{ cleared }` |
+| `identity.list` | List available identities | -- | `{ identities[] }` |
+
+### workspace.* -- Workspace Isolation
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `workspace.create` | Create a workspace | `name`, `config?` | `{ workspace_id }` |
+| `workspace.list` | List workspaces | -- | `{ workspaces[] }` |
+| `workspace.get` | Get workspace details | `workspace_id` | Workspace object |
+| `workspace.update` | Update workspace config | `workspace_id`, `config` | `{ updated }` |
+| `workspace.archive` | Archive a workspace | `workspace_id` | `{ archived }` |
+
+### guests.* -- Guest Invitations
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `guests.createInvitation` | Create a guest invitation | `permissions`, `expires?` | `{ invitation_id, token }` |
+| `guests.listPending` | List pending invitations | -- | `{ invitations[] }` |
+| `guests.revokeInvitation` | Revoke an invitation | `invitation_id` | `{ revoked }` |
+
+### Utility Methods
+
+| Method | Description | Key Parameters | Returns |
+|--------|-------------|----------------|---------|
+| `health` | Health check | -- | `{ status: "ok" }` |
+| `echo` | Echo back params | any | Echoed params |
+| `version` | Get server version | -- | `{ version, build }` |
+| `logs.levels` | Get current log levels for all components | -- | `{ levels }` |
+| `logs.set_level` | Set log level for a component | `component`, `level` | `{ set }` |
+| `logs.tail` | Stream recent log entries | `lines?`, `follow?` | `{ entries[] }` |
+| `commands.list` | List all registered commands | -- | `{ commands[] }` |
+
+## Error Codes
+
+Standard JSON-RPC 2.0 error codes plus Aleph extensions:
+
+| Code | Constant | Description |
+|------|----------|-------------|
+| `-32700` | `PARSE_ERROR` | Invalid JSON |
+| `-32600` | `INVALID_REQUEST` | Malformed JSON-RPC request |
+| `-32601` | `METHOD_NOT_FOUND` | Method does not exist |
+| `-32602` | `INVALID_PARAMS` | Invalid method parameters |
+| `-32603` | `INTERNAL_ERROR` | Internal server error |
+| `-32000` | `AUTH_REQUIRED` | Authentication required (send `connect` first) |
+| `-32001` | `AUTH_FAILED` | Authentication credentials rejected |
+| `-32002` | `PERMISSION_DENIED` | Insufficient permissions |
+| `-32003` | `RATE_LIMITED` | Too many requests |
+| `-32004` | `RESOURCE_NOT_FOUND` | Requested resource not found |
+| `-32005` | `TIMEOUT_ERROR` | Operation timed out |
+| `-32006` | `TOOL_ERROR` | Tool execution failed |
+
+Error response format:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32601,
+    "message": "Method not found: agent.nonexistent"
+  }
+}
+```
+
+## Event Topics
+
+Events are delivered as JSON-RPC notifications (no `id` field) to subscribed clients. Subscribe via `events.subscribe`.
+
+| Topic Pattern | Description |
+|---------------|-------------|
+| `stream.start` | Agent response streaming begins |
+| `stream.chunk` | Text chunk from agent |
+| `stream.tool_start` | Tool invocation started |
+| `stream.tool_end` | Tool execution completed |
+| `stream.thinking` | Reasoning step (CoT) |
+| `stream.end` | Streaming finished |
+| `agent.started` | Agent run started |
+| `agent.completed` | Agent run finished |
+| `agent.error` | Agent run failed |
+| `agent.cancelled` | Agent run cancelled |
+| `session.created` | New session created |
+| `session.deleted` | Session deleted |
+| `session.compacted` | Session compacted |
+| `config.changed` | Configuration modified |
+| `config.reloaded` | Config reloaded from file |
+| `cron.triggered` | Cron job triggered |
+| `cron.completed` | Cron job completed |
+| `cron.failed` | Cron job failed |
+| `exec.approval_requested` | Approval needed for command |
+| `exec.approval_resolved` | Approval decision made |
+
+## See Also
+
+- [Rust API](/docs/en/api/rust) -- Core crate reference for library usage
+- [Gateway Overview](/docs/en/gateway/overview) -- Architecture and connection details
+- [Protocol](/docs/en/gateway/protocol) -- Transport format and authentication flow

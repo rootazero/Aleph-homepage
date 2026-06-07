@@ -1,0 +1,31 @@
+{
+  "title": "Methods Reference",
+  "pages": [
+    "index",
+    "agent",
+    "session",
+    "runs",
+    "skills",
+    "mcp",
+    "memory",
+    "identity",
+    "config",
+    "plugins",
+    "providers",
+    "workspace",
+    "graph",
+    "teams",
+    "group_chat",
+    "arena",
+    "cron",
+    "events",
+    "heartbeat",
+    "logs",
+    "services",
+    "daemon",
+    "channels",
+    "exec",
+    "wizard",
+    "browser"
+  ]
+}

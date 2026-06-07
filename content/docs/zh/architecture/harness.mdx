@@ -1,0 +1,221 @@
+---
+title: "执行 Harness"
+description: "Think→Act 循环、状态机、停止钩子、上下文预算及紧急压缩。"
+---
+
+# 执行 Harness
+
+`AgentHarness` 驱动所有 Gateway 聊天请求的 **Think → Act** 循环。它由编排器构造，并接收预解析的依赖项（`SessionService`、`ToolService`、`Sandbox`、`AiProvider`）。
+
+**位置**：`src/harness/`
+
+> **迁移完成**：旧版 `src/agent_loop/` 目录已在第 7 阶段（2026-04-21）删除。所有智能体执行 —— 包括 `SubagentTool` —— 现在均通过 Orchestrator → Harness 路由。
+
+---
+
+## 内部循环图
+
+```
+┌─────────────────────────────────────────┐
+│              AgentHarness                │
+├─────────────────────────────────────────┤
+│  ┌────────┐   ┌────────┐   ┌────────┐  │
+│  │PREPARE │──▶│ THINK  │──▶│RESOLVE │  │
+│  │• Budget│   │ • LLM  │   │• Parse │  │
+│  │• Context│  │ • Decide│  │• Decision││
+│  │• Preflight│ └────────┘   └────┬───┘  │
+│  └────────┘                      │      │
+│                             ┌────┴───┐  │
+│                             │  ACT   │  │
+│                             │• Execute│  │
+│                             │• Tools  │  │
+│                             └────┬───┘  │
+│                                  │      │
+│                             ┌────┴───┐  │
+│                             │FINALIZE│  │
+│                             │• Eval  │  │
+│                             │• Compress││
+│                             │• Decision││
+│                             └────────┘  │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 核心结构
+
+```rust
+pub struct AgentHarness {
+    provider: Arc<dyn AiProvider>,           // LLM provider
+    tool_service: Arc<dyn ToolService>,      // Tool catalog + execution
+    sandbox: Arc<dyn Sandbox>,              // Exec environment
+    session: Arc<dyn SessionService>,        // Append-only history
+    stop_hook: Arc<StopHookHandler>,         // Stop hooks
+    compaction_pipeline: CompactionPipeline, // Emergency compaction
+    preflight_pipeline: PreflightPipeline,  // Pre-flight context prep
+    config: LoopConfig,                       // Loop configuration
+}
+```
+
+---
+
+## 状态机
+
+Harness 使用 `TurnState` 枚举来跟踪当前回合的状态：
+
+```
+┌─────────┐
+│ PREPARE │
+└────┬────┘
+     │ budget computed
+     ▼
+┌─────────┐     ┌─────────┐     ┌─────────┐
+│  THINK  │ ──▶ │ RESOLVE │ ──▶ │   ACT   │
+└─────────┘     └────┬────┘     └────┬────┘
+                     │               │
+                     │ EndTurn       │ tools complete
+                     │ no_action     │
+                     ▼               ▼
+               ┌─────────┐     ┌─────────┐
+               │FINALIZE │     │FINALIZE │
+               └────┬────┘     └────┬────┘
+                    │               │
+                    ▼               ▼
+              ContinueLoop      ExitLoop
+```
+
+`TurnAdvance` 枚举控制循环推进：
+
+| Variant | Meaning |
+|---------|---------|
+| `Next(TurnState)` | Advance to the next state |
+| `ContinueLoop` | Restart with a new turn |
+| `ExitLoop(decision)` | Terminate loop with final decision |
+| `Cancelled` | Cancelled by abort token |
+
+---
+
+## 关键组件
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `AgentHarness` | `src/harness/` | Think→Act loop controller |
+| `LoopConfig` | `src/harness/` | Configuration options |
+| `TurnState` | `src/harness/` | State machine enum |
+| `TurnAdvance` | `src/harness/` | Loop progression enum |
+| `ToolPipeline` | `src/harness/tool_pipeline.rs` | 7-stage tool execution pipeline |
+| `ToolOrchestrator` | `src/harness/tool_orchestrator.rs` | Tool batch orchestration |
+| `ToolExecutionContext` | `src/harness/tool_execution_context.rs` | Per-tool cancel/progress context |
+| `ContextBudget` | `src/harness/context_budget/` | Pressure sensing + directives |
+| `PreflightPipeline` | `src/harness/context_budget/preflight.rs` | Pre-flight async context prep |
+| `CompactionPipeline` | `src/harness/context_budget/pipeline.rs` | Emergency compaction stages |
+| `StreamingBridge` | `src/harness/streaming_bridge.rs` | Streaming + delta management |
+| `SafetyGuard` | `src/harness/safety.rs` | Permission enforcement |
+| `StopHookHandler` | `src/harness/stop_hooks.rs` | Stop hook execution |
+| `TruncationRecovery` | `src/harness/truncation_recovery.rs` | MaxTokens escalation recovery |
+
+---
+
+## 守卫
+
+安全检查在每个循环迭代前运行。位于 `src/harness/guards.rs`。
+
+| Guard | Purpose |
+|-------|---------|
+| `MaxIterationsGuard` | Prevent infinite loops |
+| `TokenBudgetGuard` | Enforce token limits |
+| `TimeoutGuard` | Enforce time limits |
+| `ToolRateLimitGuard` | Prevent tool spam |
+| `ErrorAccumulatorGuard` | Stop on repeated errors |
+
+```rust
+pub trait LoopGuard: Send + Sync {
+    fn check(&self, state: &LoopState) -> GuardResult;
+    fn name(&self) -> &str;
+}
+
+pub enum GuardResult {
+    Continue,
+    Warn(String),
+    Stop(String),
+}
+```
+
+---
+
+## 循环事件
+
+```rust
+pub enum LoopEvent {
+    Started { run_id: String },
+    ThinkingStarted,
+    ThinkingComplete { decision: Decision },
+    ToolExecutionStarted { tool_name: String },
+    ToolExecutionComplete { result: ToolResult },
+    StreamChunk { content: String },
+    OverflowDetected { tokens: usize },
+    CompressionStarted,
+    CompressionComplete,
+    Completed { response: String },
+    Error { error: String },
+}
+```
+
+---
+
+## 配置
+
+```rust
+pub struct LoopConfig {
+    /// Maximum iterations per run
+    pub max_iterations: usize,
+
+    /// Token budget for context
+    pub token_budget: usize,
+
+    /// Timeout per iteration
+    pub iteration_timeout: Duration,
+
+    /// Enable context compression
+    pub enable_compression: bool,
+
+    /// Compression threshold (tokens)
+    pub compression_threshold: usize,
+
+    /// Model routing strategy
+    pub model_routing: ModelRoutingConfig,
+
+    /// Thinking level
+    pub thinking_level: ThinkingLevel,
+}
+```
+
+---
+
+## 睡眠抑制器
+
+每个 Think→Act 回合会获取一个 `IOPMAssertion`，类型为 `PreventUserIdleSystemSleep`，原因字符串为 `"Aleph agent loop"`。该断言由一个 RAII `InhibitorGuard` 持有，其 `Drop` 实现在回合返回的瞬间释放。长时间运行的智能体回合不再会被 macOS 将主机置于睡眠状态而静默中断。
+
+该守卫在 `src/harness/agent.rs` 中的 `run_turn` 开始时获取，并在函数返回时自动释放，无论成功、返回错误或被取消。
+
+要验证回合进行中是否有断言处于活动状态：
+
+```bash
+pmset -g assertions | grep "Aleph agent loop"
+```
+
+断言在回合完成的瞬间从列表中消失。
+
+实现文件：
+- `PowerCapability` trait: `desktop/shared/src/traits/power.rs`
+- macOS IOPMAssertion FFI: `desktop/macos/src/sleep_inhibitor.rs`
+- Agent loop wiring: `src/harness/agent.rs::run_turn`
+
+---
+
+## 另请参阅
+
+- [Thinker](./thinker) — LLM 交互层
+- [Dispatcher](./dispatcher) — 任务编排
+- [Session Service](./sessions) — 追加式事件日志
+- Sandbox — 执行环境

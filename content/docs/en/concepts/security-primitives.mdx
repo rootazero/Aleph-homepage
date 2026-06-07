@@ -1,0 +1,178 @@
+---
+title: "Security Primitives"
+description: "Cross-cutting security layers including SSRF protection, content sanitization, security headers, runtime guard, and persistent audit logging."
+---
+
+The `security` module provides cross-cutting security primitives that protect Aleph from common attack vectors. It complements the gateway's auth/identity system with SSRF protection, content sanitization, security headers, runtime guards, and audit logging.
+
+## Design Philosophy
+
+1. **Defense in depth** — Multiple independent checks at different layers
+2. **Non-blocking audit** — Security events are logged via async channels without blocking hot paths
+3. **Configurable strictness** — Policies can be relaxed for development, tightened for production
+
+---
+
+## SSRF Protection
+
+The SSRF (Server-Side Request Forgery) engine validates all outbound URLs before HTTP requests:
+
+```rust
+pub async fn validate_url_async(
+    url_str: &str,
+    policy: &SsrfPolicy,
+) -> Result<Url, SsrfError>
+```
+
+**Blocks:**
+- Private networks (10.x, 172.16-31.x, 192.168.x)
+- Loopback (127.x, ::1)
+- Link-local (169.254.x)
+- CGNAT (100.64-127.x)
+- Cloud metadata endpoints (169.254.169.254)
+- Legacy IP literals (0x7f000001)
+- URLs with embedded credentials
+- Hostnames in blocklist
+
+**DNS rebinding defense:** Resolves hostnames and validates all returned IPs.
+
+**Allowlist support:** Exact hosts or wildcard subdomains (`*.example.com`) can bypass checks.
+
+```rust
+let policy = SsrfPolicy {
+    allowed_hosts: vec!["*.internal.corp".to_string()],
+    allow_private_network: false,
+    ..Default::default()
+};
+```
+
+---
+
+## Content Sanitization
+
+Wraps untrusted external content with boundary markers before LLM injection:
+
+```rust
+pub fn wrap_external_content(
+    content: &str,
+    source: ContentSource,
+) -> String
+```
+
+**Sources:**
+- Web fetch
+- MCP tool output
+- Webhook payloads
+- Email
+- Browser content
+- User uploads
+
+**Detects:**
+- Injection patterns (instruction override attempts)
+- Tokenizer marker manipulation
+- Model format marker spoofing
+- Homoglyph attacks (Unicode normalization)
+
+**Approach:** Marks suspicious patterns but lets the LLM decide trust (R8 — LLM Sovereignty).
+
+---
+
+## Security Headers
+
+A Tower layer injects security headers on all HTTP responses:
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; ...` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `X-XSS-Protection` | `0` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` |
+| `Cache-Control` | `no-store` (except static assets) |
+
+Static assets (`.js`, `.css`, `.wasm`, `.png`, etc.) are exempt from `Cache-Control: no-store`.
+
+---
+
+## Runtime Security Guard
+
+Orchestrates multiple security checks during agent execution:
+
+```rust
+pub struct RuntimeSecurityGuard {
+    pii_engine: Option<PiiEngine>,
+    leak_detector: Option<SecretLeakDetector>,
+    audit_log: Option<SecurityAuditLog>,
+}
+```
+
+**Checks:**
+- PII filtering on outbound messages
+- Secret leak detection on tool outputs
+- Content sanitization on external inputs
+- Audit logging for security events
+
+**Config:**
+
+```rust
+SecurityGuardConfig {
+    pii_filtering: true,
+    content_sanitization: true,
+    leak_detection: true,
+    secret_injection: true,
+    default_action_on_leak: LeakAction::Block,
+    audit_enabled: true,
+}
+```
+
+---
+
+## Audit Log
+
+Persistent SQLite-backed audit log for security events:
+
+```rust
+pub enum AuditEventType {
+    AuthFailure,
+    RateLimited,
+    SsrfBlocked,
+    ExecBlocked,
+    ExecApprovalDenied,
+    InvisibleCharsDetected,
+    InjectionPatternDetected,
+    PathTraversalBlocked,
+    PermissionDenied,
+    PiiDetected,
+    LeakWarning,
+    // ... etc
+}
+```
+
+**Non-blocking:** Uses `tokio::sync::mpsc` with `try_send`. If the channel is full, events are dropped with a warning rather than blocking execution.
+
+---
+
+## Safety Properties
+
+- **No DRY violations** — Shared `is_ip_blocked_by_policy()` helper used across SSRF checks
+- **No unwrap in hot paths** — All lock recovery uses `unwrap_or_else(|e| e.into_inner())`
+- **Parameterized SQL** — Audit log uses `?1` bindings
+- **No `static mut`** — None found
+
+---
+
+## Code Location
+
+- `src/security/mod.rs` — Module entry point
+- `src/security/ssrf/` — SSRF protection engine
+- `src/security/content_sanitizer.rs` — Injection detection
+- `src/security/headers.rs` — HTTP security headers
+- `src/security/runtime_guard.rs` — Runtime orchestration
+- `src/security/audit.rs` — Persistent audit logging
+
+## See Also
+
+- [PII Protection](./pii-protection) — PII detection and filtering
+- [Secret Management](./secret-management) — Encrypted credential storage

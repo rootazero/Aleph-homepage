@@ -1,18 +1,73 @@
 @import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Let Tailwind scan Fumadocs UI for class names (path relative to this file). */
+@source "../../node_modules/fumadocs-ui/dist/**/*.js";
+
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  /* Brand Colors */
-  --color-page: #050508;
-  --color-accent: #22d3ee;
-  --color-heading: #f3f4f6;
-  --color-muted: #9ca3af;
-  --color-faint: #4b5563;
-  --color-edge: #1f2937;
+  /* Brand tokens — exposed as utilities (bg-page, text-heading, ...) */
+  --color-page: var(--page);
+  --color-panel: var(--panel);
+  --color-surface: var(--surface);
+  --color-edge: var(--edge);
+  --color-heading: var(--heading);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-purple: var(--accent-purple);
+  --color-accent-cyan: var(--accent-cyan);
+  --color-codeblock: var(--codeblock);
 
   /* Typography */
   --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;
+
+  /* Easings + entrance animations (used by docs/marketing sections) */
+  --ease-fluid: cubic-bezier(0.3, 0, 0, 1);
+  --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/*
+ * Dark-only palette. Both :root and .dark resolve to the same values so the
+ * brand looks identical whether or not the `.dark` class is present (it always
+ * is — forced on <html>). Fumadocs UI reads the mapped `--color-fd-*` tokens.
+ */
+:root,
+.dark {
+  --page: #050508;
+  --panel: #07070a;
+  --surface: rgba(255, 255, 255, 0.04);
+  --edge: #1f2937;
+  --heading: #f3f4f6;
+  --muted: #9ca3af;
+  --faint: #4b5563;
+  --accent: #22d3ee;
+  --accent-purple: #a855f7;
+  --accent-cyan: #22d3ee;
+  --codeblock: #0b0b0f;
+  --glow: rgba(34, 211, 238, 0.15);
+
+  /* Map Aleph tokens → Fumadocs UI variables */
+  --color-fd-background: var(--page);
+  --color-fd-foreground: var(--heading);
+  --color-fd-muted: var(--codeblock);
+  --color-fd-muted-foreground: var(--faint);
+  --color-fd-popover: var(--panel);
+  --color-fd-popover-foreground: var(--heading);
+  --color-fd-card: var(--panel);
+  --color-fd-card-foreground: var(--heading);
+  --color-fd-border: var(--edge);
+  --color-fd-primary: var(--accent);
+  --color-fd-primary-foreground: #050508;
+  --color-fd-secondary: #14141a;
+  --color-fd-secondary-foreground: var(--heading);
+  --color-fd-accent: rgba(255, 255, 255, 0.06);
+  --color-fd-accent-foreground: var(--heading);
+  --color-fd-ring: var(--accent);
 }
 
 :root {
@@ -33,6 +88,16 @@ body {
 
 .animate-spin-slow {
   animation: spin-slow 20s linear infinite;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 ::selection {

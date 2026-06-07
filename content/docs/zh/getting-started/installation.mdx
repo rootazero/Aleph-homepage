@@ -1,0 +1,85 @@
+---
+title: "安装"
+description: "在您的系统上安装 Aleph。"
+---
+
+本指南涵盖在您的系统上安装 Aleph。
+
+## 前提条件
+
+- **Rust 1.75+** - 从源代码构建所需
+- **macOS 14+** 或 **Linux** - 主要支持的平台
+- **SQLite 3.35+** - 用于会话存储
+
+## 安装方法
+
+### 使用 Just（推荐）
+
+Aleph 包含一个带有常见开发任务的 `justfile`：
+
+```bash
+# 构建项目
+just build
+
+# 运行测试
+just test
+
+# 在开发模式下运行
+just dev
+```
+
+### 从源代码
+
+```bash
+# 克隆仓库
+git clone https://github.com/anthropics/aleph.git
+cd aleph
+
+# 构建项目
+cargo build --release
+
+# 安装服务器二进制文件
+cargo install --path . --bin aleph-server
+```
+
+### 使用 Cargo
+
+```bash
+cargo install aleph-cli
+```
+
+### Homebrew (macOS)
+
+```bash
+# 即将推出
+brew install aleph
+```
+
+## 验证安装
+
+```bash
+# 检查版本
+aleph --version
+
+# 运行健康检查
+aleph health
+```
+
+## 目录结构
+
+Aleph 创建以下目录：
+
+| 路径 | 用途 |
+|------|---------|
+| `~/.aleph/` | 主配置目录 |
+| `~/.aleph/config.toml` | 主配置文件 |
+| `~/.aleph/sessions/` | SQLite 会话数据库 |
+| `~/.aleph/memory/` | 内存笔记和 SQLite DB |
+| `~/.aleph/workspaces/` | 沙箱工作空间 |
+| `~/.aleph/logs/` | 应用程序日志 |
+| `~/.aleph/plugins/` | 已安装的插件 |
+
+## 下一步
+
+- [快速开始](/docs/zh/getting-started/quick-start) - 启动并运行
+- [配置](/docs/zh/getting-started/configuration) - 配置您的设置

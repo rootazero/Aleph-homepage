@@ -1,0 +1,332 @@
+---
+title: "Agent Interaction"
+description: "Chat with the Aleph agent, send single messages, and manage sessions from the CLI"
+---
+
+The `aleph` client CLI provides several ways to interact with the Aleph agent: interactive chat, one-shot questions, and session management.
+
+## Interactive Chat
+
+Start a persistent conversation with the agent:
+
+```bash
+aleph chat
+```
+
+Or simply run `aleph` with no subcommand (chat is the default action).
+
+### Options
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--session <KEY>` | `-s` | auto-generated UUID | Session key to resume or create |
+
+### Starting a Session
+
+```bash
+$ aleph chat
+=== Aleph Chat ===
+Session: chat-a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Type 'exit' or 'quit' to end the session.
+Type '/help' for commands.
+
+You: Hello, what can you do?
+
+Aleph: I can help you with a wide range of tasks...
+```
+
+To resume a previous session:
+
+```bash
+aleph chat -s my-project
+```
+
+### In-Session Commands
+
+While inside the interactive chat, the following slash commands are available:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available in-session commands |
+| `/session` | Display the current session key |
+| `/clear` | Clear conversation history for the current session |
+| `exit` or `quit` | End the chat session and disconnect |
+
+### Streaming Responses
+
+Responses stream in real time. When the agent uses tools, you will see inline status indicators:
+
+```
+You: What is the current system load?
+
+Aleph:
+  [Using: system_info] ✓
+The current system load average is 1.23...
+```
+
+A check mark (`✓`) indicates the tool executed successfully; a cross (`✗`) indicates failure.
+
+### Interactive Questions
+
+The agent may ask you to make a choice during tool execution:
+
+```
+[Question: Allow file write to /tmp/report.txt?]
+  1. Yes
+  2. No
+```
+
+---
+
+## Single Message (`ask`)
+
+Send a one-shot message and receive the response on stdout. Useful for scripting and piping.
+
+```bash
+aleph ask "Summarize the contents of my last meeting note"
+```
+
+### Options
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--session <KEY>` | `-s` | `"default"` | Session key for context continuity |
+
+### Output Behavior
+
+- The response body is printed to **stdout**.
+- Tool usage notifications and metadata are printed to **stderr**.
+- If `ALEPH_VERBOSE` is set, reasoning traces are also printed to stderr.
+
+```bash
+# Normal usage
+$ aleph ask "What is 2 + 2?"
+The answer is 4.
+
+# With verbose reasoning
+$ ALEPH_VERBOSE=1 aleph ask "What is 2 + 2?"
+  [Thinking: Simple arithmetic...]
+The answer is 4.
+
+# With tool usage
+$ aleph ask "What time is it in Tokyo?"
+  [Tool: world_clock]
+It is currently 19:30 JST in Tokyo.
+
+(1 tools used)
+```
+
+### Scripting
+
+Because the main response goes to stdout and metadata to stderr, you can pipe output cleanly:
+
+```bash
+# Pipe response to a file
+aleph ask "Generate a haiku about Rust" > haiku.txt
+
+# Use in a pipeline
+aleph ask "List 5 random words" | tr ',' '\n'
+
+# Suppress tool noise
+aleph ask "Search for recent news" 2>/dev/null
+```
+
+---
+
+## Session Management
+
+Sessions store conversation history on the server. Use `aleph session` to manage them.
+
+### List Sessions
+
+```bash
+aleph session list
+```
+
+```
+=== Sessions ===
+
+• chat-a1b2c3d4 (my-project) - 42 messages
+• default - 3 messages
+• research-session - 18 messages
+
+Total: 3 sessions
+```
+
+### Create a Session
+
+```bash
+aleph session new
+aleph session new --name "my-project"
+```
+
+```
+✓ Session created: ses-7f8e9d0c
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--name <NAME>` | `-n` | Optional human-readable name for the session |
+
+### Delete a Session
+
+```bash
+aleph session delete <KEY>
+```
+
+```bash
+$ aleph session delete chat-a1b2c3d4
+✓ Session deleted: chat-a1b2c3d4
+```
+
+This permanently removes the session and all its message history from the server.
+
+---
+
+## Server Information
+
+### Health Check
+
+```bash
+aleph health
+```
+
+```
+Server Status: ok
+Timestamp: 2026-02-25T10:30:00Z
+```
+
+### Server Info
+
+```bash
+aleph info
+```
+
+```
+=== Aleph Gateway Server ===
+
+Version: 0.1.0
+Status: ok
+Uptime: 2h 15m 30s
+
+Available Providers:
+  ✓ anthropic
+  ✗ openai
+```
+
+---
+
+## Tool Discovery
+
+List all tools registered on the server:
+
+```bash
+aleph tools
+```
+
+```
+=== Available Commands ===
+
+[builtin]
+  • system_info - Get system information
+  • file_read - Read file contents
+  • file_write - Write content to a file
+
+[mcp]
+  • web_search - Search the web
+  • calculator - Evaluate math expressions
+
+Total: 5 commands
+```
+
+### Filtering by Category
+
+```bash
+aleph tools --category mcp
+```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--category <FILTER>` | `-c` | Filter tools by source type, key, or command type |
+
+---
+
+## Authentication
+
+### Connect and Save Token
+
+Before using authenticated commands, connect to the server:
+
+```bash
+aleph connect
+```
+
+```
+Authenticating as 'aleph-cli'...
+✓ Connected successfully!
+
+Auth token: eyJhbGciOiJIUzI1N...
+Token saved to config file.
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--device <NAME>` | `-d` | `aleph-cli` | Device name for this client instance |
+
+The token is saved to `~/.config/aleph-cli/config.toml` and automatically used in future requests.
+
+---
+
+## Guest Management
+
+Manage guest access to your Aleph instance. Guests receive limited tool permissions through invitation tokens.
+
+### Create an Invitation
+
+```bash
+aleph guests invite --name "Mom" --tools "translate,summarize"
+```
+
+```
+Guest invitation created
+
+  Guest ID: 6ba7b810-9dad-11d1-80b4-00c04fd430c8
+  Token:    inv_abc123def456
+  URL:      https://aleph.local/guest/inv_abc123def456
+
+Share this token with the guest to activate their session.
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--name <NAME>` | `-n` | required | Guest display name |
+| `--tools <LIST>` | `-t` | required | Comma-separated tool names, or `"*"` for all |
+| `--expires-days <N>` | — | — | Invitation expiry in days |
+| `--format <FMT>` | `-f` | `text` | Output format: `text` or `json` |
+
+### List Pending Invitations
+
+```bash
+aleph guests list
+```
+
+### Revoke an Invitation
+
+```bash
+aleph guests revoke <GUEST_ID> [--force]
+```
+
+### View Guest Activity
+
+```bash
+aleph guests info <GUEST_ID>
+```
+
+```
+=== Activity Logs for Guest: 6ba7b810-... ===
+
+[2026-02-25 14:00:00] tool_call - translate("Hello" → "Hola")
+[2026-02-25 14:01:30] tool_call - summarize(article.txt)
+
+Total: 2 log entries
+```

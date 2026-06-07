@@ -1,0 +1,397 @@
+---
+title: "Session Management"
+description: "Session lifecycle, state persistence, context window management, SQLite storage, and multi-session support."
+---
+
+Sessions are the stateful backbone of Aleph. Every conversation -- whether it comes from a Telegram DM, a Discord channel, or the CLI -- is tracked as a session with its own message history, metadata, and identity context. This page covers the session lifecycle, how context windows are managed and compressed, the SQLite storage backend, and how multiple sessions coexist.
+
+For how sessions are created during request routing, see [Gateway Architecture](./gateway). For how sessions feed into the execution harness, see [Harness](./harness).
+
+---
+
+## Session Lifecycle
+
+A session progresses through four states:
+
+```
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  CREATE  │ ──▶ │  ACTIVE  │ ──▶ │   IDLE   │ ──▶ │ ARCHIVED │
+│          │     │          │     │          │     │          │
+│ • Key    │     │ • Messages│    │ • Timer  │     │ • Compact│
+│ • Meta   │     │ • Tokens │     │ • Decay  │     │ • Facts  │
+│ • Identity│    │ • Tools  │     │          │     │ • Delete │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+```
+
+1. **CREATE** -- A new session is instantiated when a message arrives from a previously unseen session key. The Session Manager assigns metadata including the channel source, agent ID, and identity context (Owner or Guest).
+
+2. **ACTIVE** -- The session is actively processing messages. Message history grows with each exchange. Token counts are tracked to detect when compression is needed.
+
+3. **IDLE** -- No messages have been sent for a configured duration. The session remains in memory but is a candidate for compression or sub-agent swapping.
+
+4. **ARCHIVED** -- The session's old messages have been compressed into facts and summaries. The session can be deleted entirely, or kept as a compressed record.
+
+---
+
+## Session Keys
+
+Every session is identified by a structured key that encodes the channel, user, and scope:
+
+```rust
+pub enum SessionKey {
+    /// Shared cross-channel session
+    Main { agent_id: String },
+
+    /// Per-user direct message
+    DirectMessage {
+        agent_id: String,
+        channel: String,
+        scope: DmScope,
+        peer_id: String,
+    },
+
+    /// Group/channel chat
+    Group {
+        agent_id: String,
+        channel: String,
+        group_id: String,
+    },
+
+    /// Background tasks (cron, webhooks)
+    Task {
+        agent_id: String,
+        task_name: String,
+    },
+
+    /// Sub-agent delegation
+    Subagent {
+        parent: Box<SessionKey>,
+        subagent_id: String,
+    },
+
+    /// Temporary, no persistence
+    Ephemeral {
+        agent_id: String,
+        uuid: String,
+    },
+}
+```
+
+### Serialized Formats
+
+| Variant | Serialized Key | Example |
+|---------|---------------|---------|
+| Main | `agent:{id}:main` | `agent:main:main` |
+| DirectMessage | `agent:{id}:{channel}:dm:{peer}` | `agent:main:telegram:dm:user123` |
+| Group | `agent:{id}:{channel}:group:{group}` | `agent:main:discord:group:guild-abc` |
+| Task | `agent:{id}:cron:{task}` | `agent:main:cron:daily-summary` |
+| Subagent | `subagent:{parent}:{sub_id}` | `subagent:agent:main:translator` |
+| Ephemeral | `agent:{id}:ephemeral:{uuid}` | `agent:main:ephemeral:a1b2c3` |
+
+### DM Scope Strategies
+
+For direct messages, the scope strategy determines isolation:
+
+```rust
+pub enum DmScope {
+    Main,           // All DMs share the main session
+    PerPeer,        // Isolated session per user (default)
+    PerChannelPeer, // Isolated per channel + user
+}
+```
+
+- **Main**: All DMs from all users share a single session. Useful for personal use with a single owner.
+- **PerPeer**: Each user gets their own isolated session. Default and recommended for multi-user setups.
+- **PerChannelPeer**: Each user on each channel gets a separate session. Maximum isolation.
+
+---
+
+## State Management
+
+Session state is tracked by the `SessionManager`, which wraps a SQLite database:
+
+```rust
+pub struct SessionManager {
+    db: SqlitePool,
+    sessions: DashMap<String, SessionState>,
+    config: SessionConfig,
+}
+
+pub struct SessionState {
+    pub key: String,
+    pub messages: Vec<Message>,
+    pub metadata: SessionMetadata,
+    pub token_count: usize,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+### Session Metadata
+
+Each session carries metadata that describes its origin and identity:
+
+```rust
+pub struct SessionMetadata {
+    pub agent_id: String,
+    pub channel: String,
+    pub identity: SessionIdentityMeta,
+    pub last_compaction: Option<DateTime<Utc>>,
+}
+
+pub struct SessionIdentityMeta {
+    pub role: Role,           // Owner | Guest | Anonymous
+    pub identity_id: String,
+    pub scope: Option<GuestScope>,
+}
+```
+
+The identity metadata is frozen at session creation time and flows through the entire execution chain as an immutable `IdentityContext`. See [Architecture Overview](./overview) for the identity context flow.
+
+---
+
+## Context Window Management
+
+As a conversation grows, the message history can exceed the LLM's context window. Aleph uses a multi-stage approach to keep the context within budget.
+
+### Overflow Detection
+
+The `OverflowDetector` monitors token counts after each iteration:
+
+```rust
+pub struct OverflowDetector {
+    /// Maximum tokens before triggering compression
+    pub threshold: usize,
+
+    /// Target tokens after compression
+    pub target: usize,
+}
+```
+
+When `token_count > threshold`, the detector signals the Agent Loop to enter the COMPRESSING state.
+
+### Compression Pipeline
+
+```
+Session History (10,000 tokens)
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ 1. Identify compressible messages       │
+│    • Keep the last N messages intact    │
+│    • Mark older messages for extraction │
+└─────────────────────┬───────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────┐
+│ 2. Extract facts via LLM               │
+│    Prompt: "What key facts should I     │
+│    remember from this conversation?"    │
+└─────────────────────┬───────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────┐
+│ 3. Store extracted facts                │
+│    → Memory system (LanceDB)            │
+│    → With embeddings for retrieval      │
+└─────────────────────┬───────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────┐
+│ 4. Generate summary of old messages     │
+│    LLM: "Summarize this conversation    │
+│    segment in 2-3 paragraphs"           │
+└─────────────────────┬───────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────┐
+│ 5. Replace old messages with summary    │
+│    [summary] + [last N messages]        │
+└─────────────────────────────────────────┘
+                      │
+                      ▼
+Compressed History (4,000 tokens)
+```
+
+### Compression Configuration
+
+```rust
+pub struct CompressionConfig {
+    /// Token threshold to trigger compression
+    pub threshold_tokens: usize,     // default: 8000
+
+    /// Target tokens after compression
+    pub target_tokens: usize,        // default: 4000
+
+    /// Keep last N messages uncompressed
+    pub keep_recent: usize,          // default: 10
+}
+```
+
+The `CompressionDaemon` can also trigger compression during idle periods, running on a configurable schedule (default: check every hour, require 5 minutes of idle time). See [Memory System](./memory) for details.
+
+---
+
+## SQLite Storage Backend
+
+Sessions are persisted in SQLite with two tables:
+
+```sql
+CREATE TABLE sessions (
+    session_key TEXT PRIMARY KEY,
+    messages TEXT,           -- JSON array of Message objects
+    created_at INTEGER,      -- Unix timestamp
+    updated_at INTEGER,      -- Unix timestamp
+    message_count INTEGER,
+    token_count INTEGER
+);
+
+CREATE TABLE session_metadata (
+    session_key TEXT PRIMARY KEY,
+    agent_id TEXT,
+    channel TEXT,
+    last_compaction INTEGER  -- Unix timestamp of last compression
+);
+```
+
+### Why SQLite?
+
+- **Zero configuration**: No external database server required
+- **Single-file portability**: The entire session store is one file (`~/.aleph/sessions.db`)
+- **Concurrent access**: SQLite's WAL mode supports the Gateway's concurrent request handling
+- **Atomic operations**: Session updates are transactional
+
+### Message Storage Format
+
+Messages are stored as a JSON array in the `messages` column:
+
+```json
+[
+  {
+    "role": "user",
+    "content": "How do I configure API keys?",
+    "timestamp": 1709000000
+  },
+  {
+    "role": "assistant",
+    "content": "You can configure API keys in ~/.aleph/config.json...",
+    "timestamp": 1709000005,
+    "tool_calls": []
+  }
+]
+```
+
+---
+
+## Multi-Session Support
+
+Aleph supports an arbitrary number of concurrent sessions. The Session Manager uses a `DashMap` (concurrent hash map) for in-memory session state, backed by SQLite for persistence.
+
+### Session Isolation
+
+Each session is fully isolated:
+
+- **Message history** is independent per session
+- **Identity context** is bound to the session at creation time
+- **Tool permissions** are derived from the session's identity
+- **Memory retrieval** can be scoped to a workspace or persona
+
+### Sub-Agent Sessions
+
+When the main agent spawns a sub-agent, a child session is created:
+
+```rust
+// Parent session
+let parent_key = SessionKey::Main { agent_id: "main".into() };
+
+// Child session for translator sub-agent
+let child_key = SessionKey::Subagent {
+    parent: Box::new(parent_key),
+    subagent_id: "translator".into(),
+};
+// Serializes to: "subagent:agent:main:translator"
+```
+
+Sub-agent sessions have their own message history and can use different models, but they share the parent's identity context.
+
+### Session Coordinator
+
+For multi-agent resilience, the `SessionCoordinator` manages session pooling:
+
+```rust
+pub struct SessionCoordinator {
+    db: Arc<VectorDatabase>,
+    config: CoordinatorConfig,
+}
+
+impl SessionCoordinator {
+    /// Acquire an idle session or create a new one
+    pub async fn acquire_session(
+        &self,
+        agent_type: &str,
+        parent_id: &str,
+    ) -> Result<SessionHandle>;
+
+    /// Release session back to idle pool
+    pub async fn release_session(
+        &self,
+        session_id: &str,
+    ) -> Result<()>;
+}
+```
+
+Idle sub-agent sessions can be swapped to disk to reduce memory usage, then restored when needed.
+
+---
+
+## Session RPC Methods
+
+The Gateway exposes these methods for session management:
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `session.get` | Get session info | `{"session_key": "agent:main:main"}` |
+| `session.list` | List all sessions | `{"filter": "active"}` |
+| `session.history` | Get message history | `{"session_key": "...", "limit": 50}` |
+| `session.compact` | Trigger compression | `{"session_key": "..."}` |
+| `session.delete` | Delete a session | `{"session_key": "..."}` |
+
+---
+
+## Resilience
+
+The multi-agent resilience system stores task state alongside sessions for crash recovery:
+
+```sql
+CREATE TABLE agent_tasks (
+    id TEXT PRIMARY KEY,
+    parent_session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    task_prompt TEXT NOT NULL,
+    status TEXT NOT NULL,           -- pending, running, completed, failed, interrupted
+    risk_level TEXT NOT NULL,       -- low, high
+    checkpoint_snapshot_path TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE subagent_sessions (
+    id TEXT PRIMARY KEY,
+    agent_type TEXT NOT NULL,
+    status TEXT NOT NULL,           -- active, idle, swapped
+    parent_session_id TEXT NOT NULL,
+    total_tokens_used INTEGER DEFAULT 0,
+    total_tool_calls INTEGER DEFAULT 0
+);
+```
+
+On restart, the `RecoveryManager` evaluates interrupted tasks and decides whether to auto-resume (low risk) or request user confirmation (high risk).
+
+---
+
+## Related Pages
+
+- [Architecture Overview](./overview) -- System diagram with session positioning
+- [Gateway Architecture](./gateway) -- How session keys are resolved from incoming requests
+- [Harness](./harness) -- How sessions feed into the OTAF cycle
+- [Memory System](./memory) -- Where extracted facts are stored during compression

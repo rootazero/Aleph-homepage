@@ -1,0 +1,19 @@
+{
+  "title": "Aleph Docs",
+  "pages": [
+    "getting-started",
+    "philosophy",
+    "concepts",
+    "architecture",
+    "gateway",
+    "interfaces",
+    "tools",
+    "security",
+    "automation",
+    "cli",
+    "development",
+    "api",
+    "---",
+    "changelog"
+  ]
+}

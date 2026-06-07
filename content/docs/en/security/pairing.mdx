@@ -1,0 +1,306 @@
+---
+title: "Device Pairing"
+description: "8-character code-based pairing protocol for establishing trust between Aleph and new devices or channel senders"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+Device pairing is Aleph's trust establishment protocol. Before a new device (macOS app, iOS client, web browser) or a new chat sender (Telegram user, Discord member) can interact with Aleph, they must complete a pairing flow that verifies the connection is authorized by the server owner.
+
+The protocol uses short-lived **8-character Base32 codes** displayed to the owner, who confirms or rejects the pairing request. This is conceptually similar to Bluetooth pairing or TV app activation -- simple enough for non-technical users while cryptographically sound.
+
+**Source locations:**
+- Pairing manager: `src/gateway/security/pairing.rs`
+- Device store: `src/gateway/device_store.rs`
+- Crypto utilities: `src/gateway/security/crypto.rs`
+- Security store: `src/gateway/security/store.rs`
+- CLI commands: `src/bin/aleph_server/commands/pairing.rs`
+- Device commands: `src/bin/aleph_server/commands/devices.rs`
+
+## Why Pairing?
+
+Aleph is a self-hosted AI assistant with access to your files, shell, and online accounts. Allowing unrestricted connections would be a significant security risk. The pairing protocol solves three problems:
+
+1. **Identity verification** -- Ensures the connecting device or user is authorized by the server owner.
+2. **Key exchange** -- Devices submit their public key during pairing, enabling cryptographic authentication for future connections.
+3. **Scope limitation** -- Channel senders can be granted limited permissions at pairing time.
+
+## Pairing Types
+
+The system supports two types of pairing through a unified `PairingRequest` enum:
+
+### Device Pairing
+
+Used for desktop apps, mobile apps, and CLI clients:
+
+```rust
+PairingRequest::Device {
+    request_id: String,
+    code: String,              // 8-char Base32 code
+    device_name: String,       // "Alice's MacBook Pro"
+    device_type: Option<DeviceType>,  // iOS, macOS, Android, CLI, Web
+    public_key: Vec<u8>,       // Ed25519 public key (32 bytes)
+    fingerprint: DeviceFingerprint,   // SHA256(public_key)[..16]
+    remote_addr: Option<String>,
+    created_at: i64,
+    expires_at: i64,
+}
+```
+
+### Channel Pairing
+
+Used for verifying senders on chat platforms:
+
+```rust
+PairingRequest::Channel {
+    request_id: String,
+    code: String,              // 8-char Base32 code
+    channel: String,           // "telegram", "discord", "imessage"
+    sender_id: String,         // Platform-specific user ID
+    metadata: Option<Value>,   // Additional context
+    created_at: i64,
+    expires_at: i64,
+}
+```
+
+## Pairing Flow
+
+### Device Pairing Sequence
+
+```
+Device                          Gateway                         Owner
+  │                                │                              │
+  │── POST /pair/request ─────────►│                              │
+  │   { name, type, public_key }   │                              │
+  │                                │                              │
+  │◄── { code: "XKRF4B7N" } ──────│                              │
+  │                                │                              │
+  │   [Device displays code]       │── Notification ─────────────►│
+  │                                │   "New device: Alice's MB"   │
+  │                                │   "Code: XKRF4B7N"          │
+  │                                │                              │
+  │                                │◄── aleph pairing approve ────│
+  │                                │    XKRF4B7N                  │
+  │                                │                              │
+  │                                │── [Generate device_id] ──►   │
+  │                                │── [Store in device_store] ►  │
+  │                                │── [Issue signed token] ──►   │
+  │                                │                              │
+  │◄── { device_id, token } ───────│                              │
+  │                                │                              │
+  │   [Device stores token for     │                              │
+  │    future authentication]      │                              │
+```
+
+### Channel Sender Pairing Sequence
+
+When a new user sends a message through Telegram or Discord:
+
+```
+Sender                          Gateway                         Owner
+  │                                │                              │
+  │── "Hello, Aleph" ─────────────►│                              │
+  │   (from unknown sender)        │                              │
+  │                                │── Generate pairing code ──►  │
+  │◄── "Please verify with code:   │                              │
+  │     MRKV52HJ" ────────────────│                              │
+  │                                │── Notification ─────────────►│
+  │                                │   "New sender on Telegram"   │
+  │                                │   "Code: MRKV52HJ"          │
+  │                                │                              │
+  │                                │◄── aleph pairing approve ────│
+  │                                │    MRKV52HJ                  │
+  │                                │                              │
+  │                                │── [Store approved sender] ►  │
+  │                                │                              │
+  │◄── "You're verified!" ─────────│                              │
+```
+
+## Pairing Codes
+
+### Generation
+
+Pairing codes are 8-character strings drawn from a restricted Base32 alphabet that excludes visually confusing characters:
+
+```rust
+pub const PAIRING_CODE_LENGTH: usize = 8;
+pub const PAIRING_CODE_CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+```
+
+Excluded characters: `0` (zero), `1` (one), `I` (capital I), `O` (capital O). This avoids confusion when codes are read aloud or displayed in ambiguous fonts.
+
+The code space is `28^8 = ~377 billion` possible codes, making collisions effectively impossible within the 10-request capacity window.
+
+### Expiration
+
+Codes expire after **5 minutes** by default:
+
+```rust
+const DEFAULT_PAIRING_EXPIRY_MS: i64 = 5 * 60 * 1000;
+```
+
+Expired codes are automatically rejected. A cleanup routine periodically purges expired requests from the database.
+
+### Capacity Limits
+
+To prevent abuse, the system limits pending pairing requests:
+
+```rust
+const MAX_PENDING_REQUESTS: usize = 10;
+```
+
+If the limit is reached, new pairing requests are rejected with a `TooManyPending` error until existing requests expire or are resolved.
+
+## Cryptographic Foundation
+
+### Ed25519 Key Pairs
+
+Devices generate an Ed25519 key pair at installation time. The public key is submitted during pairing:
+
+```rust
+pub fn generate_keypair() -> ([u8; 32], [u8; 32]) {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    (signing_key.to_bytes(), verifying_key.to_bytes())
+}
+```
+
+### Device Fingerprints
+
+Each device is identified by a fingerprint derived from its public key -- the first 16 hex characters of `SHA256(public_key)`:
+
+```rust
+pub struct DeviceFingerprint(pub String);
+
+impl DeviceFingerprint {
+    pub fn from_public_key(public_key: &[u8]) -> Self {
+        let hash = Sha256::digest(public_key);
+        let hex = hex::encode(hash);
+        Self(hex[..16].to_string())
+    }
+}
+```
+
+Example fingerprint: `a1b2c3d4e5f6a7b8`
+
+### Token Signing
+
+After pairing is confirmed, the Gateway issues a signed token using HMAC-SHA256:
+
+```rust
+pub fn hmac_sign(secret: &[u8], token: &str) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret)
+        .expect("HMAC accepts any key length");
+    mac.update(token.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+```
+
+The issued token has the format `{token}:{signature}`. Verification uses constant-time comparison to prevent timing attacks:
+
+```rust
+pub fn hmac_verify(secret: &[u8], token: &str, signature: &str) -> Result<(), CryptoError> {
+    let expected = hmac_sign(secret, token);
+    if subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), signature.as_bytes()).into() {
+        Ok(())
+    } else {
+        Err(CryptoError::HmacVerificationFailed)
+    }
+}
+```
+
+## Device Management
+
+### Approved Device Storage
+
+Approved devices are stored in a SQLite database at `~/.aleph/devices.db`:
+
+```rust
+pub struct ApprovedDevice {
+    pub device_id: String,
+    pub device_name: String,
+    pub device_type: Option<String>,  // macos, ios, android, cli, web
+    pub approved_at: String,          // ISO 8601
+    pub last_seen_at: Option<String>,
+    pub permissions: Vec<String>,     // ["*"] = full access
+}
+```
+
+### CLI Commands
+
+Manage devices and pairing requests through the CLI:
+
+```bash
+# List pending pairing requests
+aleph pairing list
+
+# Approve a pairing request
+aleph pairing approve XKRF4B7N
+
+# Reject a pairing request
+aleph pairing reject XKRF4B7N
+
+# List approved devices
+aleph devices list
+
+# Revoke a device
+aleph devices revoke <device-id>
+```
+
+Example output for `aleph devices list`:
+
+```
+Approved devices:
+DEVICE ID                            NAME                 TYPE       APPROVED AT
+------------------------------------------------------------------------------------------
+a1b2c3d4-e5f6-...                    Alice's MacBook      macos      2026-01-28T12:00:00
+b2c3d4e5-f6a7-...                    Alice's iPhone       ios        2026-02-01T09:30:00
+```
+
+### Revoking Access
+
+When a device is revoked, it is removed from the approved devices database. Any existing tokens for that device become invalid:
+
+```rust
+pub fn revoke_device(&self, device_id: &str) -> SqliteResult<bool> {
+    let rows = conn.execute(
+        "DELETE FROM approved_devices WHERE device_id = ?1",
+        params![device_id],
+    )?;
+    Ok(rows > 0)
+}
+```
+
+### Updating Permissions
+
+Device permissions can be narrowed after initial pairing:
+
+```rust
+pub fn update_permissions(
+    &self,
+    device_id: &str,
+    permissions: &[String],
+) -> SqliteResult<bool>;
+```
+
+<Callout type="info">
+By default, newly approved devices receive full access (`["*"]`). You can restrict a device to specific tool categories (e.g., `["translate", "search"]`) after pairing.
+</Callout>
+
+## Security Guarantees
+
+1. **Short-lived codes** -- Pairing codes expire in 5 minutes, limiting the attack window.
+2. **Capacity throttling** -- Maximum 10 pending requests prevents resource exhaustion.
+3. **Unique codes** -- The system retries up to 10 times to generate a code that does not collide with existing pending requests.
+4. **Owner-only approval** -- Only the server owner (via CLI or authenticated interface) can approve pairing requests.
+5. **One-time use** -- Confirmed pairing codes are deleted from the database immediately.
+6. **Constant-time verification** -- Token verification uses constant-time comparison to prevent timing side-channels.
+7. **Cryptographic identity** -- Devices are identified by Ed25519 public keys, enabling future challenge-response authentication.
+
+## See Also
+
+- [Execution Approval](/docs/en/security/exec-approval) -- Permission system that paired devices interact with
+- [IPC Protocol](/docs/en/security/ipc) -- Local communication protocol used by paired desktop clients
+- [Gateway Authentication](/docs/en/gateway/auth) -- How authenticated sessions are established after pairing

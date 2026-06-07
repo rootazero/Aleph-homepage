@@ -1,0 +1,102 @@
+---
+title: "Dispatcher"
+description: "Tool registry, risk evaluation, and semantic tool retrieval (hydration)."
+---
+
+# Dispatcher
+
+The Dispatcher manages tool registration, discovery, and risk evaluation. It aggregates tools from multiple sources, assesses their risk levels, and provides semantic retrieval so the Thinker can discover relevant tools beyond the static tool list.
+
+**Location**: `src/dispatcher/`
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    Dispatcher                        │
+├──────────────────────────────────────────────────────┤
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐│
+│  │ ToolRegistry │  │ RiskEvaluator│  │ ToolIndex    ││
+│  │• Native      │  │• RiskLevel   │  │• Semantic    ││
+│  │• MCP         │  │• Assessment  │  │  retrieval   ││
+│  │• Skills      │  │              │  │• Hydration   ││
+│  │• Custom      │  │              │  │              ││
+│  └──────────────┘  └──────────────┘  └──────────────┘│
+└──────────────────────────────────────────────────────┘
+```
+
+---
+
+## Tool Registry
+
+`ToolRegistry` aggregates all available tools from multiple sources:
+
+| Source | Type | Example |
+|--------|------|---------|
+| **Native** | Built-in Rust tools | `memory_search`, `note_manage` |
+| **MCP** | External MCP servers | GitHub, filesystem |
+| **Skills** | Dynamically registered skills | Custom skill tools |
+| **Custom** | User-defined tools | Configured extensions |
+
+---
+
+## Risk Evaluation
+
+`RiskEvaluator` assigns a `RiskLevel` to each tool:
+
+```rust
+pub enum RiskLevel {
+    Safe,       // Read-only, no side effects
+    Low,        // Minor side effects (e.g., file reads)
+    Medium,     // Moderate risk (e.g., file writes)
+    High,       // Significant risk (e.g., code execution)
+    Critical,   // Destructive operations
+}
+```
+
+---
+
+## Tool Index (Semantic Retrieval)
+
+The `ToolIndex` enables semantic tool discovery. Instead of relying solely on tool names and descriptions, the system can retrieve tools based on the semantic meaning of the user's query.
+
+```rust
+pub struct HydrationResult {
+    pub tools: Vec<HydratedTool>,
+    pub level: HydrationLevel,
+}
+
+pub enum HydrationLevel {
+    None,       // No hydration performed
+    Partial,    // Some tools hydrated
+    Full,       // All relevant tools hydrated
+}
+```
+
+The `HydrationPipeline` coordinates semantic retrieval:
+1. **Purpose Inference** — Infer the user's intent from the query
+2. **Tool Retrieval** — Retrieve candidate tools via semantic similarity
+3. **Tool Meta Enrichment** — Augment tool definitions with contextual metadata
+
+---
+
+## Key Types
+
+| Type | Purpose | Location |
+|------|---------|----------|
+| `ToolRegistry` | Aggregates all tool sources | `src/dispatcher/registry/` |
+| `RiskEvaluator` | Assesses tool risk levels | `src/dispatcher/risk.rs` |
+| `ToolIndex` | Semantic tool index | `src/dispatcher/tool_index/` |
+| `HydrationResult` | Result of semantic retrieval | `src/dispatcher/tool_index/` |
+| `ToolDefinition` | Unified tool metadata | `src/dispatcher/types.rs` |
+| `ToolSource` | Origin of a tool | `src/dispatcher/types.rs` |
+
+---
+
+## See Also
+
+- [Executor](./executor) — Tool execution engine
+- [Harness](./harness) — Think→Act loop
+- [Tool Architecture](./tools) — Tool development

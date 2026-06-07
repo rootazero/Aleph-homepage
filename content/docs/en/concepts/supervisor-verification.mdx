@@ -1,0 +1,159 @@
+---
+title: "Process Supervisor"
+description: "PTY-based process control for external CLI tools and stop-hook verification infrastructure for agent self-checks."
+---
+
+The `process_supervisor` and `verification` modules handle external process control and agent stop-time validation. The supervisor spawns CLI tools in pseudo-terminals and monitors their output, while verification provides hooks that run before the agent loop stops.
+
+## Design Philosophy
+
+1. **PTY-based control** — External tools run in a pseudo-terminal for realistic I/O
+2. **Event detection** — Output is parsed for semantic events (approval requests, errors)
+3. **Prompt-level verification** — Agent self-checks live in prompts, not Rust code (R8, R10)
+
+---
+
+## Process Supervisor
+
+### PtySupervisor
+
+Spawns and controls external CLI tools:
+
+```rust
+pub struct PtySupervisor {
+    master: Box<dyn MasterPty>,
+    reader: mpsc::Receiver<String>,
+    running: AtomicBool,
+}
+
+impl PtySupervisor {
+    pub fn spawn(command: &str) -> Result<Self> { /* ... */ }
+
+    pub fn send_input(&self,
+        input: &str,
+    ) -> Result<()> { /* ... */ }
+
+    pub fn read_output(&self) -> Option<String> { /* ... */ }
+}
+```
+
+**Capabilities:**
+- Spawn processes in a pseudo-terminal
+- Read output in real-time via a background reader thread
+- Inject input (commands, approvals)
+- Detect semantic events in output
+
+### Event Detection
+
+Output is scanned for patterns indicating:
+- Approval requests (e.g., "Allow this action?")
+- Error conditions
+- Completion signals
+
+**Thread safety:** Reader thread communicates with the main thread via `mpsc` + `AtomicBool` with correct `Acquire/Release` ordering.
+
+---
+
+## Stop Hooks
+
+Stop hooks run before the agent loop terminates, enabling external validation:
+
+```rust
+#[async_trait]
+pub trait StopHookHandler: Send + Sync {
+    fn name(&self) -> &str;
+
+    async fn evaluate(
+        &self,
+        ctx: &StopHookContext,
+        cancel: &CancellationToken,
+    ) -> StopHookVerdict;
+}
+```
+
+### ShellStopHook
+
+Runs an external shell command:
+- **Exit 0:** Allow stop
+- **Exit 2:** Block stop (stdout = reason)
+- **Other:** Hook error (logged, does not block)
+
+```rust
+pub struct ShellStopHook {
+    hook_name: String,
+    command: String,
+    timeout: Duration,
+}
+```
+
+### StopHookContext
+
+Passed to hooks via stdin as JSON:
+
+```rust
+pub struct StopHookContext {
+    pub final_text: Option<String>,
+    pub iterations: usize,
+    pub tool_calls_made: usize,
+    pub stop_reason: String,
+}
+```
+
+### Verdict Aggregation
+
+```rust
+pub enum StopHookVerdict {
+    Allow,
+    Block { reason: String },
+    Error { hook_name: String, message: String },
+}
+```
+
+Hooks run in parallel via `join_all`. The first `Block` verdict stops the agent; `Error` verdicts are logged but don't block.
+
+### Configuration
+
+```toml
+[[stop_hooks]]
+name = "lint-check"
+command = "cargo clippy -- -D warnings"
+timeout_secs = 60
+```
+
+---
+
+## Verification Model
+
+Aleph's verification logic lives in prompts (see `src/thinker/layers/agent_role.rs`):
+
+Agents are instructed to emit a `VERDICT: PASS|FAIL|PARTIAL` block summarizing their self-checks before stopping. Per redlines R8 (LLM Sovereignty) and R10 (Intelligence Lives in the Prompt), no Rust-level verifier, judge, or critic is introduced.
+
+**Note:** A `VerifyStopHook` Rust struct existed from April 2026 through P0 but was never wired into production. It was deleted in P4 because the prompt-level mechanism fully covers the use case.
+
+---
+
+## Safety Properties
+
+- **No unwrap in production** — All error paths use `map_err` + `?`
+- **String::from_utf8_lossy** — Safe handling of potentially invalid UTF-8 output
+- **Atomic ordering** — `Acquire/Release` for reader thread synchronization
+- **Timeout** — Shell hooks have configurable timeouts (default 30s)
+- **Cancellation** — Hooks respect `CancellationToken` for graceful shutdown
+
+---
+
+## Code Location
+
+**Supervisor:**
+- `src/process_supervisor/mod.rs` — Module entry point
+- `src/process_supervisor/pty.rs` — PTY spawn and I/O
+- `src/process_supervisor/types.rs` — Event types
+
+**Verification:**
+- `src/verification/mod.rs` — Module entry point
+- `src/verification/stop_hooks.rs` — Hook trait, ShellStopHook, execution
+
+## See Also
+
+- [Agent Runtime](./agent-runtime) — Agent lifecycle and stop conditions
+- [Task Scheduling](./task-scheduling) — Lane-based execution

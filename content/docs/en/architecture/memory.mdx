@@ -1,0 +1,409 @@
+---
+title: "Memory Architecture"
+description: "Deep dive into Aleph's memory storage, retrieval, and background processing implementation."
+---
+
+This document provides a detailed look at the implementation of Aleph's memory system. For a high-level overview, see [Memory System Concepts](../concepts/memory).
+
+---
+
+## Storage Architecture
+
+### Four-Trait Backend Design
+
+The storage layer uses **four separate traits** rather than a monolithic store. Each caller depends only on the capabilities it needs:
+
+```rust
+// src/memory/store/mod.rs
+pub trait NoteStore: Send + Sync { /* ... */ }
+pub trait RawMemoryStore: Send + Sync { /* ... */ }
+pub trait DreamStore: Send + Sync { /* ... */ }
+pub trait CompressionStore: Send + Sync { /* ... */ }
+```
+
+All four are implemented by `SqliteMemoryBackend`:
+
+```rust
+pub struct SqliteMemoryBackend {
+    db: Arc<Mutex<Connection>>,
+}
+
+pub type MemoryBackend = Arc<SqliteMemoryBackend>;
+```
+
+### Schema (SQLite + sqlite-vec)
+
+#### Core Tables
+
+| Table | Purpose |
+|---|---|
+| `raw_memories` | Session transcripts, attachment text, `is_processed` flag |
+| `notes_index` | Knowledge note metadata (title, category, tags, hash) |
+| `notes_links` | Bidirectional wikilink graph |
+| `notes_fts` | FTS5 full-text index over note content |
+| `notes_vec_map` | Links `(path, agent_id)` to numeric rowids |
+| `notes_vec_{dim}` | sqlite-vec virtual tables (768/1024/1536 dims) |
+| `memory_events` | Immutable event log (event-sourced mutations) |
+| `context_anchors` | Fact-to-session linkage for provenance |
+| `dream_status` | Daily/weekly dream run tracking |
+| `daily_insights` | Dream daemon output cache |
+
+#### sqlite-vec Virtual Tables
+
+```sql
+-- Created per embedding dimension
+CREATE VIRTUAL TABLE notes_vec_768 USING vec0(
+    embedding float[768]
+);
+CREATE VIRTUAL TABLE notes_vec_1024 USING vec0(
+    embedding float[1024]
+);
+CREATE VIRTUAL TABLE notes_vec_1536 USING vec0(
+    embedding float[1536]
+);
+```
+
+The `notes_vec_map` table bridges human-readable `(path, agent_id)` pairs to numeric rowids required by vec0 tables.
+
+---
+
+## Retrieval Pipeline
+
+### NoteFactRetrieval
+
+The primary retrieval interface for knowledge notes:
+
+```rust
+// src/memory/note_retrieval/mod.rs
+#[async_trait]
+pub trait NoteFactRetrieval: Send + Sync {
+    async fn retrieve(
+        &self,
+        query: &str,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ScoredFact<MemoryFact>>, AlephError>;
+}
+```
+
+### Hybrid Search (Vector + FTS)
+
+```
+Query
+  ├── Vector Search (sqlite-vec) → candidates with distance scores
+  ├── FTS Search (FTS5) → candidates with match scores
+  └── RRF Fusion → unified ranked list
+```
+
+Reciprocal Rank Fusion (RRF) formula:
+```
+RRF_score = Σ 1 / (k + rank_i)
+```
+where `k = 60` (constant), `rank_i` = rank from source `i`.
+
+### Scoring Pipeline (6 Stages)
+
+| Stage | Description | Default |
+|---|---|---|
+| `cosine_rerank` | Blend vector-search score with fresh cosine similarity | enabled |
+| `recency_boost` | Additive boost for recently created facts | +0.1 |
+| `length_normalization` | Penalize very long content | enabled |
+| `time_decay` | Exponential decay by age, floor 0.5 | half-life 30 days |
+| `hard_min_score` | Drop candidates below threshold | 0.35 |
+| `mmr_diversity` | Maximal Marginal Relevance — defer near-duplicates to tail | λ = 0.5 |
+
+**Deleted stages:** `importance_weight` (removed in Sovereignty Cleanup).
+
+---
+
+## Background Processing
+
+### Compression Service
+
+Runs in real-time during idle moments:
+
+```
+Raw Memories (is_processed = false)
+  → SessionCompactor: per-session compaction
+  → NoteIndexer: create/update knowledge notes
+  → mark is_processed = true
+```
+
+### Dream Daemon
+
+Runs during system idle, with two cadences:
+
+**Daily Pipeline (5 stages):**
+```
+[Consolidate] → [Drift] → [Lint] → [Decay] → [DailyDigest]
+```
+
+**Weekly Pipeline (6 stages):**
+```
+[Consolidate] → [Drift] → [Synthesis] → [Lint] → [Decay] → [DailyDigest]
+```
+
+```rust
+// src/memory/dreaming/mod.rs
+pub fn ensure_dream_daemon();
+pub fn record_activity();  // Call on user activity to reset idle timer
+```
+
+---
+
+## Working Memory Assembly
+
+### HybridAssembler (Spec 2)
+
+Replaces the legacy `ContextComptroller::arbitrate` path. Produces a `MemoryEnvelope` with explicit slots:
+
+```rust
+// src/memory/assembler/mod.rs
+pub struct MemoryEnvelope {
+    pub system_slots: Vec<MemorySlot>,      // Always-injected facts
+    pub user_slots: Vec<MemorySlot>,        // User-query relevant facts
+    pub scratchpad: Option<String>,         // Working notes
+}
+
+pub struct MemorySlot {
+    pub content: String,
+    pub source: String,
+    pub score: f32,
+}
+```
+
+```rust
+#[async_trait]
+pub trait WorkingMemoryAssembler: Send + Sync {
+    async fn assemble(
+        &self,
+        query: &str,
+        agent_id: &str,
+        session_id: Option<&str>,
+        budget: AssemblyBudget,
+    ) -> Result<MemoryEnvelope, AlephError>;
+}
+```
+
+### Assembly Budget
+
+```rust
+pub struct AssemblyBudget {
+    pub max_tokens: usize,      // Target token budget for assembled memory
+    pub min_score: f32,         // Minimum fact score threshold
+    pub max_facts: usize,       // Maximum number of facts to include
+}
+```
+
+---
+
+## Curated Hot Memory (Spec A)
+
+A manually-curated, frozen snapshot of critical facts that bypasses normal retrieval:
+
+```rust
+// src/memory/curated/mod.rs
+pub struct CuratedHotMemory {
+    pub facts: Vec<CuratedFact>,
+    pub frozen_at: i64,
+}
+
+pub struct CuratedFact {
+    pub content: String,
+    pub priority: u8,        // 1-10, higher = more important
+    pub source: String,
+}
+```
+
+- Created via the `remember` builtin tool
+- Stored in `~/.aleph/memory/curated/{agent_id}.json`
+- Injected into every prompt unconditionally (up to token budget)
+- **Frozen snapshot** — changes require explicit re-curation
+
+---
+
+## Memory Extensions (Spec 4)
+
+Pluggable extensions for custom memory behaviors:
+
+```rust
+// src/memory/extensions/mod.rs
+#[async_trait]
+pub trait MemoryExtension: Send + Sync {
+    fn name(&self) -> &str;
+    
+    async fn on_memory_created(
+        &self,
+        event: &MemoryEvent,
+        backend: &MemoryBackend,
+    ) -> Result<(), AlephError>;
+    
+    async fn on_memory_retrieved(
+        &self,
+        query: &str,
+        facts: &[MemoryFact],
+        backend: &MemoryBackend,
+    ) -> Result<Vec<MemoryFact>, AlephError>;
+    
+    async fn on_session_end(
+        &self,
+        session_id: &str,
+        backend: &MemoryBackend,
+    ) -> Result<(), AlephError>;
+}
+
+pub struct ExtensionRegistry {
+    extensions: Vec<Box<dyn MemoryExtension>>,
+}
+```
+
+**Lifecycle hooks:**
+- `on_memory_created` — Triggered after note creation/update
+- `on_memory_retrieved` — Can modify/filter retrieved facts
+- `on_session_end` — Cleanup or summarization
+
+---
+
+## Memory Reflector (Spec 2)
+
+A synthesis layer on top of `HybridAssembler`:
+
+```rust
+// src/memory/reflector/mod.rs
+pub struct MemoryReflector {
+    assembler: Arc<dyn WorkingMemoryAssembler>,
+    llm: Arc<dyn LlmBackend>,
+}
+
+impl MemoryReflector {
+    pub async fn reflect(
+        &self,
+        query: &str,
+        agent_id: &str,
+    ) -> Result<ReflectionResult, AlephError>;
+}
+
+pub struct ReflectionResult {
+    pub answer: String,
+    pub sources: Vec<MemorySource>,
+    pub confidence: f32,
+}
+```
+
+Exposed via the `memory_reflect` builtin tool. Returns a coherent LLM-synthesised answer with cited sources.
+
+---
+
+## Event Sourcing
+
+Every note mutation is captured as an immutable `MemoryEvent`:
+
+```rust
+// src/memory/events/mod.rs
+pub struct MemoryEvent {
+    pub id: i64,
+    pub event_type: MemoryEventType,
+    pub note_path: String,
+    pub timestamp: i64,
+    pub payload: String,  // JSON
+}
+
+pub enum MemoryEventType {
+    NoteCreated,
+    NoteUpdated,
+    NoteDeleted,
+    LinkAdded,
+    LinkRemoved,
+    TagChanged,
+}
+```
+
+Events enable:
+- Audit trail for all memory changes
+- Time-travel queries
+- Conflict resolution
+- Extension hook triggers
+
+---
+
+## Namespace Isolation
+
+Memory namespaces provide scoped storage:
+
+```rust
+// src/memory/namespace/mod.rs
+pub struct MemoryNamespace {
+    pub id: String,
+    pub parent: Option<String>,
+    pub isolation_level: IsolationLevel,
+}
+
+pub enum IsolationLevel {
+    Full,       // Completely isolated
+    Inherited,  // Can read parent, writes isolated
+    Shared,     // Read-write shared with parent
+}
+```
+
+---
+
+## Safety Properties
+
+| Concern | Mitigation |
+|---|---|
+| UTF-8 truncation | `chars().take(n)` (never mid-character) |
+| Lock poisoning | `unwrap_or_else(\|e\| e.into_inner())` |
+| SQL injection | Parameterized queries via rusqlite |
+| Vector bounds | Cosine clamped to `[-1.0, 1.0]` |
+| Token overflow | AssemblyBudget enforces limits |
+
+---
+
+## Deleted Components (Sovereignty Cleanup)
+
+The following were removed on 2026-04-12:
+
+| Component | Replacement |
+|---|---|
+| `MemoryTier` enum | Structural distinction (raw vs notes) |
+| `MemoryFact.strength` | Removed (LLM decides relevance) |
+| `MemoryFact.confidence` | Removed (LLM decides relevance) |
+| `ValueEstimator` | Deleted entirely |
+| `importance_weight` scoring | Deleted |
+
+Rationale: **LLM sovereignty** (R8) — deterministic heuristics for "importance" cannot outperform the LLM's own judgment about what matters in context.
+
+---
+
+## Module File Map
+
+| Path | Contents |
+|---|---|
+| `src/memory/mod.rs` | Module entry, re-exports |
+| `src/memory/assembler/mod.rs` | WorkingMemoryAssembler trait, HybridAssembler impl |
+| `src/memory/curated/mod.rs` | CuratedHotMemory, remember tool integration |
+| `src/memory/extensions/mod.rs` | MemoryExtension trait, ExtensionRegistry |
+| `src/memory/reflector/mod.rs` | MemoryReflector, ReflectionResult |
+| `src/memory/note_retrieval/mod.rs` | NoteFactRetrieval trait, hybrid search impl |
+| `src/memory/notes/note.rs` | KnowledgeNote struct |
+| `src/memory/notes/store.rs` | NoteStore trait |
+| `src/memory/notes/indexer.rs` | NoteIndexer (Markdown → SQLite) |
+| `src/memory/store/mod.rs` | RawMemoryStore, DreamStore, CompressionStore traits |
+| `src/memory/store/sqlite/mod.rs` | SqliteMemoryBackend impl |
+| `src/memory/store/sqlite/vec.rs` | sqlite-vec integration |
+| `src/memory/retrieval/mod.rs` | Generic retrieval interfaces |
+| `src/memory/scoring_pipeline/mod.rs` | 6-stage scoring |
+| `src/memory/dreaming/mod.rs` | DreamDaemon, pipeline stages |
+| `src/memory/events/mod.rs` | MemoryEvent, event sourcing |
+| `src/memory/transcript_indexer/mod.rs` | Transcript chunking and indexing |
+| `src/memory/namespace/mod.rs` | MemoryNamespace, isolation levels |
+| `src/memory/context_comptroller/mod.rs` | Legacy budget manager (deprecated) |
+
+---
+
+## Related Documents
+
+- [Memory System Concepts](../concepts/memory) — High-level overview
+- [Memory Evolution](memory-evolution) — Spec history (Spec 1-4, A-C)
+- [Gateway: Memory Methods](../gateway/methods/memory) — API reference
+- [Thinker](../concepts/thinker) — How memory is injected into prompts

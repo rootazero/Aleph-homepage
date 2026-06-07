@@ -1,0 +1,637 @@
+---
+title: "Creating Tools"
+description: "Step-by-step guide to building custom tools for Aleph"
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+You can extend Aleph's capabilities by creating custom tools. There are three approaches, ordered by integration depth:
+
+| Approach | Language | Registration | Best For |
+|----------|----------|-------------|----------|
+| **Rust built-in** | Rust | Compile-time | Core capabilities, maximum performance |
+| **MCP server** | Any (Node.js, Python, etc.) | Runtime | External integrations, polyglot teams |
+| **Markdown skill** | Markdown + prompts | Runtime | Prompt-based workflows, no code needed |
+
+---
+
+## Creating a Rust Built-in Tool
+
+This is the most integrated approach. Your tool is compiled into Aleph's binary and uses static dispatch for zero-cost abstraction.
+
+### Step 1: Define the Argument Type
+
+Create a struct for your tool's input arguments. Derive `JsonSchema` for automatic schema generation — the doc comments on each field become the parameter descriptions that the LLM sees:
+
+```rust
+// src/builtin_tools/weather.rs
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Arguments for the weather tool
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WeatherArgs {
+    /// City name or coordinates (e.g., "Tokyo" or "35.6762,139.6503")
+    pub location: String,
+
+    /// Temperature unit: "celsius" or "fahrenheit" (default: celsius)
+    #[serde(default = "default_unit")]
+    pub unit: String,
+
+    /// Number of forecast days (1-7, default: 1)
+    #[serde(default = "default_days")]
+    pub days: u8,
+}
+
+fn default_unit() -> String { "celsius".to_string() }
+fn default_days() -> u8 { 1 }
+```
+
+### Step 2: Define the Output Type
+
+The output struct is serialized to JSON and returned to the LLM:
+
+```rust
+/// Output from the weather tool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeatherOutput {
+    /// City name
+    pub city: String,
+    /// Current temperature
+    pub temperature: f64,
+    /// Temperature unit
+    pub unit: String,
+    /// Weather condition (e.g., "sunny", "cloudy", "rain")
+    pub condition: String,
+    /// Forecast for upcoming days
+    pub forecast: Vec<ForecastDay>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForecastDay {
+    pub date: String,
+    pub high: f64,
+    pub low: f64,
+    pub condition: String,
+}
+```
+
+### Step 3: Implement the AlephTool Trait
+
+```rust
+use async_trait::async_trait;
+use crate::error::Result;
+use crate::tools::AlephTool;
+
+/// Weather information tool
+#[derive(Clone)]
+pub struct WeatherTool {
+    api_key: String,
+    client: reqwest::Client,
+}
+
+impl WeatherTool {
+    pub fn new(api_key: String) -> Self {
+        Self {
+            api_key,
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl AlephTool for WeatherTool {
+    const NAME: &'static str = "weather";
+
+    const DESCRIPTION: &'static str = "\
+        Get current weather and forecast for a location. \
+        Returns temperature, conditions, and multi-day forecast.";
+
+    type Args = WeatherArgs;
+    type Output = WeatherOutput;
+
+    /// Optional: mark as requiring confirmation for sensitive operations
+    fn requires_confirmation(&self) -> bool {
+        false
+    }
+
+    /// Optional: provide usage examples for few-shot learning
+    fn examples(&self) -> Option<Vec<String>> {
+        Some(vec![
+            "weather(location='Tokyo', unit='celsius', days=3)".to_string(),
+            "weather(location='New York')".to_string(),
+            "weather(location='51.5074,-0.1278', unit='fahrenheit')".to_string(),
+        ])
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output> {
+        // Your implementation here
+        let response = self.client
+            .get("https://api.weather.example.com/v1/forecast")
+            .query(&[
+                ("location", &args.location),
+                ("unit", &args.unit),
+                ("days", &args.days.to_string()),
+                ("key", &self.api_key),
+            ])
+            .send()
+            .await?
+            .json::<WeatherOutput>()
+            .await?;
+
+        Ok(response)
+    }
+}
+```
+
+### Step 4: Register the Tool
+
+Add a builder method to `AlephToolServer` in `src/tools/builtin.rs`:
+
+```rust
+impl AlephToolServer {
+    /// Register the weather tool
+    pub fn with_weather(self, api_key: String) -> Self {
+        self.tool(WeatherTool::new(api_key))
+    }
+}
+```
+
+Then register it during server construction:
+
+```rust
+let server = AlephToolServer::new()
+    .with_bash()
+    .with_file_ops()
+    .with_weather(weather_api_key);
+```
+
+### Step 5: Export from the Module
+
+Add your tool to `src/builtin_tools/mod.rs`:
+
+```rust
+pub mod weather;
+pub use weather::{WeatherArgs, WeatherOutput, WeatherTool};
+```
+
+### Generated JSON Schema
+
+When your tool is registered, Aleph auto-generates this tool definition for the LLM:
+
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "weather",
+    "description": "Get current weather and forecast for a location. Returns temperature, conditions, and multi-day forecast.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "description": "City name or coordinates (e.g., \"Tokyo\" or \"35.6762,139.6503\")"
+        },
+        "unit": {
+          "type": "string",
+          "description": "Temperature unit: \"celsius\" or \"fahrenheit\" (default: celsius)",
+          "default": "celsius"
+        },
+        "days": {
+          "type": "integer",
+          "description": "Number of forecast days (1-7, default: 1)",
+          "default": 1
+        }
+      },
+      "required": ["location"]
+    }
+  }
+}
+```
+
+The `required` array is automatically computed — only fields without `#[serde(default)]` are required.
+
+---
+
+## Creating an MCP Server Tool
+
+For tools in languages other than Rust, or when you want to iterate without recompiling Aleph, create an MCP server. The server runs as a separate process and communicates with Aleph via the Model Context Protocol.
+
+### Node.js Example
+
+Using the official `@modelcontextprotocol/sdk`:
+
+```typescript
+// weather-server/index.ts
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+const server = new Server(
+  { name: "weather-server", version: "1.0.0" },
+  { capabilities: { tools: {} } }
+);
+
+// Define the tool
+server.setRequestHandler("tools/list", async () => ({
+  tools: [
+    {
+      name: "get_weather",
+      description: "Get current weather for a location",
+      inputSchema: {
+        type: "object",
+        properties: {
+          location: {
+            type: "string",
+            description: "City name or coordinates",
+          },
+          unit: {
+            type: "string",
+            enum: ["celsius", "fahrenheit"],
+            default: "celsius",
+          },
+        },
+        required: ["location"],
+      },
+    },
+  ],
+}));
+
+// Handle tool calls
+server.setRequestHandler("tools/call", async (request) => {
+  if (request.params.name === "get_weather") {
+    const { location, unit } = request.params.arguments;
+
+    const response = await fetch(
+      `https://api.weather.example.com/v1?q=${location}&units=${unit}`
+    );
+    const data = await response.json();
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(data, null, 2),
+        },
+      ],
+    };
+  }
+
+  throw new Error(`Unknown tool: ${request.params.name}`);
+});
+
+// Start the server
+const transport = new StdioServerTransport();
+await server.connect(transport);
+```
+
+### Python Example
+
+Using the official `mcp` package:
+
+```python
+# weather_server.py
+import json
+import httpx
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent
+
+app = Server("weather-server")
+
+@app.list_tools()
+async def list_tools():
+    return [
+        Tool(
+            name="get_weather",
+            description="Get current weather for a location",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "City name or coordinates",
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": ["celsius", "fahrenheit"],
+                        "default": "celsius",
+                    },
+                },
+                "required": ["location"],
+            },
+        )
+    ]
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict):
+    if name == "get_weather":
+        location = arguments["location"]
+        unit = arguments.get("unit", "celsius")
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.weather.example.com/v1",
+                params={"q": location, "units": unit},
+            )
+            data = resp.json()
+
+        return [TextContent(type="text", text=json.dumps(data, indent=2))]
+
+    raise ValueError(f"Unknown tool: {name}")
+
+async def main():
+    async with stdio_server() as (read, write):
+        await app.run(read, write)
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+```
+
+### Registering with Aleph
+
+Add the server to `~/.aleph/mcp_config.json`:
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "weather": {
+      "id": "weather",
+      "name": "Weather Server",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["tsx", "/path/to/weather-server/index.ts"],
+      "requires_runtime": "node",
+      "auto_start": true,
+      "timeout_seconds": 30
+    }
+  }
+}
+```
+
+For the Python example:
+
+```json
+{
+  "weather-py": {
+    "id": "weather-py",
+    "name": "Weather Server (Python)",
+    "transport": "stdio",
+    "command": "python",
+    "args": ["/path/to/weather_server.py"],
+    "requires_runtime": "python",
+    "auto_start": true
+  }
+}
+```
+
+Or use the McpManager API programmatically:
+
+```rust
+let config = McpManagerConfig::stdio(
+    "weather",
+    "Weather Server",
+    "npx",
+)
+.with_args(vec!["tsx".to_string(), "/path/to/index.ts".to_string()])
+.with_runtime("node")
+.with_timeout(30);
+
+handle.add_server(config).await?;
+```
+
+---
+
+## Creating a Markdown Skill
+
+Markdown skills are the simplest way to extend Aleph — no code required. They define prompt-based workflows in `SKILL.md` files.
+
+### Skill File Structure
+
+Create a `SKILL.md` file in one of the skill directories:
+
+```markdown
+---
+name: summarize_article
+description: Summarize a web article into key points
+---
+
+# Summarize Article
+
+Given the URL: {{url}}
+
+Please:
+1. Fetch the content from the URL
+2. Identify the main topic and key arguments
+3. Produce a concise summary with bullet points
+4. Note any important data or statistics mentioned
+
+Output the summary in markdown format.
+```
+
+### Skill Directories
+
+Aleph loads skills from configured directories:
+
+```rust
+let server = AlephToolServer::new_with_skills(vec![
+    PathBuf::from("skills"),
+    PathBuf::from("~/.aleph/skills"),
+]).await;
+```
+
+Skills are auto-loaded at startup and registered as dynamic tools in the `AlephToolServer`.
+
+<Callout type="info">
+Markdown skills support hot-reload via a file watcher. Changes to `SKILL.md` files are detected and the skill is automatically re-registered without restarting Aleph.
+</Callout>
+
+---
+
+## Tool Design Best Practices
+
+### Naming Conventions
+
+- Use `snake_case` for tool names: `web_fetch`, `file_read`
+- Be descriptive but concise: `memory_search` not `search_memory_database`
+- Group related tools with a common prefix: `sessions_spawn`, `sessions_send`, `sessions_list`
+
+### Description Quality
+
+The tool description is critical — it is what the LLM uses to decide whether to call your tool. Write clear, specific descriptions:
+
+```rust
+// Good: specific, explains what it does and returns
+const DESCRIPTION: &'static str = "\
+    Get current weather and forecast for a location. \
+    Returns temperature, conditions, and multi-day forecast.";
+
+// Bad: vague, doesn't explain the output
+const DESCRIPTION: &'static str = "Weather tool";
+```
+
+### Few-Shot Examples
+
+Providing examples significantly improves the LLM's ability to use your tool correctly:
+
+```rust
+fn examples(&self) -> Option<Vec<String>> {
+    Some(vec![
+        "weather(location='Tokyo', unit='celsius', days=3)".to_string(),
+        "weather(location='New York')".to_string(),
+    ])
+}
+```
+
+Examples are injected into the tool definition's `llm_context` field and shown to the LLM alongside the schema.
+
+### Error Handling
+
+Tools should return `Result<Self::Output>` and use Aleph's error types:
+
+```rust
+async fn call(&self, args: Self::Args) -> Result<Self::Output> {
+    if args.days > 7 {
+        return Err(AlephError::InvalidArgument(
+            "days must be between 1 and 7".to_string()
+        ));
+    }
+
+    let response = self.client.get(&url).send().await
+        .map_err(|e| AlephError::ToolExecution(format!("HTTP request failed: {e}")))?;
+
+    Ok(output)
+}
+```
+
+### Confirmation for Destructive Operations
+
+Mark tools that perform destructive or sensitive operations:
+
+```rust
+fn requires_confirmation(&self) -> bool {
+    true  // User must approve before execution
+}
+```
+
+This integrates with the approval policy system — when configured, the agent loop will pause and request user confirmation before executing the tool.
+
+---
+
+## Testing Custom Tools
+
+### Unit Testing
+
+Test the `AlephTool` implementation directly:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tool_definition() {
+        let tool = WeatherTool::new("test_key".to_string());
+        let def = AlephTool::definition(&tool);
+
+        assert_eq!(def.name, "weather");
+        assert!(def.description.contains("weather"));
+        assert!(!def.requires_confirmation);
+    }
+
+    #[tokio::test]
+    async fn test_tool_call() {
+        let tool = WeatherTool::new("test_key".to_string());
+        let result = AlephTool::call(&tool, WeatherArgs {
+            location: "Tokyo".to_string(),
+            unit: "celsius".to_string(),
+            days: 1,
+        }).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_tool_call_json() {
+        let tool = WeatherTool::new("test_key".to_string());
+        let args = serde_json::json!({
+            "location": "London",
+            "unit": "celsius"
+        });
+
+        let result = AlephTool::call_json(&tool, args).await;
+        assert!(result.is_ok());
+    }
+}
+```
+
+### Integration Testing with AlephToolServer
+
+Test the full tool server integration:
+
+```rust
+#[tokio::test]
+async fn test_tool_server_integration() {
+    let server = AlephToolServer::new()
+        .with_weather("test_key".to_string());
+
+    assert!(server.has_tool("weather").await);
+    assert_eq!(server.len().await, 1);
+
+    let result = server.call(
+        "weather",
+        serde_json::json!({ "location": "Paris" })
+    ).await;
+
+    assert!(result.is_ok());
+}
+```
+
+### Testing Dynamic Dispatch
+
+Verify the blanket `AlephToolDyn` implementation:
+
+```rust
+#[tokio::test]
+async fn test_dynamic_dispatch() {
+    let tool: Box<dyn AlephToolDyn> = Box::new(WeatherTool::new("key".to_string()));
+
+    assert_eq!(tool.name(), "weather");
+
+    let args = serde_json::json!({ "location": "Berlin" });
+    let result = tool.call(args).await;
+    assert!(result.is_ok());
+}
+```
+
+### Testing Name Repair
+
+Verify that the auto-repair system handles your tool name correctly:
+
+```rust
+#[tokio::test]
+async fn test_name_repair() {
+    let server = AlephToolServer::new()
+        .with_weather("key".to_string());
+
+    // Snake case repair
+    let repaired = server.try_repair_tool_name("Weather").await;
+    assert_eq!(repaired, Some("weather".to_string()));
+}
+```
+
+---
+
+## Summary
+
+| What to build | Use this approach |
+|--------------|-------------------|
+| High-performance core tool | Rust `AlephTool` trait |
+| Integration with external API | MCP server (Node.js/Python) |
+| Prompt-based workflow | Markdown skill |
+| Tools needing hot-reload | MCP server or Markdown skill |
+| Tools needing type safety | Rust `AlephTool` trait |

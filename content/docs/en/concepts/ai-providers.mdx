@@ -1,0 +1,172 @@
+---
+title: "AI Providers"
+description: "LLM provider abstraction with retry logic, delta streaming, auth profiles, and multi-provider fallback."
+---
+
+The `providers` module provides a unified interface for LLM backends. It supports multiple providers (OpenAI, Anthropic, Ollama, etc.) with retry logic, delta streaming, auth profile management, and automatic fallback.
+
+## Design Philosophy
+
+1. **Provider abstraction** — All LLMs implement the same `LlmProvider` trait
+2. **Resilient connections** — Exponential backoff retry with configurable policies
+3. **Streaming first** — Token-level streaming is the default, not an afterthought
+
+---
+
+## Core Components
+
+### LlmProvider Trait
+
+```rust
+#[async_trait]
+pub trait LlmProvider: Send + Sync {
+    async fn complete(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse>;
+
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<Box<dyn Stream<Item = ProviderDelta>>>;
+
+    fn name(&self) -> &str;
+    fn capabilities(&self) -> ProviderCapabilities;
+}
+```
+
+**Capabilities:**
+- `streaming` — Supports token-level streaming
+- `function_calling` — Supports tool/function calls
+- `vision` — Supports image input
+- `json_mode` — Supports structured JSON output
+
+### ProviderRegistry
+
+Manages multiple providers with fallback:
+
+```rust
+pub struct ProviderRegistry {
+    providers: HashMap<String, Arc<dyn LlmProvider>>,
+    default: String,
+}
+
+impl ProviderRegistry {
+    pub fn get(
+        &self,
+        name: &str,
+    ) -> Option<Arc<dyn LlmProvider>> { /* ... */ }
+
+    pub fn list(&self,
+    ) -> Vec<String> { /* ... */ }
+}
+```
+
+**Determinism:** Fallback selection uses `keys().min()` for lexicographically first provider.
+
+### Retry Logic
+
+```rust
+pub async fn retry_with_policy<F, Fut, T>(
+    operation: F,
+    policy: RetryPolicy,
+) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(e) if attempt < policy.max_attempts => {
+                let delay = calculate_delay(attempt, &policy);
+                sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+```
+
+**Backoff:** Exponential with cap (max 300s for policy-based, 30s for simple backoff).
+
+**Safety:**
+- `saturating_sub(1)` for attempt calculation (prevents underflow)
+- `.min(300.0)` for backoff cap (prevents infinity/NaN)
+
+### Delta Streaming
+
+Converts provider-specific streaming formats to unified deltas:
+
+```rust
+pub struct ProviderDelta {
+    pub content: Option<String>,
+    pub tool_call: Option<ToolCallDelta>,
+    pub finish_reason: Option<String>,
+}
+```
+
+**Supported formats:**
+- OpenAI SSE (`data: {...}`)
+- Anthropic SSE (`event: content_block_delta`)
+- Ollama JSON streaming
+
+### Auth Profiles
+
+Manages API credentials:
+
+```rust
+pub struct AuthProfile {
+    pub provider: String,
+    pub api_key: SecretString,
+    pub base_url: Option<String>,
+}
+
+pub struct AuthProfileRegistry {
+    profiles: HashMap<String, AuthProfile>,
+}
+```
+
+**Security:** API keys stored as `SecretString` (zeroizes on drop, redacts in Debug).
+
+---
+
+## Supported Providers
+
+| Provider | Streaming | Tools | Vision | JSON Mode |
+|---|---|---|---|---|
+| **OpenAI** | ✅ | ✅ | ✅ | ✅ |
+| **Anthropic** | ✅ | ✅ | ✅ | — |
+| **Ollama** | ✅ | ✅ | — | ✅ |
+| **Azure OpenAI** | ✅ | ✅ | ✅ | ✅ |
+| **Google Gemini** | ✅ | ✅ | ✅ | ✅ |
+
+---
+
+## Safety Properties
+
+- **No lock issues** — Uses `tokio::sync` with recovery pattern
+- **No unwrap in production** — All retries return `Result`
+- **Deterministic fallback** — Sorted provider selection
+- **Bounded backoff** — Prevents infinite delay growth
+
+---
+
+## Code Location
+
+- `src/providers/mod.rs` — Module entry point
+- `src/providers/registry.rs` — Provider registry
+- `src/providers/retry.rs` — Retry logic
+- `src/providers/delta.rs` — Delta streaming
+- `src/providers/auth_profile_registry.rs` — Auth management
+- `src/providers/openai.rs` — OpenAI provider
+- `src/providers/anthropic.rs` — Anthropic provider
+- `src/providers/ollama.rs` — Ollama provider
+
+## See Also
+
+- [Thinker](./thinker) — Prompt construction
+- [Gateway](./gateway) — Execution engine
+- [Secret Management](./secret-management) — Credential storage

@@ -1,0 +1,152 @@
+---
+title: "Wizard"
+description: "Session-based wizard framework for guided onboarding and configuration flows."
+---
+
+The `wizard` module provides a session-based wizard framework for onboarding and configuration flows. It guides users through multi-step setup processes with deferred promises and stateful sessions.
+
+## Design Philosophy
+
+1. **Session-based state machine** — Wizard progress is persisted across interactions
+2. **Deferred promises** — Each step can collect data without blocking the overall flow
+3. **Channel-agnostic** — Works via CLI, RPC, or any interface
+
+---
+
+## Architecture
+
+```
+Client                        WizardSession                     WizardFlow
+   │                               │                                │
+   │── wizard.start ──────────────▶│                                │
+   │                               │── run(prompter) ──────────────▶│
+   │◀── { step: intro } ───────────│◀── prompt(intro) ──────────────│
+   │                               │                                │
+   │── wizard.next { null } ──────▶│                                │
+   │◀── { step: select } ──────────│◀── prompt(select) ─────────────│
+   │                               │                                │
+   │── wizard.next { "local" } ───▶│                                │
+   │                               │── answer("local") ────────────▶│
+   │◀── { step: text } ────────────│◀── prompt(text) ───────────────│
+   │                               │                                │
+   │── wizard.cancel ─────────────▶│                                │
+   │◀── { done: true } ────────────│                                │
+```
+
+---
+
+## Core Components
+
+### WizardSession
+
+Manages the wizard lifecycle:
+
+```rust
+pub struct WizardSession {
+    flow: Box<dyn WizardFlow>,
+    state: WizardState,
+}
+
+impl WizardSession {
+    pub async fn start(
+        &mut self,
+    ) -> Result<WizardStep> { /* ... */ }
+
+    pub async fn next(
+        &mut self,
+        answer: Option<String>,
+    ) -> Result<WizardNextResult> { /* ... */ }
+
+    pub fn cancel(&mut self,
+    ) -> WizardStatus { /* ... */ }
+}
+```
+
+### WizardFlow
+
+Defines the sequence of steps:
+
+```rust
+pub trait WizardFlow: Send + Sync {
+    async fn run(
+        &self,
+        prompter: &dyn WizardPrompter,
+    ) -> Result<()>;
+}
+```
+
+### WizardPrompter
+
+Abstracts user interaction:
+
+```rust
+pub trait WizardPrompter: Send + Sync {
+    fn intro(&self, title: &str, description: &str) -> ProgressHandle;
+    fn text(&self, prompt: &str) -> Result<String>;
+    fn select(&self, prompt: &str, options: &[WizardOption]) -> Result<String>;
+    fn confirm(&self, prompt: &str) -> Result<bool>;
+}
+```
+
+**Implementations:**
+- `CliPrompter` — Command-line prompts (stub, TODO: integrate dialoguer)
+- `RpcPrompter` — JSON-RPC based prompts for remote clients
+
+### WizardStep
+
+```rust
+pub struct WizardStep {
+    pub step_type: StepType,
+    pub prompt: String,
+    pub options: Vec<WizardOption>,
+}
+
+pub enum StepType {
+    Intro,
+    Text,
+    Select,
+    Confirm,
+    Complete,
+}
+```
+
+---
+
+## Onboarding Flow
+
+Built-in wizard for initial setup:
+
+```rust
+pub struct QuickSetupFlow;
+pub struct ProviderSetupFlow;
+```
+
+**Collects:**
+- AI provider selection (OpenAI, Anthropic, etc.)
+- API key configuration
+- Messaging app preferences
+- Thinking level preference
+
+---
+
+## Safety Properties
+
+- **Atomic counter** — `AtomicU64` for step counting (no lock overhead)
+- **Lock recovery** — `unwrap_or_else(|e| e.into_inner())` for RwLock
+- **Dynamic width** — Box width calculated from title length
+- **No unwrap in production** — All user paths return `Result`
+
+---
+
+## Code Location
+
+- `src/wizard/mod.rs` — Module entry point
+- `src/wizard/session.rs` — `WizardSession` and `WizardFlow` trait
+- `src/wizard/prompter.rs` — Prompter trait and implementations
+- `src/wizard/types.rs` — Step types and options
+- `src/wizard/flows/` — Built-in flows (onboarding, provider setup)
+
+## See Also
+
+- [Configuration](../getting-started/configuration) — Configuration system
+- [Installation](../getting-started/installation) — Initial setup

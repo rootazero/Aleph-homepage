@@ -1,0 +1,170 @@
+---
+title: "teams.*"
+description: "团队和多代理编排 RPC 方法"
+---
+
+团队方法管理多代理团队 —— 具有定义角色、通信模式和协调策略的 AI 代理组，协作完成任务。
+
+## 方法
+
+### teams.list
+
+列出所有已配置的团队。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "teams.list",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "teams": [
+      {
+        "id": "team-1",
+        "name": "Code Review Team",
+        "agents": ["reviewer", "tester", "documenter"],
+        "status": "idle"
+      }
+    ]
+  }
+}
+```
+
+### teams.create
+
+创建新团队配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "teams.create",
+  "params": {
+    "name": "Bug Fix Squad",
+    "agents": [
+      {
+        "role": "debugger",
+        "model": "claude-sonnet",
+        "system_prompt": "You are a debugging specialist."
+      },
+      {
+        "role": "fixer",
+        "model": "claude-sonnet",
+        "system_prompt": "You implement fixes."
+      }
+    ],
+    "coordination": "sequential"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "team": {
+      "id": "team-2",
+      "name": "Bug Fix Squad",
+      "agents": ["debugger", "fixer"],
+      "status": "idle"
+    }
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 描述 |
+|-----------|------|----------|-------------|
+| `name` | string | 是 | 团队名称 |
+| `agents` | object[] | 是 | 代理配置，包含 `role`、`model`、`system_prompt` |
+| `coordination` | string | 否 | 协调模式：`"sequential"`、`"parallel"`、`"hierarchical"` |
+
+### teams.get
+
+获取团队详细信息。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "teams.get",
+  "params": {
+    "team_id": "team-1"
+  }
+}
+```
+
+### teams.run
+
+使用团队执行任务。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "teams.run",
+  "params": {
+    "team_id": "team-1",
+    "task": "Review this pull request for security issues",
+    "context": {
+      "pr_url": "https://github.com/org/repo/pull/123"
+    }
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "run_id": "run-team-1",
+    "status": "running"
+  }
+}
+```
+
+### teams.delete
+
+删除团队配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "teams.delete",
+  "params": {
+    "team_id": "team-2"
+  }
+}
+```
+
+## 协调模式
+
+| 模式 | 描述 |
+|------|-------------|
+| `sequential` | 代理一个接一个运行，将输出传递下去 |
+| `parallel` | 代理同时运行，最后合并结果 |
+| `hierarchical` | 领导者代理将子任务委派给工作者代理 |
+
+## 参见
+
+- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
+- [架构：团队](/docs/zh/architecture/teams) -- 团队编排架构

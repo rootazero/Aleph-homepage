@@ -1,0 +1,159 @@
+---
+title: "daemon.*"
+description: "Daemon control and lifecycle RPC methods"
+---
+
+Daemon methods control the Aleph background daemon process — start, stop, restart, and query the daemon that hosts the gateway and manages all subsystems.
+
+## Methods
+
+### daemon.status
+
+Get the current daemon status.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "daemon.status",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "status": "running",
+    "pid": 12345,
+    "version": "0.1.0",
+    "started_at": "2024-01-15T10:00:00Z",
+    "uptime_seconds": 1800,
+    "components": {
+      "gateway": "healthy",
+      "memory": "healthy",
+      "mcp": "healthy"
+    }
+  }
+}
+```
+
+### daemon.start
+
+Start the daemon if it's not running.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "daemon.start",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "started": true,
+    "pid": 12346
+  }
+}
+```
+
+### daemon.stop
+
+Stop the daemon gracefully.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "daemon.stop",
+  "params": {
+    "force": false
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "stopped": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `force` | boolean | No | Force stop without graceful shutdown |
+
+### daemon.restart
+
+Restart the daemon.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "daemon.restart",
+  "params": {
+    "force": false
+  }
+}
+```
+
+### daemon.reload
+
+Reload daemon configuration without restarting.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "daemon.reload",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "reloaded": true,
+    "config_valid": true
+  }
+}
+```
+
+## CLI Equivalent
+
+These RPC methods mirror the CLI commands:
+
+```bash
+aleph-server start    # Start daemon
+aleph-server stop     # Stop daemon
+aleph-server restart  # Restart daemon
+aleph-server status   # Check status
+```
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [Getting Started: Quick Start](/docs/en/getting-started/quick-start) -- Daemon setup

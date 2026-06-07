@@ -1,0 +1,174 @@
+---
+title: "providers.*"
+description: "AI model provider configuration RPC methods"
+---
+
+Provider methods manage AI model provider configurations — LLM, embedding, and reranking service endpoints, API keys, and model mappings.
+
+## Namespaces
+
+Provider configuration is split across three namespaces:
+
+| Namespace | Purpose |
+|-----------|---------|
+| `generation_providers.*` | LLM/text generation models (Claude, GPT, etc.) |
+| `embedding_providers.*` | Embedding/vectorization models |
+| `rerank_providers.*` | Reranking models for search results |
+
+## generation_providers.*
+
+### generation_providers.list
+
+List all configured generation providers.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "generation_providers.list",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "providers": [
+      {
+        "id": "anthropic",
+        "name": "Anthropic Claude",
+        "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+        "default_model": "claude-sonnet-4-20250514",
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+### generation_providers.add
+
+Add a new generation provider.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "generation_providers.add",
+  "params": {
+    "id": "openai",
+    "name": "OpenAI",
+    "api_key": "sk-...",
+    "base_url": "https://api.openai.com/v1",
+    "models": ["gpt-4o", "gpt-4o-mini"],
+    "default_model": "gpt-4o"
+  }
+}
+```
+
+### generation_providers.update
+
+Update an existing generation provider.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "generation_providers.update",
+  "params": {
+    "id": "openai",
+    "default_model": "gpt-4o-mini"
+  }
+}
+```
+
+### generation_providers.delete
+
+Delete a generation provider.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "generation_providers.delete",
+  "params": {
+    "id": "openai"
+  }
+}
+```
+
+### generation_providers.status
+
+Get provider status and health.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "generation_providers.status",
+  "params": {
+    "id": "anthropic"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "id": "anthropic",
+    "healthy": true,
+    "latency_ms": 245,
+    "rate_limit_remaining": 4999
+  }
+}
+```
+
+## embedding_providers.*
+
+Embedding providers follow the same pattern as generation providers:
+
+- `embedding_providers.list`
+- `embedding_providers.add`
+- `embedding_providers.update`
+- `embedding_providers.delete`
+- `embedding_providers.status`
+
+## rerank_providers.*
+
+Reranking providers follow the same pattern:
+
+- `rerank_providers.list`
+- `rerank_providers.add`
+- `rerank_providers.update`
+- `rerank_providers.delete`
+- `rerank_providers.status`
+
+## Provider Configuration File
+
+Providers are configured in `~/.aleph/config.toml`:
+
+```toml
+[generation_providers.anthropic]
+api_key = "sk-ant-..."
+default_model = "claude-sonnet-4-20250514"
+
+[embedding_providers.openai]
+api_key = "sk-..."
+model = "text-embedding-3-small"
+```
+
+## See Also
+
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [Getting Started: Configuration](/docs/en/getting-started/configuration) -- Provider setup

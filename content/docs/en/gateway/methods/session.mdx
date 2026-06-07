@@ -1,0 +1,354 @@
+---
+title: "session.*"
+description: "Session management RPC methods"
+---
+
+Session methods manage conversation sessions -- the persistent contexts that store message history, token counts, and identity metadata. Sessions are identified by structured session keys and backed by SQLite.
+
+:::warning
+This page documents the intended API. The actual runtime-registered methods differ:
+
+**Actual methods (plural `sessions.*`):**
+`sessions.list`, `sessions.history`, `sessions.reset`, `sessions.delete`, `sessions.new`, `sessions.set_topic`, `sessions.patch`, `sessions.preview`, `sessions.compaction.list`, `sessions.compaction.restore`, `sessions.compaction.branch`
+
+**Actual methods (singular `session.*`):**
+`session.create`, `session.usage`, `session.compact`
+
+The methods documented below (`session.get`, `session.list`, `session.history`, `session.compact`, `session.delete`, `session.export`) reflect the design target but may not all be wired in the current runtime. See [Methods Reference](/docs/en/gateway/methods) for the accurate method listing.
+:::
+
+## Methods
+
+### session.get
+
+Get detailed information about a specific session.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "session.get",
+  "params": {
+    "session_key": "agent:main:main"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "session_key": "agent:main:main",
+    "agent_id": "main",
+    "channel": "gateway",
+    "message_count": 42,
+    "token_count": 12840,
+    "created_at": 1706313600000,
+    "updated_at": 1706400000000,
+    "last_compaction": 1706356800000,
+    "identity": {
+      "role": "owner",
+      "identity_id": "owner",
+      "source_channel": "gateway"
+    }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_key` | string | Yes | The session key to look up |
+
+### session.list
+
+List all sessions, optionally filtered by agent, channel, or status.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "session.list",
+  "params": {
+    "filter": {
+      "agent_id": "main",
+      "channel": "telegram"
+    },
+    "limit": 20,
+    "offset": 0
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "sessions": [
+      {
+        "session_key": "agent:main:telegram:dm:user123",
+        "agent_id": "main",
+        "channel": "telegram",
+        "message_count": 15,
+        "token_count": 4200,
+        "created_at": 1706313600000,
+        "updated_at": 1706399000000
+      },
+      {
+        "session_key": "agent:main:telegram:dm:user456",
+        "agent_id": "main",
+        "channel": "telegram",
+        "message_count": 8,
+        "token_count": 2100,
+        "created_at": 1706350000000,
+        "updated_at": 1706398000000
+      }
+    ],
+    "total": 2
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `filter` | object | No | Filter criteria |
+| `filter.agent_id` | string | No | Filter by agent ID |
+| `filter.channel` | string | No | Filter by channel (e.g. `"telegram"`, `"discord"`, `"gateway"`) |
+| `limit` | number | No | Maximum results. Default: 50 |
+| `offset` | number | No | Skip this many results. Default: 0 |
+
+### session.history
+
+Get the full message history for a session. This is similar to `agent.history` but returns the raw session data including metadata.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "session.history",
+  "params": {
+    "session_key": "agent:main:main",
+    "limit": 100
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "session_key": "agent:main:main",
+    "messages": [
+      {
+        "role": "system",
+        "content": "[Compacted summary from 2024-01-27]...",
+        "timestamp": 1706356800000
+      },
+      {
+        "role": "user",
+        "content": "What did we discuss yesterday?",
+        "timestamp": 1706400000000
+      },
+      {
+        "role": "assistant",
+        "content": "Based on our conversation history...",
+        "timestamp": 1706400003000,
+        "tool_calls": []
+      }
+    ],
+    "total": 3,
+    "token_count": 890
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_key` | string | Yes | Session to retrieve |
+| `limit` | number | No | Maximum messages. Default: 100 |
+
+### session.compact
+
+Trigger manual compaction of a session. Compaction extracts key facts from older messages, stores them in the memory system, and replaces the original messages with a summary. This reduces token count while preserving important context.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "session.compact",
+  "params": {
+    "session_key": "agent:main:main"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "session_key": "agent:main:main",
+    "compacted": true,
+    "messages_before": 120,
+    "messages_after": 15,
+    "tokens_before": 48000,
+    "tokens_after": 6200,
+    "facts_extracted": 8
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_key` | string | Yes | Session to compact |
+
+### session.delete
+
+Permanently delete a session and all its messages. This action cannot be undone.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "session.delete",
+  "params": {
+    "session_key": "agent:main:telegram:dm:user123"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "deleted": true,
+    "session_key": "agent:main:telegram:dm:user123",
+    "messages_removed": 15
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_key` | string | Yes | Session to delete |
+
+### session.export
+
+Export a session as a portable JSON object. Useful for backups, migration, or sharing conversation logs.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "session.export",
+  "params": {
+    "session_key": "agent:main:main",
+    "format": "json"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "session_key": "agent:main:main",
+    "format": "json",
+    "data": {
+      "session_key": "agent:main:main",
+      "agent_id": "main",
+      "messages": [ ... ],
+      "metadata": {
+        "created_at": 1706313600000,
+        "message_count": 42,
+        "token_count": 12840
+      },
+      "exported_at": 1706400000000
+    }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_key` | string | Yes | Session to export |
+| `format` | string | No | Export format: `"json"` (default) or `"markdown"` |
+
+## Session Key Structure
+
+Sessions are identified by structured keys that encode routing information.
+
+| Variant | Format | Description |
+|---------|--------|-------------|
+| Main | `agent:{agent_id}:main` | Shared cross-channel session |
+| DirectMessage | `agent:{agent_id}:{channel}:dm:{user_id}` | Per-user isolated session |
+| Group | `agent:{agent_id}:{channel}:group:{group_id}` | Group/channel chat |
+| Task | `agent:{agent_id}:cron:{job_name}` | Automated task session |
+| Subagent | `subagent:agent:{agent_id}:{subagent_id}` | Sub-agent delegation |
+| Ephemeral | `agent:{agent_id}:ephemeral:{uuid}` | Temporary, not persisted |
+
+## DM Scope Strategies
+
+The `dmScope` configuration controls how direct messages are routed to sessions:
+
+| Strategy | Behavior |
+|----------|----------|
+| `main` | All DMs share the main session |
+| `per_peer` | Each user gets an isolated session (default) |
+| `per_channel_peer` | Isolated per channel + user combination |
+
+## Storage Schema
+
+Sessions are stored in SQLite with the following structure:
+
+```sql
+CREATE TABLE sessions (
+    session_key  TEXT PRIMARY KEY,
+    messages     TEXT,          -- JSON array
+    created_at   INTEGER,
+    updated_at   INTEGER,
+    message_count INTEGER,
+    token_count  INTEGER
+);
+
+CREATE TABLE session_metadata (
+    session_key  TEXT PRIMARY KEY,
+    agent_id     TEXT,
+    channel      TEXT,
+    last_compaction INTEGER
+);
+```
+
+## See Also
+
+- [agent.*](/docs/en/gateway/methods/agent) -- Agent execution methods
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [Protocol](/docs/en/gateway/protocol) -- Session key routing details

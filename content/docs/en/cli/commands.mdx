@@ -1,0 +1,161 @@
+---
+title: "Commands"
+description: "Complete CLI command reference for Aleph"
+---
+
+Aleph provides two CLI binaries with distinct roles:
+
+- **`aleph`** — The client CLI that connects to a running Gateway server over WebSocket
+- **`aleph-server`** — The server binary that starts and manages the Gateway process
+
+Both share similar conventions for flags and output formatting.
+
+## Client CLI (`aleph`)
+
+The `aleph` binary is a reference implementation of an Aleph Protocol client. It communicates with the Gateway over WebSocket using JSON-RPC 2.0.
+
+### Synopsis
+
+```bash
+aleph [OPTIONS] [COMMAND]
+```
+
+When invoked without a subcommand, `aleph` starts an interactive chat session (equivalent to `aleph chat`).
+
+### Global Options
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--server <URL>` | `-s` | `ws://127.0.0.1:18790` | Gateway server WebSocket URL |
+| `--verbose` | `-v` | `false` | Enable debug-level logging |
+| `--config <PATH>` | `-c` | `~/.config/aleph-cli/config.toml` | Configuration file path |
+
+### Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `chat` | Start an interactive chat session |
+| `ask` | Send a single message and print the response |
+| `health` | Check server health status |
+| `info` | Display server version, uptime, and providers |
+| `tools` | List available tools on the server |
+| `session` | Manage conversation sessions (list, new, delete) |
+| `connect` | Authenticate and save a bearer token |
+| `guests` | Manage guest invitations and permissions |
+
+### Examples
+
+```bash
+# Interactive chat (default action)
+aleph
+
+# Send a one-shot question
+aleph ask "What is the weather in Tokyo?"
+
+# Connect to a remote server
+aleph -s ws://192.168.1.50:18790 chat
+
+# Use a custom config file
+aleph -c ~/my-config.toml health
+```
+
+---
+
+## Server CLI (`aleph-server`)
+
+The `aleph-server` binary runs the Aleph Gateway and provides management subcommands for configuration, devices, plugins, and more.
+
+### Synopsis
+
+```bash
+aleph-server [OPTIONS] [COMMAND]
+```
+
+When invoked without a subcommand (or with `start`), the server starts the Gateway listener.
+
+### Global Options
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--config <PATH>` | `-c` | — | Configuration file path (TOML) |
+| `--daemon` | `-d` | `false` | Run as a background daemon process |
+| `--pid-file <PATH>` | — | `~/.aleph/gateway.pid` | PID file location (daemon mode) |
+| `--log-file <PATH>` | — | — | Log file path (daemon mode) |
+| `--bind <ADDR>` | — | `127.0.0.1` | Bind address |
+| `--port <PORT>` | — | `18790` | WebSocket listen port |
+| `--force` | — | `false` | Force start even if port appears in use |
+| `--log-level <LEVEL>` | — | `info` | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
+| `--max-connections <N>` | — | `1000` | Maximum concurrent WebSocket connections |
+| `--webchat-dir <PATH>` | — | — | Serve a WebChat UI from this static file directory |
+| `--webchat-port <PORT>` | — | same as `--port` | HTTP port for the WebChat UI |
+
+### Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `start` | Start the Gateway (default) |
+| `stop` | Stop a running daemon |
+| `status` | Check whether the daemon is running |
+| `config` | Get, set, validate, reload, or export configuration |
+| `pairing` | Manage device pairing requests |
+| `devices` | List or revoke approved devices |
+| `plugins` | Install, uninstall, enable, or disable plugins |
+| `gateway` | Call arbitrary RPC methods on the Gateway |
+| `channels` | List channels and check channel status |
+| `cron` | List, inspect, or trigger cron jobs |
+| `audit` | View tool risk scores and execution history |
+| `secret` | Manage encrypted secrets in the vault |
+
+### Examples
+
+```bash
+# Start in foreground (default)
+aleph-server
+
+# Start as daemon with custom port
+aleph-server -d --port 9000 --log-file ~/.aleph/server.log
+
+# Check daemon status
+aleph-server status
+
+# Stop the daemon
+aleph-server stop
+```
+
+---
+
+## Environment Variables
+
+The following environment variables affect CLI behavior:
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | API key for the Anthropic provider (required for agent operation) |
+| `ANTHROPIC_BASE_URL` | Custom base URL for the Anthropic API |
+| `ALEPH_MASTER_KEY` | Master key for the encrypted secret vault |
+| `ALEPH_VERBOSE` | When set, `aleph ask` prints reasoning traces to stderr |
+| `RUST_LOG` | Override log level filter (e.g. `info`, `debug`, `aleph=trace`) |
+| `TOKIO_WORKER_THREADS` | Number of async runtime worker threads |
+
+## Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `~/.config/aleph-cli/config.toml` | Client CLI configuration (server URL, auth token, device ID) |
+| `~/.aleph/config.toml` | Server configuration (agent, gateway, control plane settings) |
+| `~/.aleph/gateway.pid` | Daemon PID file |
+| `~/.aleph/gateway.log` | Daemon log file (when `--log-file` is used) |
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | General error (connection failed, RPC error, invalid arguments) |
+| `2` | Configuration or authentication error |
+
+## Next Steps
+
+- [Gateway Management](/docs/cli/gateway) — Start, stop, and monitor the server
+- [Agent Interaction](/docs/cli/agent) — Chat, ask, and manage sessions
+- [Configuration Management](/docs/cli/config) — Read and write configuration from the CLI

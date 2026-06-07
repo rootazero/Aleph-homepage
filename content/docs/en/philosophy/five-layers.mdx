@@ -1,0 +1,216 @@
+---
+title: Five Layers of Emergence
+description: The L1-L5 model describes how intelligence emerges in Aleph — from raw knowledge through domain classification, atomic skills, functional modules, to polymorphic agents.
+---
+
+Aleph's intelligence is not a monolithic block of capability. It is an emergent property that arises from five distinct layers, each building on the one below it. This model — the Five Layers of Emergence — is both a conceptual framework for understanding AI intelligence and a practical blueprint for how Aleph is built.
+
+Like LEGO blocks assembling from chaos into creation, intelligence in Aleph emerges through progressive structure. Each layer transforms the output of the previous layer into something qualitatively different.
+
+## Overview
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  L5: POLYMORPHIC AGENTS                                ℵ₃    │
+│  The soul has a shell — autonomous, adaptive, embodied       │
+├──────────────────────────────────────────────────────────────┤
+│  L4: FUNCTIONAL MODULES                                ℵ₂    │
+│  Composable building blocks — plug and play capabilities     │
+├──────────────────────────────────────────────────────────────┤
+│  L3: ATOMIC SKILLS                                     ℵ₁    │
+│  Know-what becomes know-how — knowledge turns to action      │
+├──────────────────────────────────────────────────────────────┤
+│  L2: DOMAIN CLASSIFICATION                             ℵ₀    │
+│  Structure emerges — knowledge gains categories and context  │
+├──────────────────────────────────────────────────────────────┤
+│  L1: SEA OF KNOWLEDGE                                        │
+│  The raw ocean — training data, text, code, history, wisdom  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Each layer corresponds to an aleph number from transfinite mathematics, representing a progressively larger order of infinity. The agent starts at the base and climbs upward — but all layers remain active simultaneously. Higher layers do not replace lower ones; they build on top of them.
+
+## The Aleph Ladder
+
+The correspondence between layers and aleph numbers is deliberate:
+
+| Layer | Aleph Number | Meaning |
+|-------|-------------|---------|
+| L1 | -- | Raw, unstructured knowledge (pre-countable) |
+| L2 | ℵ₀ | Countable, classified knowledge |
+| L3 | ℵ₁ | Actionable skills (a higher cardinality of capability) |
+| L4 | ℵ₂ | Composable modules (capabilities that combine) |
+| L5 | ℵ₃ | Polymorphic agents (autonomous, adaptive entities) |
+
+Just as each aleph number represents a strictly larger infinity than the one before it, each layer represents a qualitatively different kind of capability that cannot be reduced to the layer below.
+
+## L1: Sea of Knowledge
+
+**The raw ocean of human experience.**
+
+Layer 1 is the foundation — the vast, unstructured corpus of knowledge that underlies all AI capability. This includes:
+
+- **Training data**: The text, code, scientific literature, historical records, and conversational patterns that large language models are trained on.
+- **Retrieved context**: Documents, files, and data fetched at runtime through RAG (Retrieval-Augmented Generation) and memory queries.
+- **User input**: The raw stream of messages, commands, and context that the user provides.
+
+At this layer, knowledge exists but has no structure. It is a sea of tokens — powerful in aggregate, but directionless without higher layers to organize it.
+
+### In Aleph
+
+L1 manifests as the LLM providers (OpenAI, Anthropic, local models) that power the Thinker component, combined with the Memory system's raw fact storage. The Thinker can access this sea of knowledge through its provider connections, and the Memory system stores and retrieves contextual facts.
+
+```
+Sea of Knowledge = LLM Training Data + Memory Facts + User Context
+```
+
+## L2: Domain Classification
+
+**Static knowledge gains structure.**
+
+Layer 2 takes the raw sea and organizes it into domains. Knowledge is no longer a flat expanse — it has categories, boundaries, and relationships:
+
+- **Medical knowledge**: Symptoms, diagnoses, treatments, drug interactions
+- **Legal knowledge**: Statutes, case law, procedures, jurisdictions
+- **Programming knowledge**: Languages, frameworks, patterns, best practices
+- **Scientific knowledge**: Physics, chemistry, biology, mathematics
+
+Domain classification is what allows an AI to know that a question about "Python" in a coding context means the programming language, not the snake. It provides the structural backbone that gives meaning to raw knowledge.
+
+### In Aleph
+
+L2 manifests through the intent detection system and the Memory system's contextual anchoring. When a user sends a message, the intent system classifies it into domains and routes it appropriately. The Memory system uses `ContextAnchor` value objects to tag facts with domain context, enabling relevant retrieval.
+
+The domain classification also drives the agent's ability to select appropriate tools. A coding question routes to code-execution tools; a scheduling question routes to calendar tools; a research question routes to web-search tools.
+
+## L3: Atomic Skills
+
+**Know-what becomes know-how.**
+
+This is where the critical transformation happens: knowledge turns into capability. An atomic skill is a discrete, reusable ability that the system can execute reliably:
+
+- **Summarize a document** — not just knowing what summarization is, but being able to do it well.
+- **Write a unit test** — not just knowing testing patterns, but producing correct, runnable tests.
+- **Parse a log file** — not just understanding log formats, but extracting structured data from them.
+- **Draft an email** — not just knowing email conventions, but producing contextually appropriate messages.
+
+Atomic skills are the building blocks of intelligent behavior. They are small enough to be reliable, specific enough to be testable, and general enough to be reusable across contexts.
+
+### In Aleph
+
+L3 manifests through the experience crystallization system. When the agent successfully completes a task, the result is recorded as an experience entry in the vector database. When similar tasks recur, these experiences are retrieved and applied:
+
+```
+Single Success        -->  Experience Entry (stored in vector DB)
+3+ Similar Successes  -->  Candidate Skill (pattern detected)
+5+ Successes          -->  Permanent Skill (promoted to reusable)
+```
+
+The skill promotion pipeline transforms ad-hoc successes into reliable, reusable capabilities. This is how Aleph genuinely learns — not by accumulating chat history, but by crystallizing successful patterns into executable skills.
+
+Skills are also exposed through the Extension system, where developers can register custom skills that bypass the crystallization process and provide capabilities directly.
+
+## L4: Functional Modules
+
+**Skills become composable building blocks.**
+
+Layer 4 takes atomic skills and composes them into higher-level modules — functional units that combine multiple skills to accomplish complex tasks:
+
+- **Code Review Module**: Read code + Analyze patterns + Check style + Generate feedback
+- **Research Module**: Search web + Summarize sources + Cross-reference + Synthesize report
+- **DevOps Module**: Check system status + Analyze logs + Diagnose issues + Execute fix
+- **Communication Module**: Understand context + Draft message + Adjust tone + Format for channel
+
+Functional modules are the "plug and play" layer. They encapsulate workflows that would otherwise require manual orchestration of individual skills.
+
+### In Aleph
+
+L4 manifests through the Dispatcher's task graph system. The Dispatcher breaks complex requests into DAGs (Directed Acyclic Graphs) of subtasks, where each node is an atomic skill or tool invocation. The `TaskGraph` aggregate root manages the execution order, dependencies, and state of these composed workflows.
+
+```
+User Request: "Review this PR and fix any issues"
+                    │
+        ┌───────────┴───────────┐
+        │     TaskGraph (L4)    │
+        ├───────────────────────┤
+        │  1. Read PR diff      │ ─── L3 Skill
+        │  2. Analyze changes   │ ─── L3 Skill
+        │  3. Run tests         │ ─── L3 Skill
+        │  4. Fix issues        │ ─── L3 Skill
+        │  5. Write summary     │ ─── L3 Skill
+        └───────────────────────┘
+```
+
+The MCP (Model Context Protocol) integration also operates at L4, allowing external tools and services to be composed into Aleph's workflows as functional modules.
+
+## L5: Polymorphic Agents
+
+**The soul has a shell.**
+
+Layer 5 is where everything comes together. A polymorphic agent is an autonomous entity that can:
+
+- **Perceive** its environment through multiple interfaces (CLI, desktop, messaging, voice)
+- **Think** using the dual-process cognitive architecture (System 1 + System 2)
+- **Act** by composing functional modules to accomplish goals
+- **Learn** by crystallizing experiences and evolving its skill set
+- **Adapt** its behavior, personality, and approach to different contexts and channels
+
+The word "polymorphic" is key: the same underlying intelligence manifests differently depending on the interface and context. On Telegram, it might be concise and conversational. On the CLI, it might be precise and tool-oriented. On the desktop, it might use rich formatting and visualizations. The intelligence is the same — the manifestation changes.
+
+### In Aleph
+
+L5 is the complete system working in concert: the Gateway managing multi-channel connections, the Agent Loop orchestrating the observe-think-act-feedback cycle, the Memory system providing persistent context, the Dispatcher composing skills into workflows, and the Security system ensuring safe autonomous operation.
+
+```
+L5 Polymorphic Agent = Gateway + Agent Loop + Memory + Dispatcher + Security
+                       (I/O)     (Cognition)  (State)  (Action)    (Control)
+```
+
+This is where the POE (Principle-Operation-Evaluation) architecture operates at its highest level. The agent does not just respond to prompts — it pursues goals with purpose, evaluates its own performance, and learns from the results.
+
+## Emergence in Practice
+
+The five-layer model is not just theoretical. It describes concrete mechanisms in Aleph's codebase:
+
+| Layer | Aleph Component | Key Responsibility |
+|-------|----------------|-------------------|
+| L1 | Thinker + Memory Store | LLM access + raw fact storage |
+| L2 | Intent System + Context Anchors | Domain classification + routing |
+| L3 | Experience Crystallizer + Skills | Pattern extraction + skill promotion |
+| L4 | Dispatcher + TaskGraph + MCP | Task composition + workflow orchestration |
+| L5 | Agent Loop + Gateway + POE | Autonomous behavior + multi-channel presence |
+
+### The Feedback Loop
+
+The layers are not a one-way stack. There is a continuous feedback loop where higher layers inform lower ones:
+
+1. L5 agent behavior generates new experiences
+2. L3 crystallization extracts skills from those experiences
+3. L2 classification is refined by the patterns discovered in L3
+4. L1 memory is enriched with new facts from successful operations
+5. The enriched L1 feeds back into L2, starting the cycle again
+
+This feedback loop is what makes Aleph genuinely adaptive. The system does not just execute — it improves.
+
+## The AGI Horizon
+
+Beyond L5, the model acknowledges an asymptotic limit: **ℵ_omega**, the AGI horizon. This represents the theoretical endpoint where an AI system achieves fully general intelligence — infinite adaptation across all domains and contexts.
+
+Aleph does not claim to reach this horizon. But by building the infrastructure for emergence — the crystallization pipeline, the skill evolution system, the polymorphic architecture — it creates a foundation that can climb the ladder of aleph numbers as AI capabilities advance.
+
+```
+ℵ₀  -->  Raw knowledge (L1-L2)
+ℵ₁  -->  Atomic skills (L3)
+ℵ₂  -->  Functional modules (L4)
+ℵ₃  -->  Polymorphic agents (L5)
+ℵ_omega  -->  AGI horizon (the limit)
+```
+
+Each level transcends the previous, yet all are contained within the same point — the Aleph.
+
+## Further Reading
+
+- [Design Philosophy](./overview) — The foundational principles behind Aleph
+- [Agent Thinking Model](./agent-thinking) — How the L5 agent observes, thinks, and acts
+- [Domain Modeling](./domain-modeling) — How bounded contexts organize the codebase across layers
+- [Architecture](/docs/en/architecture) — Technical implementation of the layered architecture

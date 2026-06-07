@@ -1,0 +1,174 @@
+---
+title: "providers.*"
+description: "AI 模型提供者配置 RPC 方法"
+---
+
+提供者方法管理 AI 模型提供者配置 —— LLM、嵌入和重排序服务端点、API 密钥和模型映射。
+
+## 命名空间
+
+提供者配置分为三个命名空间：
+
+| 命名空间 | 用途 |
+|-----------|---------|
+| `generation_providers.*` | LLM/文本生成模型（Claude、GPT 等） |
+| `embedding_providers.*` | 嵌入/向量化模型 |
+| `rerank_providers.*` | 搜索结果重排序模型 |
+
+## generation_providers.*
+
+### generation_providers.list
+
+列出所有已配置的生成提供者。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "generation_providers.list",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "providers": [
+      {
+        "id": "anthropic",
+        "name": "Anthropic Claude",
+        "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
+        "default_model": "claude-sonnet-4-20250514",
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+### generation_providers.add
+
+添加新的生成提供者。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "generation_providers.add",
+  "params": {
+    "id": "openai",
+    "name": "OpenAI",
+    "api_key": "sk-...",
+    "base_url": "https://api.openai.com/v1",
+    "models": ["gpt-4o", "gpt-4o-mini"],
+    "default_model": "gpt-4o"
+  }
+}
+```
+
+### generation_providers.update
+
+更新现有生成提供者。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "generation_providers.update",
+  "params": {
+    "id": "openai",
+    "default_model": "gpt-4o-mini"
+  }
+}
+```
+
+### generation_providers.delete
+
+删除生成提供者。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "generation_providers.delete",
+  "params": {
+    "id": "openai"
+  }
+}
+```
+
+### generation_providers.status
+
+获取提供者状态和健康度。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "generation_providers.status",
+  "params": {
+    "id": "anthropic"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "id": "anthropic",
+    "healthy": true,
+    "latency_ms": 245,
+    "rate_limit_remaining": 4999
+  }
+}
+```
+
+## embedding_providers.*
+
+嵌入提供者遵循与生成提供者相同的模式：
+
+- `embedding_providers.list`
+- `embedding_providers.add`
+- `embedding_providers.update`
+- `embedding_providers.delete`
+- `embedding_providers.status`
+
+## rerank_providers.*
+
+重排序提供者遵循相同的模式：
+
+- `rerank_providers.list`
+- `rerank_providers.add`
+- `rerank_providers.update`
+- `rerank_providers.delete`
+- `rerank_providers.status`
+
+## 提供者配置文件
+
+提供者在 `~/.aleph/config.toml` 中配置：
+
+```toml
+[generation_providers.anthropic]
+api_key = "sk-ant-..."
+default_model = "claude-sonnet-4-20250514"
+
+[embedding_providers.openai]
+api_key = "sk-..."
+model = "text-embedding-3-small"
+```
+
+## 参见
+
+- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
+- [快速开始：配置](/docs/zh/getting-started/configuration) -- 提供者设置

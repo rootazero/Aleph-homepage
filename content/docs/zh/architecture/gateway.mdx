@@ -1,0 +1,487 @@
+---
+title: "网关架构"
+description: "WebSocket 控制平面、JSON-RPC 2.0、多通道路由、端口 18790。"
+---
+
+Gateway 是与 Aleph 通信的唯一入口。它在 `ws://127.0.0.1:18790/ws` 上运行 WebSocket 服务器，使用 JSON-RPC 2.0 协议，并将来自任何已连接客户端（无论是原生 macOS 应用、Telegram 机器人还是终端 CLI）的请求路由到相应的处理程序。本页涵盖协议层、消息管道、多通道路由和驱动实时流的事件系统。
+
+关于请求到达后会话如何管理，请参阅[会话管理](./sessions)。关于路由到达 agent 后发生的情况，请参阅[Agent Harness](./harness)。
+
+---
+
+## Gateway 组件
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Gateway Server                               │
+│                  ws://127.0.0.1:18790/ws                            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐        │
+│  │   Inbound    │     │   Handler    │     │   Outbound   │        │
+│  │   Router     │ ──▶ │   Registry   │ ──▶ │   Emitter    │        │
+│  │              │     │              │     │              │        │
+│  │ • Parse req  │     │ • Route      │     │ • Stream     │        │
+│  │ • Validate   │     │ • Execute    │     │ • Events     │        │
+│  └──────────────┘     └──────────────┘     └──────────────┘        │
+│                                                                     │
+│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐        │
+│  │   Session    │     │    Event     │     │  Interface   │        │
+│  │   Manager    │     │     Bus      │     │   Registry   │        │
+│  │              │     │              │     │              │        │
+│  │ • SQLite     │     │ • Pub/Sub    │     │ • Telegram   │        │
+│  │ • Compaction │     │ • Topics     │     │ • Discord    │        │
+│  │ • History    │     │ • Subscribe  │     │ • iMessage   │        │
+│  └──────────────┘     └──────────────┘     └──────────────┘        │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Gateway 有六个核心组件：
+
+- **Inbound Router** — 解析传入的 JSON-RPC 帧，验证结构，并分派到正确的处理程序
+- **Handler Registry** — 将方法名（如 `agent.run`、`session.list`）映射到处理函数
+- **Outbound Emitter** — 将流式事件和最终响应发送回客户端
+- **Session Manager** — 在 SQLite 中持久化对话历史，处理压缩
+- **Event Bus** — 用于实时事件分发的发布/订阅系统，支持 glob 模式订阅
+- **Interface Registry** — 跟踪活跃的聊天集成（Telegram、Discord、iMessage）
+
+---
+
+## JSON-RPC 2.0 协议
+
+所有通信均通过 WebSocket 帧使用 [JSON-RPC 2.0](https://www.jsonrpc.org/specification)。共有三种消息类型。
+
+### 请求（客户端到 Gateway）
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "uuid-xxx",
+  "method": "agent.run",
+  "params": {
+    "message": "Hello, what can you do?",
+    "session_key": "agent:main:main"
+  }
+}
+```
+
+`id` 字段是客户端生成的 UUID。Gateway 在响应中返回相同的 `id`，以便客户端匹配请求与响应。
+
+### 响应（Gateway 到客户端）
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "uuid-xxx",
+  "result": {
+    "run_id": "run-123",
+    "status": "running"
+  }
+}
+```
+
+对于 `agent.run`，初始响应用以确认运行已启动。实际的 AI 输出通过流式事件到达。
+
+### 事件（Gateway 到客户端，无 id）
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "stream.chunk",
+    "data": {
+      "run_id": "run-123",
+      "content": "Hello! I can help you with..."
+    }
+  }
+}
+```
+
+事件是服务器发起的通知（无 `id` 字段）。客户端通过 `events.subscribe` 方法订阅事件主题。
+
+---
+
+## RPC 方法参考
+
+### Agent 方法
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `agent.run` | Start agent execution | `message`, `session_key`, `thinking?`, `model?` |
+| `agent.status` | Get run status | `run_id` |
+| `agent.cancel` | Cancel a running agent | `run_id` |
+| `agent.abort` | Force-abort immediately | `run_id` |
+
+### Session 方法
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `session.get` | Get session info | `session_key` |
+| `session.list` | List all sessions | `filter?` |
+| `session.history` | Get message history | `session_key`, `limit?` |
+| `session.compact` | Trigger compression | `session_key` |
+| `session.delete` | Delete a session | `session_key` |
+
+### Configuration 方法
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `config.get` | Get current config | -- |
+| `config.patch` | Partial update (JSON Merge Patch) | `patch` |
+| `config.apply` | Full config replace | `config` |
+| `config.reload` | Reload from disk | -- |
+
+### Event 方法
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `events.subscribe` | Subscribe to event topic | `pattern` (glob) |
+| `events.unsubscribe` | Unsubscribe | `pattern` |
+| `events.list` | List active subscriptions | -- |
+
+### Memory 方法
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `memory.store` | Store a fact | `content`, `metadata?` |
+| `memory.search` | Search facts | `query`, `limit?` |
+| `memory.delete` | Delete a fact | `fact_id` |
+| `memory.stats` | Get memory statistics | -- |
+
+### Browser 方法 (CDP)
+
+| Method | Description | Key Parameters |
+|--------|-------------|----------------|
+| `browser.navigate` | Go to URL | `url` |
+| `browser.click` | Click element | `selector` |
+| `browser.type` | Type text | `selector`, `text` |
+| `browser.screenshot` | Take screenshot | `selector?` |
+| `browser.evaluate` | Run JavaScript | `script` |
+
+### 其他方法域
+
+| Domain | Methods |
+|--------|---------|
+| `auth.*` | `connect`, `pairing.approve`, `pairing.reject`, `devices.list` |
+| `interface.*` | `status`, `config`, `login` |
+| `mcp.*` | `start`, `stop`, `list`, `call` |
+| `plugins.*` | `install`, `uninstall`, `list`, `enable`, `disable` |
+| `skills.*` | `list`, `install`, `activate` |
+| `runs.*` | `list`, `status`, `wait`, `queue` |
+| `models.*` | `list`, `config` |
+| `generation.*` | `image`, `video` |
+| `cron.*` | `list`, `add`, `remove`, `run` |
+
+---
+
+## 消息管道
+
+当 WebSocket 帧到达时，Gateway 通过分层中间件管道处理它：
+
+```
+WebSocket Frame
+    │
+    ▼
+┌────────────────────────────────┐
+│ 1. Frame Parsing               │
+│    • Deserialize JSON-RPC      │
+│    • Validate structure        │
+│    • Extract method + params   │
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 2. Middleware Pipeline         │
+│    • TraceLayer (span/req-id)  │
+│    • MetricsLayer (timing)     │
+│    • AuthLayer (auth check)    │
+│    • RateLimitLayer (quota)    │
+│    • ValidateLayer (schema)    │
+│    • HandlerService (dispatch) │
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 3. Handler Dispatch            │
+│    • Look up method in registry│
+│    • agent.run → ExecutionEngine│
+│    • session.* → SessionManager│
+│    • config.* → ConfigManager  │
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 4. Execution                   │
+│    • Handler processes request │
+│    • May spawn AgentLoop       │
+│    • Streams events via EventBus│
+└────────────────┬───────────────┘
+                 │
+                 ▼
+┌────────────────────────────────┐
+│ 5. Response                    │
+│    • JSON-RPC result frame     │
+│    • Or JSON-RPC error frame   │
+└────────────────────────────────┘
+```
+
+中间件管道按此顺序为每个 JSON-RPC 请求运行：
+
+1. **TraceLayer** — 附加请求 span 和 trace ID 用于可观测性
+2. **MetricsLayer** — 记录请求计时和方法级指标
+3. **AuthLayer** — 验证认证（当 `auth.mode = "none"` 时跳过）
+4. **RateLimitLayer** — 强制执行每个身份、每个范围的速率限制
+5. **ValidateLayer** — 在到达处理程序之前验证请求模式
+6. **HandlerService** — 分派到已注册的处理程序执行
+
+---
+
+## 多通道路由
+
+Aleph 同时支持多个聊天接口。每个接口（Telegram、Discord、iMessage 等）将其平台特定的消息转换为统一的 JSON-RPC 协议，并将其转发到 Gateway。
+
+### Interface 特征
+
+每个通道适配器实现 `Interface` 特征：
+
+```rust
+#[async_trait]
+pub trait Interface: Send + Sync {
+    fn name(&self) -> &str;
+    async fn start(&self) -> Result<()>;
+    async fn stop(&self) -> Result<()>;
+    async fn send_message(
+        &self,
+        target: &InterfaceTarget,
+        message: &str,
+    ) -> Result<()>;
+    fn is_running(&self) -> bool;
+}
+```
+
+### 可用接口
+
+| Interface | Feature Flag | Platform |
+|-----------|-------------|----------|
+| CLI | `cli` | All platforms |
+| Telegram | `telegram` | All platforms |
+| Discord | `discord` | All platforms |
+| iMessage | (built-in) | macOS only |
+| WebChat | `gateway` | All platforms |
+
+### Session Key 解析
+
+每个通道生成一个唯一的会话密钥，决定对话是共享还是隔离：
+
+| Session Key Format | Use Case |
+|-------------------|----------|
+| `agent:main:main` | Cross-channel shared session (Main) |
+| `agent:main:telegram:dm:user123` | Per-user Telegram DM (DirectMessage) |
+| `agent:main:discord:group:guild-id` | Discord server channel (Group) |
+| `agent:main:cron:daily-summary` | Cron job / webhook (Task) |
+| `subagent:agent:main:translator` | Sub-agent delegation (Subagent) |
+| `agent:main:ephemeral:uuid` | Temporary, no persistence (Ephemeral) |
+
+DM 范围可以按接口配置：
+
+```rust
+pub enum DmScope {
+    Main,           // All DMs share the main session
+    PerPeer,        // Isolated session per user (default)
+    PerChannelPeer, // Isolated per channel + user
+}
+```
+
+---
+
+## 事件系统
+
+EventBus 为实时事件分发提供发布/订阅机制。客户端使用 glob 模式订阅。
+
+### 事件主题
+
+| Pattern | Events |
+|---------|--------|
+| `stream.*` | All streaming events |
+| `stream.chunk` | Text content chunks |
+| `stream.agent_trace` | Structured loop-originated execution trace |
+| `stream.tool_start` | Tool execution started |
+| `stream.tool_end` | Tool execution completed |
+| `agent.*` | Agent lifecycle events |
+| `agent.started` | Run started |
+| `agent.completed` | Run completed |
+| `agent.error` | Run error |
+| `session.*` | Session events |
+| `config.*` | Configuration change events |
+| `system.tick` | Periodic heartbeat (uptime, connections, state version) |
+| `system.shutdown` | Server shutdown notification |
+
+### 订阅事件
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "sub-1",
+  "method": "events.subscribe",
+  "params": { "pattern": "stream.*" }
+}
+```
+
+订阅后，客户端接收所有匹配的事件作为服务器发起的通知，直到取消订阅。
+
+---
+
+## 连接生命周期
+
+### 认证流程
+
+```
+Client WebSocket Connect
+    │
+    ▼
+┌─────────────────────────────────┐
+│ require_auth enabled?           │
+│   Yes → First frame must be     │
+│         "connect" method        │
+│   No  → Direct access allowed   │
+└─────────────────────────────────┘
+    │
+    ▼ (if auth required)
+┌─────────────────────────────────┐
+│ Validate credentials            │
+│   • Bearer token                │
+│   • Device fingerprint          │
+│   • Public key signature        │
+└─────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────┐
+│ Grant session token             │
+│ Set client role (operator/node) │
+└─────────────────────────────────┘
+```
+
+认证模式默认为 `Token`。在配置中设置 `auth.mode = "none"` 可完全禁用认证。旧的 `require_auth` 字段仍被接受以保持向后兼容。
+
+### Connect 请求
+
+当认证启用时，客户端必须将 `connect` 消息作为第一帧发送：
+
+```json
+{
+  "method": "connect",
+  "params": {
+    "minProtocol": 1,
+    "maxProtocol": 1,
+    "client": {
+      "id": "macos-app",
+      "version": "1.0.0",
+      "platform": "macos"
+    },
+    "role": "operator",
+    "auth": {
+      "token": "bearer_token"
+    }
+  }
+}
+```
+
+---
+
+## OpenAI 兼容路由
+
+除了 WebSocket JSON-RPC API 之外，Gateway 还在同一端口（`18790`）上暴露一个 OpenAI 兼容的 HTTP API。这允许使用 OpenAI API 格式的现有客户端和工具无需修改即可连接到 Aleph。
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/v1/models` | GET | List available models |
+| `/v1/models/{model_id}` | GET | Get model details |
+| `/v1/chat/completions` | POST | Chat completions (streaming + non-streaming) |
+| `/v1/embeddings` | POST | Text embeddings |
+| `/v1/responses` | POST | OpenAI Responses API |
+| `/v1/health` | GET | API health check |
+
+这些路由支持 bearer token 认证（当 `auth.mode = "token"` 时与 WebSocket 认证使用相同的 token）。在开发模式（`auth.mode = "none"`）下，端点是开放的。
+
+---
+
+## 热重载
+
+Gateway 监视 `~/.aleph/config.toml` 的更改并在不重启的情况下应用：
+
+```
+~/.aleph/config.toml modified
+    │
+    ▼
+┌─────────────────────────────────┐
+│ Debounce (500ms)                │
+└─────────────────┬───────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────┐
+│ Parse + validate new config     │
+└─────────────────┬───────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────┐
+│ Apply changes:                  │
+│ • Restart affected interfaces   │
+│ • Update routing rules          │
+│ • Emit config.changed event     │
+└─────────────────────────────────┘
+```
+
+`~/.aleph/protocols/` 中的协议适配器定义也通过类似机制热重载（有关协议适配器系统的详细信息，请参阅[架构概览](./overview)）。
+
+---
+
+## HTTP 端点
+
+与 WebSocket 服务器一起，Gateway 还在同一端口上提供 HTTP 端点：
+
+| Endpoint | Purpose |
+|----------|---------|
+| `/ws` | WebSocket upgrade endpoint |
+| `/health` | Health check (returns 200 OK) |
+| `/metrics` | Prometheus-compatible metrics |
+| `/` | Static files for built-in WebChat UI (ControlPlane) |
+| `/login` | Session-cookie login page |
+| `/auth/login` | Login form submission |
+| `/auth/logout` | Logout (clears session cookie) |
+
+当 A2A (Agent-to-Agent) 启用时，额外的 A2A 路由会挂载在同一 HTTP 服务器上。
+
+---
+
+## 接口配置示例
+
+```json
+{
+  "interfaces": {
+    "telegram": {
+      "token": "BOT_TOKEN",
+      "allowFrom": ["+1234567890"],
+      "groups": {
+        "*": { "requireMention": true }
+      }
+    },
+    "discord": {
+      "token": "BOT_TOKEN",
+      "guilds": ["guild-id-1"]
+    }
+  }
+}
+```
+
+每个接口都有自己的认证和范围配置。Telegram 可以限制允许哪些电话号码；Discord 可以限制机器人加入哪些公会。
+
+---
+
+## 相关页面
+
+- [架构概览](./overview) — 完整系统图和模块图
+- [Agent Harness](./harness) — Gateway 分派到 agent 后发生的情况
+- [会话管理](./sessions) — Session key 解析和持久化
+- [工具架构](./tools) — Agent 请求触发的工具执行

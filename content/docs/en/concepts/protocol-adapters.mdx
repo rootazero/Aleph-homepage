@@ -1,0 +1,205 @@
+---
+title: Protocol Adapters
+description: "3-layer protocol system: built-in, configurable YAML, and extension adapters with hot-reload support."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Overview
+
+Aleph decouples **vendors** from **protocols**. Multiple providers can share the same protocol adapter — for example, DeepSeek, Moonshot, and Groq all use the `openai` protocol. Adding a new OpenAI-compatible vendor requires only a preset entry, not a new adapter.
+
+This design means:
+
+- **One adapter, many vendors** — The `openai` protocol handles OpenAI, DeepSeek, Moonshot, and 20+ others
+- **Runtime extensibility** — Custom protocols via YAML without recompiling
+- **Fast iteration** — YAML protocols reload in under 600ms
+
+## Three-Layer System
+
+```
+User config.protocol
+    │
+    ▼
+ProtocolRegistry.get(name)
+    │
+    ├── Dynamic protocols (YAML-loaded) ──▶ ConfigurableProtocol
+    │   ├── Minimal mode: base protocol + differences
+    │   └── Custom mode: full template rendering
+    │
+    ├── Built-in protocols ──▶ OpenAI / Anthropic / Gemini / Ollama
+    │
+    └── Not found ──▶ Error with available protocol list
+```
+
+The registry resolves a protocol name in priority order: dynamic protocols first, built-in protocols fallback, error if neither exists.
+
+## Built-in Protocols
+
+These are compiled Rust adapters registered at startup:
+
+| Protocol | Adapter | Use Case |
+|----------|---------|----------|
+| `openai` | `OpenAiProtocol` | OpenAI and OpenAI-compatible APIs |
+| `anthropic` | `AnthropicProtocol` | Claude API (native Messages API) |
+| `gemini` | `GeminiProtocol` | Google Gemini API |
+| `openai-responses` | `OpenAiResponsesProtocol` | OpenAI `/v1/responses` API, OpenRouter |
+| `codex` / `chatgpt` | `OpenAiResponsesProtocol` (Codex variant) | ChatGPT subscription via OAuth |
+| `ollama` | `OllamaProvider` | Local Ollama (native implementation) |
+
+Each built-in adapter implements two methods:
+
+- `build_request(payload, config)` — constructs an HTTP request builder (stream-first: always sets `stream: true`)
+- `stream_deltas(response)` — parses SSE/streaming response into fine-grained `ProviderDelta` events
+
+## Configurable Protocols
+
+YAML-defined protocols live in `~/.aleph/protocols/` and are hot-reloadable. The system watches this directory and reloads definitions automatically.
+
+<Callout type="info">
+Reload latency is ~600ms from file change to active (500ms debounce + parse/register overhead).
+</Callout>
+
+### Hot Reload Mechanism
+
+1. `notify-debouncer-full` watches `~/.aleph/protocols/`
+2. File change detected (Create / Modify / Delete)
+3. YAML parsed into `ProtocolDefinition`
+4. `ConfigurableProtocol` adapter created
+5. Registry updated atomically
+6. New requests use updated protocol immediately
+
+## Minimal vs Custom Mode
+
+### Minimal Mode
+
+Extend an existing protocol and override only the differences:
+
+```yaml
+# ~/.aleph/protocols/my-proxy.yaml
+name: my-proxy
+extends: openai
+base_url: https://proxy.example.com/v1
+differences:
+  auth:
+    header: X-API-Key
+    prefix: "Bearer "
+```
+
+Minimal mode inherits the base protocol's request building and response parsing, applying only the specified overrides.
+
+### Custom Mode
+
+Define a full protocol from scratch with template rendering:
+
+```yaml
+# ~/.aleph/protocols/exotic-ai.yaml
+name: exotic-ai
+base_url: https://api.exotic.ai
+custom:
+  auth:
+    type: header
+    header: Authorization
+    prefix: "Bearer "
+  endpoints:
+    chat: /v2/completions
+    stream: /v2/completions/stream
+  request_template: |
+    {"model": "{{config.model}}", "messages": [{"role": "user", "content": "{{input}}"}]}
+  response_mapping:
+    content: "$.choices[0].message.content"
+    error: "$.error.message"
+```
+
+Custom mode provides full control over request templates and JSONPath response mapping.
+
+## ProtocolRegistry
+
+The `ProtocolRegistry` maps protocol name strings to adapter implementations:
+
+```rust
+pub struct ProtocolRegistry {
+    dynamic: RwLock<HashMap<String, Arc<dyn ProtocolAdapter>>>,  // YAML-loaded
+    builtin: RwLock<HashMap<String, ProtocolFactory>>,           // Compiled Rust
+}
+```
+
+Lookup order:
+
+1. **Dynamic protocols first** — loaded from `~/.aleph/protocols/*.yaml`
+2. **Built-in protocols fallback** — factory functions instantiate adapters on demand
+
+Registry access:
+
+```rust
+let registry = ProtocolRegistry::global();
+let adapter = registry.get("openai")?;
+```
+
+## Adding a Custom Protocol
+
+Three steps to add a custom protocol:
+
+**Step 1 — Create YAML:**
+
+```yaml
+name: my-custom-api
+base_protocol: openai
+base_url: https://api.example.com/v1
+headers:
+  Authorization: Bearer ${API_KEY}
+```
+
+**Step 2 — Place in protocols directory:**
+
+```bash
+mv my-custom-api.yaml ~/.aleph/protocols/
+```
+
+**Step 3 — Reference in provider config:**
+
+```toml
+[providers.my-provider]
+protocol = "my-custom-api"
+models = ["my-model"]
+api_key = "sk-..."
+enabled = true
+```
+
+## YAML Format Example
+
+```yaml
+name: my-custom-api          # Protocol identifier (referenced in config.protocol)
+base_protocol: openai        # Base protocol for minimal mode
+base_url: https://api.example.com/v1
+
+# Optional: custom headers applied to every request
+headers:
+  Authorization: Bearer ${API_KEY}
+  X-Custom-Header: my-value
+
+# Minimal mode: override specific fields
+differences:
+  auth:
+    header: X-API-Key
+    prefix: "Bearer "
+
+# Or custom mode: full control
+custom:
+  auth:
+    type: header
+    header: Authorization
+  endpoints:
+    chat: /v1/chat/completions
+    stream: /v1/chat/completions/stream
+  request_template: |
+    {"model": "{{config.model}}", "messages": {{messages}}, "stream": true}
+  response_mapping:
+    content: "$.choices[0].delta.content"
+    error: "$.error.message"
+```
+
+## Related Pages
+
+- [Providers](./providers) — Provider presets, failover, and health monitoring
+- [Gateway](./gateway) — How the Gateway routes requests to providers

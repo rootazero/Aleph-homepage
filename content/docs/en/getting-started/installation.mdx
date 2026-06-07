@@ -1,0 +1,99 @@
+---
+title: "Installation"
+description: "Install Aleph on your system"
+---
+
+This guide covers installing Aleph on your system.
+
+## Prerequisites
+
+- **Rust 1.92+** - Required for building from source (see `rust-version` in `Cargo.toml`)
+- **just** - Command runner (`cargo install just`)
+- **npm** - For building the WASM panel UI
+- **wasm-bindgen** - WASM JS bindings (`cargo install wasm-bindgen-cli`)
+- **macOS 14+**, **Linux**, or **Windows** - Primary supported platforms
+- **SQLite** - Bundled via `rusqlite` (no separate install needed)
+
+### Platform-Specific Requirements
+
+**macOS:**
+- Xcode Command Line Tools
+- Swift toolchain (for desktop bridge)
+
+**Linux:**
+- `build-essential` or equivalent
+- `pkg-config`
+- `libssl-dev`
+
+**Windows:**
+- Visual Studio Build Tools
+- `windows-sys` features handled automatically by Cargo
+
+## Installation Methods
+
+### Using Just (Recommended)
+
+Aleph includes a `justfile` with common development tasks:
+
+```bash
+# Verify all build dependencies are installed
+just deps
+
+# Run server in development mode (rebuilds WASM)
+just dev
+
+# Build release binary
+just build
+
+# Run tests
+just test
+```
+
+### From Source
+
+```bash
+# Clone the repository
+git clone https://github.com/rootazero/Aleph.git
+cd Aleph
+
+# Verify dependencies
+just deps
+
+# Run in development mode
+just dev
+
+# Or build release binary
+just build
+```
+
+The release binary will be at `target/release/aleph-server`.
+
+### Verify Build
+
+```bash
+# Quick compilation check
+just check
+
+# Run core tests
+just test
+
+# Check all crates including desktop
+just check-desktop
+```
+
+## Directory Structure
+
+Aleph creates the following directories at `~/.aleph/`:
+
+| Path | Purpose |
+|------|---------|
+| `~/.aleph/` | Main configuration directory |
+| `~/.aleph/aleph.toml` | Primary configuration file |
+| `~/.aleph/logs/` | Server logs |
+| `~/.aleph/skills/` | User-installed skills |
+| `~/.aleph/plugins/` | Extensions |
+
+## Next Steps
+
+- [Quick Start](./quick-start) - Get up and running
+- [Configuration](./configuration) - Configure your setup

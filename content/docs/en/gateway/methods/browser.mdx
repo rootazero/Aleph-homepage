@@ -1,0 +1,396 @@
+---
+title: "browser.*"
+description: "Browser automation RPC methods via Chrome DevTools Protocol"
+---
+
+Browser methods provide browser automation through the Chrome DevTools Protocol (CDP). Navigate web pages, interact with elements, capture screenshots, run JavaScript, and extract accessibility snapshots -- all controlled via RPC.
+
+:::warning
+This page documents the intended API. The `browser.*` methods shown below are defined in the source handler (`src/gateway/handlers/browser_config.rs`) but are **not currently exposed** as standalone JSON-RPC methods in the runtime. Browser automation is available as builtin tools (`browser_navigate`, `browser_click`, etc.) within agent execution. The `browser_config.*` namespace (`browser_config.get`, `browser_config.update`) is registered for configuration. See [Methods Reference](/docs/en/gateway/methods) for the accurate method listing.
+:::
+
+## Prerequisites
+
+Browser automation requires a Chromium-based browser. Aleph can auto-detect an installed browser or connect to a running instance via WebSocket.
+
+```toml
+# ~/.aleph/config.toml
+[browser]
+mode = "auto"        # "auto", "connect", or "binary"
+headless = false
+cdp_port = 9222
+```
+
+## Methods
+
+### browser.navigate
+
+Navigate to a URL in the current tab.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "browser.navigate",
+  "params": {
+    "url": "https://example.com"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "url": "https://example.com",
+    "title": "Example Domain",
+    "status": 200,
+    "loaded": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | Yes | URL to navigate to |
+| `wait_until` | string | No | Wait condition: `"load"` (default), `"domcontentloaded"`, `"networkidle"` |
+| `timeout_ms` | number | No | Navigation timeout in milliseconds. Default: 30000 |
+
+### browser.click
+
+Click an element on the page. Elements can be targeted by ARIA snapshot ref ID, CSS selector, or viewport coordinates.
+
+**Request (by CSS selector):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "browser.click",
+  "params": {
+    "target": {
+      "type": "selector",
+      "css": "#login-button"
+    }
+  }
+}
+```
+
+**Request (by ARIA ref):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "browser.click",
+  "params": {
+    "target": {
+      "type": "ref",
+      "ref_id": "button[0]"
+    }
+  }
+}
+```
+
+**Request (by coordinates):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "browser.click",
+  "params": {
+    "target": {
+      "type": "coordinates",
+      "x": 150.0,
+      "y": 300.0
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "clicked": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | ActionTarget | Yes | Element targeting (see Action Targets below) |
+
+### browser.type
+
+Type text into an input element. The element is clicked first to ensure focus, then text is appended to the current value.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "browser.type",
+  "params": {
+    "target": {
+      "type": "selector",
+      "css": "input[name='email']"
+    },
+    "text": "user@example.com"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "typed": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | ActionTarget | Yes | Element to type into |
+| `text` | string | Yes | Text to type |
+| `clear` | boolean | No | Clear existing value before typing. Default: `false` |
+
+### browser.screenshot
+
+Capture a screenshot of the current page or a specific element.
+
+**Request (full page):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "browser.screenshot",
+  "params": {
+    "full_page": true,
+    "format": "png"
+  }
+}
+```
+
+**Request (element):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "browser.screenshot",
+  "params": {
+    "target": {
+      "type": "selector",
+      "css": "#main-content"
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "data_base64": "iVBORw0KGgoAAAANSUhEUg...",
+    "width": 1920,
+    "height": 1080,
+    "format": "png"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target` | ActionTarget | No | Element to capture. If omitted, captures the viewport. |
+| `full_page` | boolean | No | Capture the entire scrollable page. Default: `false` |
+| `format` | string | No | Image format: `"png"` (default) or `"jpeg"` |
+| `quality` | number | No | JPEG quality (1-100). Default: 80. Ignored for PNG. |
+
+### browser.evaluate
+
+Execute arbitrary JavaScript in the page context and return the result.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "browser.evaluate",
+  "params": {
+    "script": "document.querySelectorAll('a').length"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "value": 42,
+    "type": "number"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `script` | string | Yes | JavaScript expression or IIFE to evaluate |
+| `timeout_ms` | number | No | Evaluation timeout. Default: 5000 |
+
+The script is evaluated as an expression. For complex logic, wrap it in an IIFE:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "browser.evaluate",
+  "params": {
+    "script": "(() => { const links = [...document.querySelectorAll('a')]; return links.map(a => ({ href: a.href, text: a.textContent.trim() })); })()"
+  }
+}
+```
+
+### browser.snapshot
+
+Take an ARIA accessibility snapshot of the page. Returns a structured tree of accessible elements with roles, names, values, and bounding rectangles. This is the primary method the agent uses to "see" page content.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "browser.snapshot"
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "page_title": "Example Domain",
+    "page_url": "https://example.com",
+    "focused_ref": null,
+    "elements": [
+      {
+        "ref_id": "heading[0]",
+        "role": "heading",
+        "name": "Example Domain",
+        "value": null,
+        "state": [],
+        "bounds": { "x": 100, "y": 50, "width": 300, "height": 40 }
+      },
+      {
+        "ref_id": "link[0]",
+        "role": "link",
+        "name": "More information...",
+        "value": null,
+        "state": [],
+        "bounds": { "x": 100, "y": 200, "width": 200, "height": 20 }
+      }
+    ]
+  }
+}
+```
+
+This method takes no parameters. The snapshot provides `ref_id` values that can be used with other browser methods via the `ref` action target type.
+
+## Action Targets
+
+Browser action methods (click, type, etc.) accept an `ActionTarget` to identify which element to interact with. Three targeting strategies are available:
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `ref` | Target by ARIA snapshot ref ID | `{ "type": "ref", "ref_id": "button[0]" }` |
+| `selector` | Target by CSS selector | `{ "type": "selector", "css": "#submit-btn" }` |
+| `coordinates` | Target by viewport coordinates | `{ "type": "coordinates", "x": 150, "y": 300 }` |
+
+### Resolution Order
+
+All targets are resolved to viewport `(x, y)` coordinates before the action is dispatched:
+
+1. **Coordinates** -- Used directly
+2. **Ref** -- Takes an ARIA snapshot, finds the element, returns its center point
+3. **Selector** -- Evaluates `querySelector` + `getBoundingClientRect`, returns center point
+
+### Scroll Directions
+
+The `browser.scroll` action (used internally by the agent) supports directional scrolling:
+
+| Direction | Delta |
+|-----------|-------|
+| `up` | 300px upward |
+| `down` | 300px downward |
+| `left` | 300px left |
+| `right` | 300px right |
+
+## Browser Launch Modes
+
+| Mode | Description |
+|------|-------------|
+| `auto` | Auto-detect and launch a Chromium browser |
+| `connect` | Connect to an existing browser via WebSocket endpoint |
+| `binary` | Launch a specific browser binary by path |
+
+**Connect mode example:**
+```json
+{
+  "browser": {
+    "mode": {
+      "type": "connect",
+      "endpoint": "ws://127.0.0.1:9222/devtools/browser/abc-123"
+    }
+  }
+}
+```
+
+## Tab Management
+
+Browser methods operate on the active tab. For multi-tab scenarios, the `tab_id` parameter is available on all methods:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "browser.navigate",
+  "params": {
+    "url": "https://example.com",
+    "tab_id": "tab-uuid"
+  }
+}
+```
+
+Tab information includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique tab identifier |
+| `url` | string | Current page URL |
+| `title` | string | Current page title |
+
+## See Also
+
+- [agent.*](/docs/en/gateway/methods/agent) -- Agent uses browser methods as tools
+- [exec.*](/docs/en/gateway/methods/exec) -- Security approval for browser actions
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
