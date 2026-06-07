@@ -10,11 +10,17 @@ import { Cards, Card } from "fumadocs-ui/components/card";
 
 **Aleph** is a powerful personal AI assistant built in Rust, designed to give AI the ability to interact with the world. It combines a high-performance Gateway control plane with multi-channel messaging support, enabling AI agents to work across various platforms seamlessly.
 
+> **Single-Core Multi-Terminal, Shell-Core Separation; Gateway Interoperability, Access Control.**
+>
+> One `aleph-server` core powers every interface — desktop app, CLI, TUI, Telegram, Discord, and more. The native desktop shell is a thin container with zero business logic; all reasoning, tools, and state live in the core. Every terminal connects through the same authenticated WebSocket gateway, whether local or remote.
+
 ## Key Features
 
 - **Multi-Provider AI** - Claude, GPT, Gemini, Ollama with automatic failover
-- **Multi-Channel** - Telegram, Discord, iMessage, Slack, WebChat
+- **Multi-Channel** - Telegram, Discord, iMessage, Slack, WebChat, Desktop App
 - **Native Performance** - 100% Rust core, no interpreted languages
+- **Shell-Core Separation** - Desktop shell is pure OS integration; core runs standalone
+- **Remote Core** - Connect desktop shell to a remote `aleph-server` over Tailnet/VPN
 - **Secure Execution** - Three-tier security model for command execution
 - **Extensible** - MCP integration, plugin system, custom tools
 - **Self-Hosted** - Run on your own hardware, full control
@@ -22,24 +28,25 @@ import { Cards, Card } from "fumadocs-ui/components/card";
 ## Architecture
 
 ```
-                     Channels
-         ┌─────────────────────────────┐
-         │ Telegram │ Discord │ iMessage│
-         └──────────────┬──────────────┘
-                        │
-              ┌─────────▼─────────┐
-              │      Gateway      │
-              │  ws://127.0.0.1   │
-              │    JSON-RPC 2.0   │
-              └─────────┬─────────┘
-                        │
-         ┌──────────────┼──────────────┐
-         │              │              │
-    ┌────▼────┐   ┌─────▼─────┐  ┌────▼────┐
-    │  Agent  │   │  Session  │  │  Tools  │
-    │  Loop   │   │  Manager  │  │ Registry│
-    └─────────┘   └───────────┘  └─────────┘
+                               Terminals
+    ┌─────────────────────────────────────────────────────────────┐
+    │  Desktop App  │  Telegram  │  Discord  │  iMessage │  CLI  │
+    │  (Tauri Shell)│            │           │           │       │
+    └───────┬───────┴────────────┴───────────┴───────────┴───┬───┘
+            │                                                │
+            │  WebSocket (JSON-RPC 2.0)                      │
+            │  ws://127.0.0.1:18790/ws                       │
+            │                                                │
+    ┌───────▼────────────────────────────────────────────────▼───┐
+    │                    Aleph Core (aleph-server)                │
+    │  ┌─────────┐  ┌───────────┐  ┌─────────┐  ┌─────────────┐ │
+    │  │  Agent  │  │  Session  │  │  Tools  │  │   Gateway   │ │
+    │  │  Loop   │  │  Manager  │  │ Registry│  │  (Auth)     │ │
+    │  └─────────┘  └───────────┘  └─────────┘  └─────────────┘ │
+    └────────────────────────────────────────────────────────────┘
 ```
+
+**Shell-Core Separation.** The desktop app is a thin Tauri v2 shell — window, tray, notifications, auto-update, global hotkey. It contains **no business logic and no business UI**. All product UI lives in the Leptos Panel (served by the core at `http://127.0.0.1:18790`). All reasoning, tools, and state live in `aleph-server`. The shell can connect to a local core or a remote one over Tailnet/VPN.
 
 ## Quick Start
 

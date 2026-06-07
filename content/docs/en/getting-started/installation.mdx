@@ -31,9 +31,26 @@ This guide covers installing Aleph on your system.
 
 ## Installation Methods
 
-### Using Just (Recommended)
+### Desktop App (Recommended)
 
-Aleph includes a `justfile` with common development tasks:
+The easiest way to run Aleph is the native desktop app. It bundles both the core server and a Tauri shell — no terminal required.
+
+| Platform | Download | Notes |
+|----------|----------|-------|
+| **macOS** | `.dmg` from [Releases](https://github.com/rootazero/Aleph/releases) | Universal binary (Intel & Apple Silicon) |
+| **Linux** | `.deb` / `.AppImage` from [Releases](https://github.com/rootazero/Aleph/releases) | Debian, Ubuntu, Fedora |
+| **Windows** | `.msi` from [Releases](https://github.com/rootazero/Aleph/releases) | Windows 10/11 |
+
+The desktop app:
+- Embeds `aleph-server` as a background daemon
+- Hosts the Leptos Panel in a native webview
+- Provides system tray, OS notifications, global hotkey (`CmdOrCtrl+Shift+A`)
+- Auto-updates silently via GitHub Releases
+- Supports launch-at-login
+
+### Using Just (Development)
+
+For development or headless server deployment:
 
 ```bash
 # Verify all build dependencies are installed
@@ -67,6 +84,16 @@ just build
 ```
 
 The release binary will be at `target/release/aleph-server`.
+
+### Desktop Shell (Development)
+
+```bash
+# Run the desktop shell in dev mode (rebuilds daemon + shell)
+just shell-dev
+
+# Build platform installer (.app/.dmg, .msi, .deb)
+just shell-build
+```
 
 ### Verify Build
 

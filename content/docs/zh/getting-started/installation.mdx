@@ -31,9 +31,26 @@ description: "在你的系统上安装 Aleph"
 
 ## 安装方法
 
-### 使用 Just（推荐）
+### 桌面应用（推荐）
 
-Aleph 包含一个带有常见开发任务的 `justfile`：
+运行 Aleph 最简单的方式是使用原生桌面应用。它同时捆绑了核心服务器和 Tauri 壳——无需终端。
+
+| 平台 | 下载 | 说明 |
+|------|------|------|
+| **macOS** | `.dmg` 从 [Releases](https://github.com/rootazero/Aleph/releases) | 通用二进制文件（Intel 和 Apple Silicon） |
+| **Linux** | `.deb` / `.AppImage` 从 [Releases](https://github.com/rootazero/Aleph/releases) | Debian、Ubuntu、Fedora |
+| **Windows** | `.msi` 从 [Releases](https://github.com/rootazero/Aleph/releases) | Windows 10/11 |
+
+桌面应用：
+- 将 `aleph-server` 作为后台守护进程嵌入
+- 在原生 webview 中托管 Leptos Panel
+- 提供系统托盘、OS 通知、全局热键（`CmdOrCtrl+Shift+A`）
+- 通过 GitHub Releases 静默自动更新
+- 支持开机自启
+
+### 使用 Just（开发）
+
+用于开发或无头服务器部署：
 
 ```bash
 # 验证所有构建依赖已安装
@@ -67,6 +84,16 @@ just build
 ```
 
 发布二进制文件将位于 `target/release/aleph-server`。
+
+### 桌面壳（开发）
+
+```bash
+# 以开发模式运行桌面壳（重建守护进程 + 壳）
+just shell-dev
+
+# 构建平台安装程序（.app/.dmg、.msi、.deb）
+just shell-build
+```
 
 ### 验证构建
 

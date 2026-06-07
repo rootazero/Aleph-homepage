@@ -5,7 +5,40 @@ description: "Get up and running with Aleph"
 
 Get Aleph running in under 5 minutes.
 
-## 1. Build and Run
+## Option 1: Desktop App (Fastest)
+
+Download the latest release for your platform:
+
+| Platform | Download |
+|----------|----------|
+| **macOS** | `.dmg` from [GitHub Releases](https://github.com/rootazero/Aleph/releases) |
+| **Linux** | `.deb` or `.AppImage` from [GitHub Releases](https://github.com/rootazero/Aleph/releases) |
+| **Windows** | `.msi` from [GitHub Releases](https://github.com/rootazero/Aleph/releases) |
+
+1. Install and launch the app
+2. Complete the setup wizard (API key, model selection)
+3. Start chatting
+
+The desktop app bundles the core server as a background daemon. The shell stays in your system tray; closing the window does **not** stop the server.
+
+**Global hotkey:** `CmdOrCtrl+Shift+A` summons the window from anywhere.
+
+### Connect to a Remote Core
+
+The desktop shell can connect to a remote `aleph-server` over Tailnet or VPN:
+
+```bash
+# On the remote machine, ensure the gateway is accessible
+aleph gateway run --bind 0.0.0.0 --port 18790
+```
+
+Then point your local shell at the remote origin (advanced — see [Configuration](./configuration)).
+
+---
+
+## Option 2: From Source (Development)
+
+### 1. Build and Run
 
 ```bash
 # Clone the repository
@@ -21,7 +54,7 @@ cargo run --bin aleph-server
 
 The server starts on `ws://127.0.0.1:18790` by default.
 
-## 2. Configure
+### 2. Configure
 
 Create your configuration file at `~/.aleph/config.toml`:
 
@@ -47,15 +80,15 @@ Set your API key:
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-## 3. Connect via WebChat
+### 3. Connect via WebChat
 
 Open the WebChat interface at `http://localhost:18790` (or the port configured in `gateway.port`).
 
 The WebChat is a WASM-based UI that connects to the Gateway WebSocket.
 
-## 4. Connect a Messaging Channel (Optional)
+### 4. Connect a Messaging Channel (Optional)
 
-### Telegram
+#### Telegram
 
 Add to `~/.aleph/config.toml`:
 
@@ -67,7 +100,7 @@ token = "YOUR_BOT_TOKEN"
 
 Restart the server to pick up the new channel.
 
-### Discord
+#### Discord
 
 ```toml
 [channel.discord]
@@ -75,7 +108,7 @@ enabled = true
 token = "YOUR_BOT_TOKEN"
 ```
 
-## 5. Verify
+### 5. Verify
 
 Check that the server is running:
 
@@ -90,8 +123,20 @@ Test the WebSocket connection:
 curl http://localhost:18790/health
 ```
 
+---
+
+## Architecture at a Glance
+
+> **Single-Core Multi-Terminal, Shell-Core Separation; Gateway Interoperability, Access Control.**
+
+- **One core** (`aleph-server`) powers every interface
+- **Shell** (desktop app) = pure OS integration; **Core** = all business logic
+- All terminals speak the same authenticated WebSocket protocol
+- Desktop shell can connect to local or remote core
+
 ## Next Steps
 
 - [Configuration](./configuration) - Full configuration reference
 - [Gateway Protocol](../gateway/protocol) - WebSocket JSON-RPC API
 - [Interfaces](../interfaces/overview) - Connect more platforms
+- [Architecture](../architecture/overview) - Deep dive into shell-core separation

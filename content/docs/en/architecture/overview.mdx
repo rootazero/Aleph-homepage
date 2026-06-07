@@ -7,6 +7,22 @@ Aleph is organized into five horizontal layers that form a clean processing pipe
 
 For deeper dives into individual subsystems, see [Gateway Architecture](./gateway), [Harness](./harness), [Session Service](./session-service), [Tool Architecture](./tools), and [Memory System](./memory).
 
+## Design Philosophy
+
+> **Single-Core Multi-Terminal, Shell-Core Separation; Gateway Interoperability, Access Control.**
+
+Aleph's architecture is built on four principles that govern every design decision:
+
+1. **Single-Core Multi-Terminal** — One `aleph-server` process powers every interface. Whether you chat via the desktop app, CLI, Telegram, or Discord, the same core handles all reasoning, tool execution, and state management.
+
+2. **Shell-Core Separation** — The desktop app is a *thin native shell* (Tauri v2). It owns the window, tray, notifications, and OS integrations — but **zero business logic and zero business UI**. All product UI lives in the Leptos Panel served by the core. All reasoning, tools, and state live in `aleph-server`. The shell can connect to a local core or a remote one over Tailnet/VPN.
+
+3. **Gateway Interoperability** — Every terminal speaks the same authenticated WebSocket protocol (`JSON-RPC 2.0` over `ws://`). A CLI tool, a Telegram bot, and the desktop shell all call identical methods on the same Gateway.
+
+4. **Access Control** — Every connection is authenticated. The desktop shell reads a shared token from the core's security database. Remote connections use the same token mechanism. Guest sessions carry restricted scopes. See [Identity and Security](#identity-and-security) for details.
+
+---
+
 ## System Layers
 
 ```
@@ -14,13 +30,14 @@ For deeper dives into individual subsystems, see [Gateway Architecture](./gatewa
 │                           INTERFACE LAYER (I/O)                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │ macOS    │  │  Tauri   │  │   CLI    │  │ Telegram │  │ Discord  │      │
-│  │  App     │  │   App    │  │          │  │Interface │  │Interface │      │
+│  │ Desktop  │  │   CLI    │  │ Telegram │  │ Discord  │  │  TUI     │      │
+│  │  Shell   │  │          │  │Interface │  │Interface │  │          │      │
+│  │(Tauri v2)│  │          │  │          │  │          │  │          │      │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘      │
 │       │             │             │             │             │             │
 │       └─────────────┴─────────────┴─────────────┴─────────────┘             │
 │                                   │                                          │
-│                          WebSocket (JSON-RPC 2.0)                           │
+│                    WebSocket (JSON-RPC 2.0) + Auth Token                    │
 │                          ws://127.0.0.1:18790/ws                             │
 └───────────────────────────────────┬─────────────────────────────────────────┘
                                     │
@@ -81,7 +98,24 @@ For deeper dives into individual subsystems, see [Gateway Architecture](./gatewa
 
 ### Layer 1: Interface
 
-The topmost layer contains all client applications. Every client — whether a native macOS app, a Tauri desktop app, the terminal CLI, or a Telegram/Discord bot — connects to the same Gateway via a single WebSocket endpoint at `ws://127.0.0.1:18790/ws`. Communication uses JSON-RPC 2.0, meaning every client speaks the same protocol regardless of platform.
+The topmost layer contains all client applications. Every client — whether the desktop shell, terminal CLI, or a Telegram/Discord bot — connects to the same Gateway via a single authenticated WebSocket endpoint at `ws://127.0.0.1:18790/ws`. Communication uses JSON-RPC 2.0, meaning every client speaks the same protocol regardless of platform.
+
+**Desktop Shell (Tauri v2).** The native desktop app is the "last-mile native shell." It provides:
+- Native window + webview hosting the Leptos Panel (`http://127.0.0.1:18790`)
+- System tray with "Quit" and "Quit & Stop Aleph" options
+- OS notifications via WebSocket event bridge
+- Global summon hotkey (`CmdOrCtrl+Shift+A`)
+- `aleph://` URL scheme for deep links
+- Background auto-update checker
+- Launch-at-login
+- Daemon lifecycle supervision (relaunches core if it crashes)
+
+Crucially, the shell contains **no business logic and no business UI**. All product UI (chat, memory, settings) lives in the Panel (WASM, served by the core). All reasoning, tools, and state live in `aleph-server`. This separation means:
+- The shell can be updated independently of the core
+- The core can run headless on a server while the shell connects remotely
+- The same core serves the desktop shell, CLI, and messaging bots simultaneously
+
+**Remote Core Support.** The desktop shell can connect to a remote `aleph-server` over Tailnet or VPN. The Panel's directory picker browses the *server's* filesystem via JSON-RPC (`fs.*`), ensuring correct semantics for remote deployments. Authentication uses a shared token injected by the shell at startup (read from `~/.aleph/data/security.db` via the core's `bootstrap-token` subcommand).
 
 ### Layer 2: Gateway
 
@@ -404,6 +438,10 @@ aleph/
 │   ├── session/            # SessionService, append-only event log
 │   └── ...                 # 50+ additional modules
 ├── desktop/
+│   ├── shell/              # Tauri v2 native desktop app (thin shell)
+│   │   ├── src/            # Window, tray, daemon lifecycle, notifications
+│   │   ├── splash/         # Launch splash screen
+│   │   └── binaries/       # Bundled aleph-server + bridge binaries
 │   ├── shared/             # DesktopCapability trait + IPC protocol
 │   ├── macos/              # macOS native bridge (Swift)
 │   ├── linux/              # Linux native bridge
