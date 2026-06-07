@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { RichText } from "./RichText";
 
@@ -8,7 +8,6 @@ export function Faq() {
   const t = useTranslations("faq");
   const items = t.raw("items") as { q: string; a: string }[];
   const [open, setOpen] = useState(0);
-  const refs = useRef<(HTMLDivElement | null)[]>([]);
 
   return (
     <section className="faq section" id="faq">
@@ -29,8 +28,7 @@ export function Faq() {
                   </button>
                   <div
                     className="acc-a"
-                    ref={(el) => { refs.current[i] = el; }}
-                    style={{ maxHeight: isOpen ? refs.current[i]?.scrollHeight ?? 600 : 0 }}
+                    style={{ maxHeight: isOpen ? 600 : 0 }}
                   >
                     <p>{f.a}</p>
                   </div>

@@ -4,18 +4,25 @@ import { useEffect, useRef, useState } from "react";
 
 export type OS = "mac" | "windows" | "linux";
 
+function detectOS(): OS {
+  if (typeof navigator === "undefined") return "mac";
+  const n = navigator as Navigator & { userAgentData?: { platform?: string } };
+  const p = (n.userAgentData?.platform || n.platform || n.userAgent || "").toLowerCase();
+  const ua = (n.userAgent || "").toLowerCase();
+  if (/iphone|ipad|ipod/.test(ua)) return "mac";
+  if (/android/.test(ua)) return "linux";
+  if (/mac/.test(p) || /mac os/.test(ua)) return "mac";
+  if (/win/.test(p) || /windows/.test(ua)) return "windows";
+  if (/linux|x11|cros/.test(p) || /linux/.test(ua)) return "linux";
+  return "mac";
+}
+
 export function useOS(): OS {
-  const [os, setOs] = useState<OS>("mac");
-  useEffect(() => {
-    const n = navigator as Navigator & { userAgentData?: { platform?: string } };
-    const p = (n.userAgentData?.platform || n.platform || n.userAgent || "").toLowerCase();
-    const ua = (n.userAgent || "").toLowerCase();
-    if (/iphone|ipad|ipod/.test(ua)) setOs("mac");
-    else if (/android/.test(ua)) setOs("linux");
-    else if (/mac/.test(p) || /mac os/.test(ua)) setOs("mac");
-    else if (/win/.test(p) || /windows/.test(ua)) setOs("windows");
-    else if (/linux|x11|cros/.test(p) || /linux/.test(ua)) setOs("linux");
-  }, []);
+  // Lazy initializer: runs only on the client (useEffect not needed).
+  // SSR returns "mac" as the safe default.
+  const [os] = useState<OS>(() =>
+    typeof window !== "undefined" ? detectOS() : "mac"
+  );
   return os;
 }
 
