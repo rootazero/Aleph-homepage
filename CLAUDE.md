@@ -83,7 +83,7 @@ src/
 │   ├── docs-i18n.ts                     # Fumadocs I18nConfig (defineI18n, hideLocale)
 │   └── layout.shared.tsx                # Fumadocs baseOptions + UI translations (defineI18nUI)
 ├── messages/                            # next-intl JSON (en.json, zh.json) — homepage strings
-└── middleware.ts                        # next-intl locale detection middleware
+└── proxy.ts                             # next-intl locale detection (Next.js 16 renamed middleware.ts → proxy.ts)
 
 content/docs/                            # Fumadocs MDX content (en/ + zh/)
 source.config.ts                         # Fumadocs MDX config (defineDocs dir: content/docs)
