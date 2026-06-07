@@ -1,0 +1,58 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+
+export type OS = "mac" | "windows" | "linux";
+
+export function useOS(): OS {
+  const [os, setOs] = useState<OS>("mac");
+  useEffect(() => {
+    const n = navigator as Navigator & { userAgentData?: { platform?: string } };
+    const p = (n.userAgentData?.platform || n.platform || n.userAgent || "").toLowerCase();
+    const ua = (n.userAgent || "").toLowerCase();
+    if (/iphone|ipad|ipod/.test(ua)) setOs("mac");
+    else if (/android/.test(ua)) setOs("linux");
+    else if (/mac/.test(p) || /mac os/.test(ua)) setOs("mac");
+    else if (/win/.test(p) || /windows/.test(ua)) setOs("windows");
+    else if (/linux|x11|cros/.test(p) || /linux/.test(ua)) setOs("linux");
+  }, []);
+  return os;
+}
+
+/** Continuous parallax driven by scrollY; rate e.g. 0.18 / -0.18. */
+export function useParallax(rate: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        if (ref.current) ref.current.style.transform = `translateY(${window.scrollY * rate}px)`;
+        ticking = false;
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [rate]);
+  return ref;
+}
+
+/** IO fallback for .reveal -> .in (CSS scroll-timeline handles modern browsers). */
+export function useScrollReveal() {
+  useEffect(() => {
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            e.target.classList.add("in");
+            io.unobserve(e.target);
+          }
+        });
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -8% 0px" },
+    );
+    document.querySelectorAll(".reveal").forEach((r) => io.observe(r));
+    return () => io.disconnect();
+  }, []);
+}
