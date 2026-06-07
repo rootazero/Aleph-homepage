@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useGitHubStars, useOS, useParallax } from "./hooks";
+import { useGitHubStars, useLatestRelease, useOS, useParallax } from "./hooks";
 import { RichText } from "./RichText";
 import { BustFigure, PlantFigure, WingFigure } from "./figures";
 import { OS_ICON } from "./data";
@@ -12,6 +12,7 @@ export function Hero() {
   const t = useTranslations("hero");
   const os = useOS();
   const stars = useGitHubStars("rootazero/Aleph");
+  const downloads = useLatestRelease("rootazero/Aleph");
   const leftRef = useParallax(0.18);
   const rightRef = useParallax(-0.18);
 
@@ -58,7 +59,7 @@ export function Hero() {
                 <span>{t("star")}</span>
                 <span className="star-count">{stars ? `★ ${stars}` : t("star_count")}</span>
               </a>
-              <a className="btn btn-dl" href="https://github.com/rootazero/Aleph/releases">
+              <a className="btn btn-dl" href={downloads[os]}>
                 <span className="os-ico lg" aria-hidden="true" suppressHydrationWarning dangerouslySetInnerHTML={{ __html: OS_ICON[os] }} />
                 <span className="dl-stack">
                   <b>{t("dl_for", { os: OS_NAME[os] })}</b>
@@ -68,9 +69,9 @@ export function Hero() {
             </div>
             <div className="dl-alts">
               <span>{t("dl_also")}</span>{" "}
-              <a href="https://github.com/rootazero/Aleph/releases" style={os === "mac" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>macOS</a> {"·"}{" "}
-              <a href="https://github.com/rootazero/Aleph/releases" style={os === "windows" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>Windows</a> {"·"}{" "}
-              <a href="https://github.com/rootazero/Aleph/releases" style={os === "linux" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>Linux</a>
+              <a href={downloads.mac} style={os === "mac" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>macOS</a> {"·"}{" "}
+              <a href={downloads.windows} style={os === "windows" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>Windows</a> {"·"}{" "}
+              <a href={downloads.linux} style={os === "linux" ? { color: "var(--coral)", borderColor: "var(--coral)" } : undefined}>Linux</a>
             </div>
           </div>
         </div>
