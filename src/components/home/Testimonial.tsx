@@ -14,7 +14,7 @@ export function Testimonial() {
         </div>
         <div className="quote-grid">
           <div className="reveal" data-anim="left">
-            <RichText as="p" className="quote-text" html={t("quote_html")} />
+            <RichText as="p" className="quote-text" html={t.raw("quote_html") as string} />
             <div className="quote-by">
               <span className="av"><BustFigure style={{ position: "absolute", width: "130%", left: "-12%", top: "18%", color: "var(--ink)" }} /></span>
               <div>

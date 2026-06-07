@@ -12,7 +12,7 @@ export function AgentsShowcase() {
         <div className="dark-grid">
           <div className="reveal" data-anim="left">
             <span className="eyebrow"><span className="dot" />{t("eyebrow")}</span>
-            <RichText as="h2" className="h-statement" style={{ marginTop: 20 }} html={t("statement_html")} />
+            <RichText as="h2" className="h-statement" style={{ marginTop: 20 }} html={t.raw("statement_html") as string} />
             <p style={{ color: "#b3a98f", marginTop: 22, maxWidth: "40ch" }}>{t("body")}</p>
             <div className="spec-row mt-l">
               <span className="spec"><b style={{ color: "#fff" }}>{t("stat1_b")}</b> {t("stat1")}</span>

@@ -46,7 +46,7 @@ export function Hero() {
           <div className="hero-title-wrap">
             <div className="hero-eyebrow"><span className="eyebrow"><span className="dot" />{t("eyebrow")}</span></div>
             <h1 className="display-xl">{t("title")}</h1>
-            <RichText as="div" className="hero-sub" html={t("sub_html")} />
+            <RichText as="div" className="hero-sub" html={t.raw("sub_html") as string} />
             <p className="hero-desc">{t("desc")}</p>
             <div className="hero-cta">
               <a className="btn btn-ghost btn-star" href="https://github.com/rootazero/Aleph" target="_blank" rel="noopener">

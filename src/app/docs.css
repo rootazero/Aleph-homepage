@@ -1,1 +1,83 @@
-/* docs overrides — populated in Task 18 */
+/* ============================================================
+   Docs (Fumadocs) — align with the homepage editorial look.
+   Color tokens come from globals.css (--color-fd-*). Here we set
+   typography, accents, and surface details.
+
+   Fumadocs v16 real DOM (verified against rendered HTML):
+   - #nd-docs-layout   — outer grid layout wrapper
+   - #nd-sidebar       — sidebar panel
+   - #nd-subnav        — mobile-only top header (md:hidden)
+   - <header> (unnamed) inside nd-docs-layout — toc-popover header
+   - Active sidebar item: data-[active=true]:text-fd-primary (Tailwind)
+     → already coral via --color-fd-primary: var(--coral) in globals.css
+   - No separate #nd-nav exists in v16 DocsLayout (plan selector was a
+     best-guess; using #nd-subnav + #nd-docs-layout header fallback instead)
+   ============================================================ */
+
+/* fonts: headings = display, body = sans, code = mono */
+#nd-docs-layout,
+.fd-docs,
+[data-fd-docs] {
+  font-family: var(--sans);
+}
+
+#nd-docs-layout h1,
+#nd-docs-layout h2,
+#nd-docs-layout h3,
+#nd-docs-layout h4 {
+  font-family: var(--display);
+  letter-spacing: -0.01em;
+}
+
+#nd-docs-layout code,
+#nd-docs-layout pre {
+  font-family: var(--mono);
+}
+
+/* mobile top header (#nd-subnav): paper + blur + hairline
+   (replaces plan's #nd-nav / [data-fd-nav] which don't exist in v16) */
+#nd-subnav {
+  background: color-mix(in srgb, var(--paper) 86%, transparent) !important;
+  backdrop-filter: blur(10px) saturate(1.2);
+  border-bottom: 1px solid var(--line);
+}
+
+/* toc-popover header (unnamed <header> inside nd-docs-layout): same treatment */
+#nd-docs-layout > header:not(#nd-subnav),
+#nd-docs-layout header.border-b {
+  background: color-mix(in srgb, var(--paper) 86%, transparent) !important;
+  backdrop-filter: blur(10px) saturate(1.2);
+  border-bottom: 1px solid var(--line);
+}
+
+/* links + accents */
+#nd-docs-layout a {
+  text-decoration-color: color-mix(in srgb, var(--coral) 50%, transparent);
+}
+#nd-docs-layout a:hover {
+  color: var(--coral);
+}
+
+/* inline code chip */
+#nd-docs-layout :not(pre) > code {
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.1em 0.4em;
+}
+
+/* code block surface */
+#nd-docs-layout pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+/* active sidebar item gets coral
+   Tailwind's data-[active=true]:text-fd-primary already maps to var(--coral)
+   via --color-fd-primary in globals.css. This selector adds an explicit override
+   for robustness (e.g. when Tailwind purges or specificity is overridden). */
+#nd-sidebar a[data-active="true"] {
+  color: var(--coral);
+}
+
+/* paper grain is global via body::before; nothing needed here */

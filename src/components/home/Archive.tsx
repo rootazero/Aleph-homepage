@@ -12,7 +12,7 @@ export function Archive() {
         <div className="archive-head">
           <div className="reveal">
             <span className="eyebrow"><span className="dot" />{t("eyebrow")}</span>
-            <RichText as="h2" className="h-section" style={{ marginTop: 18, maxWidth: "18ch" }} html={t("heading_html")} />
+            <RichText as="h2" className="h-section" style={{ marginTop: 18, maxWidth: "18ch" }} html={t.raw("heading_html") as string} />
           </div>
           <a className="btn btn-ghost reveal" href="#">{t("browse")} <span className="arr">{"→"}</span></a>
         </div>

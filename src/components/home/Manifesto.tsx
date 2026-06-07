@@ -13,7 +13,7 @@ export function Manifesto() {
         </div>
         <div className="manifesto-grid">
           <div className="reveal" data-anim="left">
-            <RichText as="h2" className="h-statement" html={t("statement_html")} />
+            <RichText as="h2" className="h-statement" html={t.raw("statement_html") as string} />
             <p className="body">{t("body")}</p>
             <div className="spec-row mt-l">
               <span className="spec"><b>{t("s1_b")}</b> {"—"} {t("s1")}</span>

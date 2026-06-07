@@ -8,7 +8,7 @@ export function Models() {
     <section className="models section" id="models">
       <div className="wrap">
         <span className="eyebrow reveal" style={{ justifyContent: "center", display: "flex" }}><span className="dot" />{t("eyebrow")}</span>
-        <RichText as="h2" className="h-section reveal" style={{ marginTop: 18 }} html={t("heading_html")} />
+        <RichText as="h2" className="h-section reveal" style={{ marginTop: 18 }} html={t.raw("heading_html") as string} />
         <p className="lede reveal" style={{ margin: "18px auto 0", textAlign: "center" }}>{t("lede")}</p>
         <div className="model-chips reveal">
           {chips.map((c, i) => (

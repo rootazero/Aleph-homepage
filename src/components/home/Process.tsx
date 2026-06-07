@@ -12,7 +12,7 @@ export function Process() {
         <div className="process-head">
           <div className="reveal">
             <span className="eyebrow"><span className="dot" />{t("eyebrow")}</span>
-            <RichText as="h2" className="h-section" style={{ marginTop: 18 }} html={t("heading_html")} />
+            <RichText as="h2" className="h-section" style={{ marginTop: 18 }} html={t.raw("heading_html") as string} />
           </div>
           <p className="lede reveal" data-anim="right" style={{ maxWidth: "34ch" }}>{t("lede")}</p>
         </div>

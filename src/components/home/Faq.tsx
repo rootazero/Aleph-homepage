@@ -16,7 +16,7 @@ export function Faq() {
         <div className="faq-grid">
           <div className="reveal" data-anim="left">
             <span className="eyebrow"><span className="dot" />{t("eyebrow")}</span>
-            <RichText as="h3" className="faq-title" style={{ marginTop: 18 }} html={t("title_html")} />
+            <RichText as="h3" className="faq-title" style={{ marginTop: 18 }} html={t.raw("title_html") as string} />
             <a className="btn btn-ghost" href="#" style={{ marginTop: 40 }}>{t("talk")} <span className="arr">{"→"}</span></a>
           </div>
           <div className="acc reveal" data-anim="right">
