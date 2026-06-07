@@ -19,12 +19,6 @@
   --color-mustard: var(--mustard);
   --color-sage: var(--sage);
   --color-line: var(--line);
-
-  /* Typography mapped to next/font CSS variables */
-  --font-serif: var(--font-serif);
-  --font-display: var(--font-display);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
 }
 
 /*
@@ -61,12 +55,6 @@
   --maxw: 1320px;
   --gutter: clamp(20px, 4vw, 64px);
 
-  /* font aliases used throughout home.css */
-  --serif: var(--font-serif), "Instrument Serif", Georgia, serif;
-  --display: var(--font-display), "Space Grotesk", system-ui, sans-serif;
-  --sans: var(--font-sans), "Archivo", system-ui, sans-serif;
-  --mono: var(--font-mono), "Space Mono", ui-monospace, monospace;
-
   /* Map Aleph tokens -> Fumadocs UI variables (light) */
   --color-fd-background: var(--paper);
   --color-fd-foreground: var(--ink);
@@ -93,6 +81,15 @@
 
 body {
   margin: 0;
+  /*
+   * Font aliases used throughout home.css and docs.css. Declared on body (not
+   * :root) so they resolve the next/font variables, which next/font injects via
+   * the body className. home.css reads these as var(--serif/--display/...).
+   */
+  --serif: var(--font-serif), "Instrument Serif", Georgia, serif;
+  --display: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  --sans: var(--font-sans), "Archivo", system-ui, sans-serif;
+  --mono: var(--font-mono), "Space Mono", ui-monospace, monospace;
   background: var(--paper);
   color: var(--ink);
   font-family: var(--sans);
