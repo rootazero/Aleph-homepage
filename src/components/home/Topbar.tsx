@@ -11,12 +11,25 @@ export function Topbar() {
   const router = useRouter();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const stars = useGitHubStars("rootazero/Aleph");
 
   const switchLocale = (l: string) => {
     router.replace(pathname, { locale: l });
     setOpen(false);
   };
+
+  // Nav links shared by the desktop bar and the mobile menu. `internal` items
+  // are locale-aware routes (next-intl Link); the rest are in-page anchors.
+  const navLinks = [
+    { href: "#manifesto", label: t("philosophy") },
+    { href: "#capabilities", label: t("capabilities") },
+    { href: "#archive", label: t("skills") },
+    { href: "#process", label: t("how") },
+    { href: "#models", label: t("models") },
+    { href: "/docs", label: t("docs"), internal: true },
+    { href: "#faq", label: t("faq") },
+  ];
 
   return (
     <header className="topbar">
@@ -26,13 +39,13 @@ export function Topbar() {
           <span className="name">Aleph<sup>&trade;</sup></span>
         </a>
         <nav className="nav">
-          <a href="#manifesto">{t("philosophy")}</a>
-          <a href="#capabilities">{t("capabilities")}</a>
-          <a href="#archive">{t("skills")}</a>
-          <a href="#process">{t("how")}</a>
-          <a href="#models">{t("models")}</a>
-          <Link href="/docs">{t("docs")}</Link>
-          <a href="#faq">{t("faq")}</a>
+          {navLinks.map((l) =>
+            l.internal ? (
+              <Link key={l.href} href={l.href}>{l.label}</Link>
+            ) : (
+              <a key={l.href} href={l.href}>{l.label}</a>
+            ),
+          )}
         </nav>
         <div className="topbar-right">
           <a
@@ -69,8 +82,34 @@ export function Topbar() {
           </div>
           {/* TODO(placeholder): Sign in has no backend yet */}
           <a className="btn btn-ghost btn-sm hide-sm" href="#">{t("signin")}</a>
+          {/* Mobile-only menu toggle (desktop .nav is hidden below 900px) */}
+          <button
+            className="nav-toggle"
+            aria-label={t("menu")}
+            aria-expanded={navOpen}
+            onClick={() => setNavOpen((v) => !v)}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+              {navOpen ? (
+                <path d="M6 6l12 12M18 6L6 18" />
+              ) : (
+                <path d="M3 6h18M3 12h18M3 18h18" />
+              )}
+            </svg>
+          </button>
         </div>
       </div>
+
+      {/* Mobile dropdown menu */}
+      <nav className={`mobile-menu${navOpen ? " open" : ""}`}>
+        {navLinks.map((l) =>
+          l.internal ? (
+            <Link key={l.href} href={l.href} onClick={() => setNavOpen(false)}>{l.label}</Link>
+          ) : (
+            <a key={l.href} href={l.href} onClick={() => setNavOpen(false)}>{l.label}</a>
+          ),
+        )}
+      </nav>
     </header>
   );
 }
