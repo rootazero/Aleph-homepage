@@ -35,7 +35,7 @@ export function baseOptions(lang: string): BaseLayoutProps {
       title: <>ℵ&nbsp;Aleph</>,
       url: home,
     },
-    // Dark-only site: hide the theme toggle.
+    // Light-only site: hide the theme toggle.
     themeSwitch: {
       enabled: false,
     },
