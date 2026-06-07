@@ -34,6 +34,25 @@
   font-family: var(--mono);
 }
 
+/* #nd-subnav is Fumadocs' mobile-only top bar (it carries `md:hidden`, and
+   --fd-header-height is only set below md). In this project that md:hidden
+   loses the cascade to `.flex`, so on desktop the bar stays visible but
+   collapses to 0 height and its icons get clipped. Enforce the intended
+   mobile/desktop split: hide it on md+ (sidebar already provides the brand,
+   search, and navigation on desktop). */
+@media (min-width: 768px) {
+  #nd-subnav {
+    display: none !important;
+  }
+
+  /* With the top bar hidden on desktop, Fumadocs' large-screen article padding
+     (md:pt-8 / xl:pt-14) leaves an empty band above the content. Pull it up so
+     the page title top-aligns with the sidebar brand (its 16px top inset). */
+  #nd-page {
+    padding-top: 16px;
+  }
+}
+
 /* mobile top header (#nd-subnav): paper + blur + hairline
    (replaces plan's #nd-nav / [data-fd-nav] which don't exist in v16) */
 #nd-subnav {
