@@ -1,9 +1,9 @@
 ---
 title: "提供商"
-description: "LLM 提供商系统、三层协议适配器、故障转移与断路器、20+ 预设支持。"
+description: "Aleph 的 LLM 提供商系统 —— 协议适配器、带断路器的故障转移、可热重载的 YAML 协议，以及涵盖 OpenAI、Anthropic、Gemini 和 20+ OpenAI 兼容供应商的 28 个内置预设。"
 ---
 
-Aleph 的提供商架构将**供应商**与**协议**解耦。Aleph 不是为每个提供商做一次性集成，而是按协议族对提供商进行分组。一个 OpenAI 协议适配器处理 OpenAI、DeepSeek、Moonshot 和任何其他 OpenAI 兼容 API。添加新供应商通常只需要一个预设条目 —— 无需新代码。
+Aleph 的提供商架构将**供应商**与**协议**解耦。 Aleph 不是为每个提供商进行一次性集成，而是按协议族对提供商进行分组。单个 OpenAI 协议适配器处理 OpenAI、DeepSeek、Moonshot 和任何其他 OpenAI 兼容 API。添加新供应商通常只需要一个预设条目 —— 无需新代码。
 
 ## 提供商架构
 
@@ -11,109 +11,109 @@ Aleph 的提供商架构将**供应商**与**协议**解耦。Aleph 不是为每
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Provider Stack                         │
+│                      提供商栈                                │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 1 — Built-in Protocols (compiled Rust)               │
+│  第 1 层 — 内置协议（编译的 Rust）                           │
 │    ├─ openai         → HttpProvider + OpenAiProtocol        │
 │    ├─ anthropic      → HttpProvider + AnthropicProtocol     │
 │    ├─ gemini         → HttpProvider + GeminiProtocol        │
 │    ├─ openai-responses → HttpProvider + OpenAiResponsesProtocol │
-│    ├─ codex / chatgpt → HttpProvider + Codex variant        │
-│    └─ ollama         → OllamaProvider (native)              │
+│    ├─ codex / chatgpt → HttpProvider + Codex 变体           │
+│    └─ ollama         → OllamaProvider (原生)                │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 2 — Configurable Protocols (YAML, hot-reloadable)    │
-│    ├─ Minimal mode: extend base protocol + differences      │
-│    └─ Custom mode: full template rendering                  │
+│  第 2 层 — 可配置协议（YAML，可热重载）                       │
+│    ├─ 最小模式：扩展基础协议 + 差异                           │
+│    └─ 自定义模式：完整模板渲染                                │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 3 — Extension Protocols (future)                     │
-│    └─ Plugin-provided adapters (WASM / Node.js)             │
+│  第 3 层 — 扩展协议（未来）                                   │
+│    └─ 插件提供的适配器（WASM / Node.js）                      │
 └─────────────────────────────────────────────────────────────┘
-                               │
-                     ProtocolRegistry
-                               │
-                    create_provider(name, config)
+                              │
+                    ProtocolRegistry
+                              │
+                   create_provider(name, config)
 ```
 
 ### 提供商解析流程
 
-1. **Preset lookup** — `create_provider("deepseek", config)` 检查 `presets::get_preset("deepseek")`
-2. **Preset defaults applied** — 如果缺失则自动填充 `base_url`、`protocol`、`color`
-3. **Protocol resolution** — `config.protocol()` 确定适配器（默认为 `"openai"`）
-4. **Special cases** — `ollama` 和 `mock` 使用原生实现
-5. **Adapter lookup** — `ProtocolRegistry::global().get(protocol_name)` 返回适配器
-6. **Provider instantiation** — `HttpProvider::new(name, config, adapter)` 包装适配器
+1. **预设查找** —— `create_provider("deepseek", config)` 检查 `presets::get_preset("deepseek")`
+2. **应用预设默认值** —— 如果缺失，自动填充 `base_url`、`protocol`、`color`
+3. **协议解析** —— `config.protocol()` 确定适配器（默认为 `"openai"`）
+4. **特殊情况** —— `ollama` 和 `mock` 使用原生实现
+5. **适配器查找** —— `ProtocolRegistry::global().get(protocol_name)` 返回适配器
+6. **提供商实例化** —— `HttpProvider::new(name, config, adapter)` 包装适配器
 
-## AiProvider 特征
+## AiProvider Trait
 
 所有 AI 后端都实现 `AiProvider`，提供统一的异步接口：
 
 ```rust
 pub trait AiProvider: Send + Sync {
-    /// Core method — process a request and return structured response
+    /// 核心方法 —— 处理请求并返回结构化响应
     fn process<'a>(
         &'a self,
         payload: adapter::RequestPayload<'a>,
     ) -> Pin<Box<dyn Future<Output = Result<ProviderResponse>> + Send + 'a>>;
 
-    /// Provider name (e.g., "deepseek", "claude")
+    /// 提供商名称（如 "deepseek"、"claude"）
     fn name(&self) -> &str;
 
-    /// Provider brand color for UI (hex string)
+    /// 用于 UI 的提供商品牌颜色（十六进制字符串）
     fn color(&self) -> &str;
 
-    /// Whether this provider supports native tool_use
+    /// 此提供商是否支持原生 tool_use
     fn supports_native_tools(&self) -> bool { false }
 
-    /// Whether this provider supports extended thinking
+    /// 此提供商是否支持扩展思考
     fn supports_thinking(&self) -> bool { false }
 
-    /// Protocol identifier for model behavior resolution
+    /// 用于模型行为解析的协议标识符
     fn protocol(&self) -> &str { "unknown" }
 
-    /// Model behavior override (e.g., "anthropic" for OpenRouter routing to Claude)
+    /// 模型行为覆盖（如用于 OpenRouter 路由到 Claude 的 "anthropic"）
     fn model_behavior_override(&self) -> Option<&str> { None }
 }
 ```
 
-提供商是线程安全的（`Send + Sync`）并通过 `Arc<dyn AiProvider>` 共享。单个 `process()` 方法接受包含结构化 `UnifiedMessage` 历史的 `RequestPayload`，协议适配器将这些转换为原生 API 格式。
+提供程序是线程安全的（`Send + Sync`）并通过 `Arc<dyn AiProvider>` 共享。单个 `process()` 方法接受包含结构化 `UnifiedMessage` 历史的 `RequestPayload`，协议适配器将它们转换为原生 API 格式。
 
 ## 协议适配器
 
-`ProtocolRegistry` 将协议名称映射到 `ProtocolAdapter` 实现。内置协议通过 `Lazy` 静态初始化在初始化时注册。
+`ProtocolRegistry` 将协议名称映射到 `ProtocolAdapter` 实现。内置协议在初始化时通过 `Lazy` 静态初始化注册。
 
 ```rust
 pub struct ProtocolRegistry {
-    dynamic: RwLock<HashMap<String, Arc<dyn ProtocolAdapter>>>,  // YAML-loaded
-    builtin: RwLock<HashMap<String, ProtocolFactory>>,           // Compiled Rust
+    dynamic: RwLock<HashMap<String, Arc<dyn ProtocolAdapter>>>,  // YAML 加载的
+    builtin: RwLock<HashMap<String, ProtocolFactory>>,           // 编译的 Rust
 }
 ```
 
 查找顺序：
-1. **Dynamic protocols first** — 从 `~/.aleph/protocols/*.yaml` 加载
-2. **Built-in protocols fallback** — 工厂函数按需实例化适配器
+1. **动态协议优先** —— 从 `~/.aleph/protocols/*.yaml` 加载
+2. **内置协议回退** —— 工厂函数按需实例化适配器
 
 启动时注册的内置协议：
 
-| Protocol | Adapter | Use Case |
-|----------|---------|----------|
-| `openai` | `OpenAiProtocol` | OpenAI and OpenAI-compatible APIs |
-| `anthropic` | `AnthropicProtocol` | Claude API (native Messages API) |
+| 协议 | 适配器 | 用例 |
+|------|--------|------|
+| `openai` | `OpenAiProtocol` | OpenAI 和 OpenAI 兼容 API |
+| `anthropic` | `AnthropicProtocol` | Claude API（原生 Messages API） |
 | `gemini` | `GeminiProtocol` | Google Gemini API |
-| `codex` / `chatgpt` | `OpenAiResponsesProtocol` (Codex variant) | ChatGPT subscription via OAuth |
-| `openai-responses` | `OpenAiResponsesProtocol` | OpenAI /v1/responses API, OpenRouter |
+| `codex` / `chatgpt` | `OpenAiResponsesProtocol`（Codex 变体） | 通过 OAuth 的 ChatGPT 订阅 |
+| `openai-responses` | `OpenAiResponsesProtocol` | OpenAI /v1/responses API、OpenRouter |
 
 每个 `ProtocolAdapter` 实现两个方法：
-- `build_request(payload, config)` — 构造 HTTP 请求构建器（stream-first：始终设置 `stream: true`）
-- `stream_deltas(response)` — 将 SSE/流式响应解析为细粒度的 `ProviderDelta` 事件
+- `build_request(payload, config)` —— 构造 HTTP 请求构建器（流式优先：始终设置 `stream: true`）
+- `stream_deltas(response)` —— 将 SSE/流式响应解析为细粒度的 `ProviderDelta` 事件
 
 ## 支持的提供商
 
-Aleph 附带 **28 个预设**，涵盖主要供应商和别名。每个预设自动配置 `base_url`、`protocol` 和 `color`。
+Aleph 附带**28 个预设**，涵盖主要供应商和别名。每个预设自动配置 `base_url`、`protocol` 和 `color`。
 
 ### 主要协议（原生适配器）
 
-| Provider | Protocol | Default Model | Base URL |
-|----------|----------|---------------|----------|
+| 提供商 | 协议 | 默认模型 | 基础 URL |
+|--------|------|----------|----------|
 | **openai** | `openai` | `gpt-4o` | `api.openai.com/v1` |
 | **claude** | `anthropic` | `claude-sonnet-4-5-20250514` | `api.anthropic.com` |
 | **gemini** | `gemini` | `gemini-2.5-flash` | `generativelanguage.googleapis.com` |
@@ -121,35 +121,35 @@ Aleph 附带 **28 个预设**，涵盖主要供应商和别名。每个预设自
 
 ### OpenAI 兼容提供商
 
-这些使用 `openai` 协议适配器，配合供应商特定的 `base_url`：
+这些使用带有供应商特定 `base_url` 的 `openai` 协议适配器：
 
-| Provider | Base URL | Default Model | Specialty |
-|----------|----------|---------------|-----------|
-| **deepseek** | `api.deepseek.com` | `deepseek-chat` | Cost-effective coding models |
-| **moonshot** / **kimi** | `api.moonshot.ai/v1` | `kimi-k2-0905-preview` | Chinese language models |
-| **kimi-for-coding** / **kimi-coding** | `api.kimi.com/coding/v1` | `Kimi-K2.6` | Anthropic-compatible IDE/agent endpoint |
-| **doubao** / **volcengine** / **ark** | `ark.cn-beijing.volces.com/api/v3` | `doubao-1.5-pro-256k` | ByteDance models |
-| **siliconflow** | `api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | Chinese AI cloud platform |
-| **zhipu** / **glm** | `open.bigmodel.cn/api/paas/v4` | `GLM-5` | Chinese AI research lab |
-| **minimax** | `api.minimax.io/v1` | `MiniMax-M2.5` | Chinese multimodal AI |
-| **t8star** | `api.t8star.cn/v1` | *(none)* | Regional provider |
-| **groq** | `api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | Ultra-fast inference |
-| **together** | `api.together.xyz/v1` | *(none)* | Open-source model hosting |
-| **perplexity** | `api.perplexity.ai` | *(none)* | Search-augmented LLMs |
-| **mistral** | `api.mistral.ai/v1` | *(none)* | European AI leader |
-| **cohere** | `api.cohere.ai/v1` | *(none)* | Enterprise focus |
-| **fireworks** | `api.fireworks.ai/inference/v1` | *(none)* | Fast API |
-| **anyscale** | `api.endpoints.anyscale.com/v1` | *(none)* | Ray ecosystem |
-| **replicate** | `api.replicate.com/v1` | *(none)* | OSS model hosting |
-| **openrouter** | `openrouter.ai/api` | `openai/gpt-4o` | Multi-model router (Responses API) |
-| **lepton** | `api.lepton.ai/api/v1` | *(none)* | Model deployment |
-| **hyperbolic** | `api.hyperbolic.xyz/v1` | *(none)* | GPU marketplace |
+| 提供商 | 基础 URL | 默认模型 | 特色 |
+|--------|----------|----------|------|
+| **deepseek** | `api.deepseek.com` | `deepseek-chat` | 经济高效的编码模型 |
+| **moonshot** / **kimi** | `api.moonshot.ai/v1` | `kimi-k2-0905-preview` | 中文语言模型 |
+| **kimi-for-coding** / **kimi-coding** | `api.kimi.com/coding/v1` | `Kimi-K2.6` | Anthropic 兼容 IDE/代理端点 |
+| **doubao** / **volcengine** / **ark** | `ark.cn-beijing.volces.com/api/v3` | `doubao-1.5-pro-256k` | 字节跳动模型 |
+| **siliconflow** | `api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` | 中文 AI 云平台 |
+| **zhipu** / **glm** | `open.bigmodel.cn/api/paas/v4` | `GLM-5` | 中文 AI 研究实验室 |
+| **minimax** | `api.minimax.io/v1` | `MiniMax-M2.5` | 中文多模态 AI |
+| **t8star** | `api.t8star.cn/v1` | *(无)* | 区域提供商 |
+| **groq** | `api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | 超快速推理 |
+| **together** | `api.together.xyz/v1` | *(无)* | 开源模型托管 |
+| **perplexity** | `api.perplexity.ai` | *(无)* | 搜索增强 LLM |
+| **mistral** | `api.mistral.ai/v1` | *(无)* | 欧洲 AI 领导者 |
+| **cohere** | `api.cohere.ai/v1` | *(无)* | 企业焦点 |
+| **fireworks** | `api.fireworks.ai/inference/v1` | *(无)* | 快速 API |
+| **anyscale** | `api.endpoints.anyscale.com/v1` | *(无)* | Ray 生态系统 |
+| **replicate** | `api.replicate.com/v1` | *(无)* | OSS 模型托管 |
+| **openrouter** | `openrouter.ai/api` | `openai/gpt-4o` | 多模型路由器（Responses API） |
+| **lepton** | `api.lepton.ai/api/v1` | *(无)* | 模型部署 |
+| **hyperbolic** | `api.hyperbolic.xyz/v1` | *(无)* | GPU 市场 |
 
-**注意：** `kimi-for-coding` 使用 `anthropic` 协议（不是 `openai`），专为 Claude Code 和 Cline 等 IDE/agent 工具使用场景设计。对于一般聊天，请使用 `moonshot` / `kimi` 预设。
+**注意：** `kimi-for-coding` 使用 `anthropic` 协议（不是 `openai`），专为 Claude Code 和 Cline 等 IDE/代理工具使用场景设计。对于一般聊天，使用 `moonshot` / `kimi` 预设。
 
 ## 提供商配置
 
-每个提供商通过 `config.toml` 中的 `ProviderConfig` 配置：
+每个提供商都通过 `config.toml` 中的 `ProviderConfig` 进行配置：
 
 ```toml
 [providers.claude]
@@ -165,60 +165,60 @@ enabled = true
 
 ```rust
 pub struct ProviderConfig {
-    /// Protocol: "openai", "anthropic", "gemini", "ollama", etc.
+    /// 协议："openai"、"anthropic"、"gemini"、"ollama" 等
     pub protocol: Option<String>,
 
-    /// API key (runtime-only, never persisted to config.toml)
+    /// API 密钥（仅运行时，从不持久化到 config.toml）
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
 
-    /// Model list. First model is the default.
-    /// Accepts both `model = "xxx"` (backward compat) and `models = ["xxx", ...]`.
+    /// 模型列表。第一个模型是默认模型。
+    /// 接受 `model = "xxx"`（向后兼容）和 `models = ["xxx", ...]`。
     pub models: Vec<String>,
 
-    /// Custom API endpoint (optional)
+    /// 自定义 API 端点（可选）
     pub base_url: Option<String>,
 
-    /// Brand color for UI (default: "#808080")
+    /// 用于 UI 的品牌颜色（默认："#808080"）
     pub color: String,
 
-    /// Request timeout in seconds (default: 300)
+    /// 请求超时（秒）（默认：300）
     pub timeout_seconds: u64,
 
-    /// Whether the provider is enabled (default: false)
+    /// 提供商是否启用（默认：false）
     pub enabled: bool,
 
-    // --- Generation parameters ---
+    // --- 生成参数 ---
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub top_k: Option<u32>,
 
-    // --- OpenAI-specific ---
+    // --- OpenAI 特定 ---
     pub frequency_penalty: Option<f32>,
     pub presence_penalty: Option<f32>,
 
     // --- Claude / Gemini / Ollama ---
     pub stop_sequences: Option<String>,
 
-    // --- Gemini-specific ---
-    pub thinking_level: Option<String>,      // "LOW" or "HIGH"
-    pub media_resolution: Option<String>,    // "LOW", "MEDIUM", "HIGH"
+    // --- Gemini 特定 ---
+    pub thinking_level: Option<String>,      // "LOW" 或 "HIGH"
+    pub media_resolution: Option<String>,    // "LOW"、"MEDIUM"、"HIGH"
 
-    // --- Ollama-specific ---
+    // --- Ollama 特定 ---
     pub repeat_penalty: Option<f32>,
 
-    // --- System prompt handling ---
-    /// "prepend" (default): prepend to user message
-    /// "standard": use separate system message
+    // --- 系统提示词处理 ---
+    /// "prepend"（默认）：前置到用户消息
+    /// "standard"：使用单独的系统消息
     pub system_prompt_mode: Option<String>,
 
-    // --- Model behavior override ---
-    /// Overrides protocol-based auto-mapping.
-    /// Example: "anthropic" for an OpenRouter provider routing to Claude.
+    // --- 模型行为覆盖 ---
+    /// 覆盖基于协议的自动映射。
+    /// 示例：用于 OpenRouter 提供商路由到 Claude 的 "anthropic"。
     pub model_behavior: Option<String>,
 
-    /// Whether provider passed a test connection
+    /// 提供商是否通过了测试连接
     pub verified: bool,
 }
 ```
@@ -229,7 +229,7 @@ pub struct ProviderConfig {
 
 ```toml
 [providers.deepseek]
-# No need to specify protocol or base_url — preset handles it
+# 无需指定协议或 base_url —— 预设处理它
 models = ["deepseek-chat"]
 api_key = "sk-..."
 enabled = true
@@ -238,17 +238,17 @@ enabled = true
 `create_provider` 工厂在路由到协议适配器之前应用预设默认值：
 
 ```rust
-// Preset: base_url, protocol, and color auto-configured
+// 预设：base_url、protocol 和 color 自动配置
 let provider = create_provider("deepseek", config)?;
 
-// Custom endpoint: specify base_url manually
+// 自定义端点：手动指定 base_url
 config.base_url = Some("https://my-proxy.example.com/v1".to_string());
 let provider = create_provider("my-provider", config)?;
 ```
 
-## 故障转移与健康
+## 故障转移和健康
 
-`FailoverProvider` 包装多个提供商并自动在故障时路由。它实现相同的 `AiProvider` 特征，因此调用者看到的是一个统一的提供商。
+`FailoverProvider` 包装多个提供商并自动路由绕过故障。它实现相同的 `AiProvider` trait，因此调用者看到单个统一的提供商。
 
 ```
 ┌─────────────────────────────────────────┐
@@ -262,7 +262,7 @@ let provider = create_provider("my-provider", config)?;
 │       └───────────┼──────────┘         │
 │                   ▼                     │
 │     Circuit Breaker + Health Monitor    │
-│         (per-provider state)            │
+│         (每个提供商状态)                │
 └─────────────────────────────────────────┘
 ```
 
@@ -271,15 +271,15 @@ let provider = create_provider("my-provider", config)?;
 ```rust
 pub struct FailoverConfig {
     pub providers: Vec<ProviderEntry>,
-    pub max_retries: u32,                      // default: 2
-    pub health_check_interval_secs: u64,       // default: 60
-    pub unhealthy_cooldown_secs: u64,          // default: 300 (5 min)
-    pub health_monitoring_enabled: bool,       // default: true
+    pub max_retries: u32,                      // 默认：2
+    pub health_check_interval_secs: u64,       // 默认：60
+    pub unhealthy_cooldown_secs: u64,          // 默认：300（5 分钟）
+    pub health_monitoring_enabled: bool,       // 默认：true
 }
 
 pub struct ProviderEntry {
     pub name: String,
-    pub priority: u32,    // lower = higher priority
+    pub priority: u32,    // 越小 = 优先级越高
     pub config: ProviderConfig,
 }
 ```
@@ -291,13 +291,13 @@ pub struct ProviderEntry {
 ```
                     ┌─────────────┐
          success    │             │    failure count < 3
-         ┌──────────│   Closed    │◄─────────────────┐
+         ┌──────────│   Closed    │◀─────────────────┐
          │          │  (healthy)  │                  │
          │          └──────┬──────┘                  │
-         │                 │ failure count >= 3      │
+         │                 │ failure count >= 3     │
          │                 ▼                         │
          │          ┌─────────────┐                  │
-         │          │             │  cooldown expired │
+         │          │             │  cooldown expired│
          │          │    Open     │──────────────────┤
          │          │  (blocked)  │                   │
          │          └──────┬──────┘                   │
@@ -311,21 +311,21 @@ pub struct ProviderEntry {
 
 **状态转换：**
 
-| From | To | Trigger |
+| 从 | 到 | 触发条件 |
 |------|----|---------|
-| `Closed` | `Open` | 3 consecutive failures (threshold) |
-| `Open` | `HalfOpen` | Cooldown period elapsed (default 5 min) |
-| `HalfOpen` | `Closed` | Probe request succeeds |
-| `HalfOpen` | `Open` | Probe request fails — cooldown doubles (max 10 min) |
+| `Closed` | `Open` | 3 次连续失败（阈值） |
+| `Open` | `HalfOpen` | 冷却期已过（默认 5 分钟） |
+| `HalfOpen` | `Closed` | 探测请求成功 |
+| `HalfOpen` | `Open` | 探测请求失败 —— 冷却时间加倍（最大 10 分钟） |
 
 **错误分类：**
-- **Non-retryable**（立即故障转移）：`AuthenticationError`、`InvalidConfig`
-- **Retryable**（带退避重试）：rate limits、timeouts、network errors
-- **Rate limits**（特殊）：标记提供商不健康后触发立即故障转移
+- **不可重试**（立即故障转移）：`AuthenticationError`、`InvalidConfig`
+- **可重试**（带退避重试）：速率限制、超时、网络错误
+- **速率限制**（特殊）：在将提供商标记为不健康后触发立即故障转移
 
-### 健康跟踪
+### 健康追踪
 
-`health.rs` 模块提供一个单独的 `ProviderHealth` 枚举，供认证配置文件系统使用：
+`health.rs` 模块提供一个单独的 `ProviderHealth` 枚举，由认证配置文件系统使用：
 
 ```rust
 pub enum ProviderHealth {
@@ -335,11 +335,11 @@ pub enum ProviderHealth {
 }
 ```
 
-冷却使用指数退避：基础 30 秒，每次失败翻倍，上限为 5 分钟。带有 `retry_after` 头部的速率限制响应对第一次失败使用 `max(retry_after, base_cooldown)`。
+冷却使用指数退避：基数 30 秒，每次失败加倍，上限为 5 分钟。带有 `retry_after` 标头的速率限制响应对第一次失败使用 `max(retry_after, base_cooldown)`。
 
 ### 指标
 
-每个提供商通过原子计数器跟踪实时指标：
+每个提供商通过原子计数器追踪实时指标：
 
 ```rust
 pub struct ProviderMetrics {
@@ -372,21 +372,21 @@ name = "gemini"
 priority = 3
 ```
 
-## 热重载协议
+## 可热重载协议
 
-除了内置协议，你还可以在 YAML 中定义自定义协议并放置在 `~/.aleph/protocols/` 中。系统会监视此目录并自动重新加载定义。
+除了内置协议，你还可以在 YAML 中定义自定义协议并将它们放在 `~/.aleph/protocols/` 中。系统监视此目录并自动重新加载定义。
 
 ### 工作原理
 
-1. **File watcher** 检测 Create / Modify / Delete 事件（500ms 消抖）
-2. **YAML parsed** 到 `ProtocolDefinition`
-3. **`ConfigurableProtocol` adapter** 创建 —— 支持两种模式：
-   - **Minimal mode** (`extends: openai`)：复用基础协议，覆盖 auth/header 差异
-   - **Custom mode** (`custom:` block)：完整模板渲染，带 JSONPath 响应映射
-4. **Registry updated** 通过 `ProtocolRegistry::register()` 原子更新
-5. **New requests** 立即使用更新后的协议
+1. **文件监视器**检测 Create / Modify / Delete 事件（500 毫秒去抖动）
+2. **YAML 解析**为 `ProtocolDefinition`
+3. 创建 **`ConfigurableProtocol` 适配器** —— 支持两种模式：
+   - **最小模式**（`extends: openai`）：重用基础协议，覆盖 auth/header 差异
+   - **自定义模式**（`custom:` 块）：使用 JSONPath 响应映射的完整模板渲染
+4. 通过 `ProtocolRegistry::register()` 原子地**更新注册表**
+5. **新请求**立即使用更新的协议
 
-### Minimal Mode 示例
+### 最小模式示例
 
 ```yaml
 # ~/.aleph/protocols/my-proxy.yaml
@@ -399,7 +399,7 @@ differences:
     prefix: "Bearer "
 ```
 
-### Custom Mode 示例
+### 自定义模式示例
 
 ```yaml
 # ~/.aleph/protocols/exotic-ai.yaml
@@ -420,15 +420,15 @@ custom:
     error: "$.error.message"
 ```
 
-**重载延迟：** 从文件变更到激活约 600ms（500ms 消抖 + 解析/注册开销）。
+**重载延迟：** 从文件更改到活动约 600 毫秒（500 毫秒去抖动 + 解析/注册开销）。
 
 ## 创建自定义提供商
 
-要添加一个使用现有协议的新提供商：
+要添加使用现有协议的新提供商：
 
 ### 步骤 1：添加预设
 
-编辑 `src/providers/presets.rs` 并添加条目到 `PRESETS` HashMap：
+编辑 `src/providers/presets.rs` 并将条目添加到 `PRESETS` HashMap：
 
 ```rust
 m.insert(
@@ -442,7 +442,7 @@ m.insert(
 );
 ```
 
-### 步骤 2：实现适配器（仅针对新协议）
+### 步骤 2：实现适配器（仅适用于新协议）
 
 如果供应商使用尚未支持的协议，请实现 `ProtocolAdapter`：
 
@@ -477,6 +477,6 @@ registry.register("my-protocol", Arc::new(MyProtocol::new(client)))?;
 
 ## 相关页面
 
-- [架构概览](./overview) — 执行层的系统级视图
-- [网关](./gateway) — Gateway 如何将请求路由到提供商
-- [Thinker](./thinker) — Thinker 如何选择和编排提供商
+- [架构概览](./overview) —— 执行层的系统级视图
+- [网关](./gateway) —— 网关如何将请求路由到提供商
+- [思考器](./thinker) —— 思考器如何选择和编排提供商

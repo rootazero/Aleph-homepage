@@ -1,8 +1,161 @@
 ---
-title: "命令参考"
-description: "Aleph CLI 完整命令列表"
+title: "命令"
+description: "Aleph 的完整 CLI 命令参考"
 ---
 
-> 此页面正在翻译中。
+Aleph 提供两个具有不同角色的 CLI 二进制文件：
 
-请参阅[英文版](/en/docs/cli/commands)。
+- **`aleph`** — 通过 WebSocket 连接到正在运行的 Gateway 服务器的客户端 CLI
+- **`aleph-server`** — 启动和管理 Gateway 进程的服务器二进制文件
+
+两者共享类似的标志和输出格式化约定。
+
+## 客户端 CLI (`aleph`)
+
+`aleph` 二进制文件是 Aleph 协议客户端的参考实现。它通过 WebSocket 使用 JSON-RPC 2.0 与 Gateway 通信。
+
+### 概要
+
+```bash
+aleph [OPTIONS] [COMMAND]
+```
+
+当不带子命令调用时，`aleph` 启动交互式聊天会话（等同于 `aleph chat`）。
+
+### 全局选项
+
+| 标志 | 简写 | 默认值 | 说明 |
+|------|-------|---------|-------------|
+| `--server <URL>` | `-s` | `ws://127.0.0.1:18790` | Gateway 服务器 WebSocket URL |
+| `--verbose` | `-v` | `false` | 启用调试级日志 |
+| `--config <PATH>` | `-c` | `~/.config/aleph-cli/config.toml` | 配置文件路径 |
+
+### 子命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `chat` | 启动交互式聊天会话 |
+| `ask` | 发送单条消息并打印响应 |
+| `health` | 检查服务器健康状态 |
+| `info` | 显示服务器版本、运行时间和提供商 |
+| `tools` | 列出服务器上的可用工具 |
+| `session` | 管理对话会话（列出、新建、删除） |
+| `connect` | 认证并保存持有者令牌 |
+| `guests` | 管理访客邀请和权限 |
+
+### 示例
+
+```bash
+# 交互式聊天（默认操作）
+aleph
+
+# 发送一次性问题
+aleph ask "What is the weather in Tokyo?"
+
+# 连接到远程服务器
+aleph -s ws://192.168.1.50:18790 chat
+
+# 使用自定义配置文件
+aleph -c ~/my-config.toml health
+```
+
+---
+
+## 服务器 CLI (`aleph-server`)
+
+`aleph-server` 二进制文件运行 Aleph Gateway 并提供用于配置、设备、插件等的子命令。
+
+### 概要
+
+```bash
+aleph-server [OPTIONS] [COMMAND]
+```
+
+当不带子命令调用时（或使用 `start`），服务器启动 Gateway 监听器。
+
+### 全局选项
+
+| 标志 | 简写 | 默认值 | 说明 |
+|------|-------|---------|-------------|
+| `--config <PATH>` | `-c` | — | 配置文件路径 (TOML) |
+| `--daemon` | `-d` | `false` | 作为后台守护进程运行 |
+| `--pid-file <PATH>` | — | `~/.aleph/gateway.pid` | PID 文件位置（守护进程模式） |
+| `--log-file <PATH>` | — | — | 日志文件路径（守护进程模式） |
+| `--bind <ADDR>` | — | `127.0.0.1` | 绑定地址 |
+| `--port <PORT>` | — | `18790` | WebSocket 监听端口 |
+| `--force` | — | `false` | 即使端口似乎正在使用也强制启动 |
+| `--log-level <LEVEL>` | — | `info` | 日志级别 (`error`, `warn`, `info`, `debug`, `trace`) |
+| `--max-connections <N>` | — | `1000` | 最大并发 WebSocket 连接数 |
+| `--webchat-dir <PATH>` | — | — | 从此静态文件目录提供 WebChat UI |
+| `--webchat-port <PORT>` | — | 与 `--port` 相同 | WebChat UI 的 HTTP 端口 |
+
+### 子命令
+
+| 命令 | 说明 |
+|---------|-------------|
+| `start` | 启动 Gateway（默认） |
+| `stop` | 停止正在运行的守护进程 |
+| `status` | 检查守护进程是否正在运行 |
+| `config` | 获取、设置、验证、重新加载或导出配置 |
+| `pairing` | 管理设备配对请求 |
+| `devices` | 列出或撤销已批准设备 |
+| `plugins` | 安装、卸载、启用或禁用插件 |
+| `gateway` | 在 Gateway 上调用任意 RPC 方法 |
+| `channels` | 列出通道并检查通道状态 |
+| `cron` | 列出、检查或触发 cron 作业 |
+| `audit` | 查看工具风险分数和执行历史 |
+| `secret` | 管理加密库中的秘密 |
+
+### 示例
+
+```bash
+# 在前台启动（默认）
+aleph-server
+
+# 作为守护进程启动并带有自定义端口
+aleph-server -d --port 9000 --log-file ~/.aleph/server.log
+
+# 检查守护进程状态
+aleph-server status
+
+# 停止守护进程
+aleph-server stop
+```
+
+---
+
+## 环境变量
+
+以下环境变量影响 CLI 行为：
+
+| 变量 | 说明 |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Anthropic 提供商的 API 密钥（代理操作必需） |
+| `ANTHROPIC_BASE_URL` | Anthropic API 的自定义基础 URL |
+| `ALEPH_MASTER_KEY` | 加密秘密库的主密钥 |
+| `ALEPH_VERBOSE` | 设置时，`aleph ask` 将推理跟踪打印到 stderr |
+| `RUST_LOG` | 覆盖日志级别过滤器（例如 `info`, `debug`, `aleph=trace`） |
+| `TOKIO_WORKER_THREADS` | 异步运行时工作线程数 |
+
+## 配置文件
+
+| 文件 | 目的 |
+|------|---------|
+| `~/.config/aleph-cli/config.toml` | 客户端 CLI 配置（服务器 URL、认证令牌、设备 ID） |
+| `~/.aleph/config.toml` | 服务器配置（代理、网关、控制平面设置） |
+| `~/.aleph/gateway.pid` | 守护进程 PID 文件 |
+| `~/.aleph/gateway.log` | 守护进程日志文件（使用 `--log-file` 时） |
+
+## 退出代码
+
+| 代码 | 含义 |
+|------|---------|
+| `0` | 成功 |
+| `1` | 一般错误（连接失败、RPC 错误、无效参数） |
+| `2` | 配置或认证错误 |
+
+## 下一步
+
+- [网关管理](/docs/zh/cli/gateway) — 启动、停止和监控服务器
+- [代理交互](/docs/zh/cli/agent) — 聊天、询问和管理会话
+- [配置管理](/docs/zh/cli/config) — 从 CLI 读取和写入配置

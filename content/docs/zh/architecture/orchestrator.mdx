@@ -1,115 +1,122 @@
 ---
 title: "编排器"
-description: "AgentDef 与 FlowSpec 解析、HarnessDeps 组装及分派至 Harness 运行时。"
+description: "AgentDef 和 FlowSpec 解析、HarnessDeps 组装，以及分发到工具链运行时。"
 ---
 
 # 编排器
 
-编排器是 **Gateway**（聊天入口、协议适配器）与 **AgentHarness**（Think→Act 循环）之间的桥梁。它解析智能体的配置，组装执行依赖，并分派工作流。
+编排器是**网关**（聊天入口、协议适配器）和 **AgentHarness**（Think→Act 循环）之间的桥梁。它解析代理的配置，组装执行依赖项，并分发流程。
 
-## 架构中的角色
+## 在架构中的角色
 
 ```
-Gateway FlowRequest
+网关 FlowRequest
      │
      ▼
 ┌─────────────┐
-│ Orchestrator │
+│  编排器      │
 │              │
-│ • Resolve    │
-│ • Build      │
-│ • Dispatch   │
+│ • 解析       │
+│ • 构建       │
+│ • 分发       │
 └──────┬───────┘
        │ HarnessRunner::run
        ▼
 ┌─────────────┐
-│   Harness   │
+│   工具链     │
 └─────────────┘
 ```
 
-**位置**：`src/orchestrator/`
+**位置**: `src/orchestrator/`
 
 ---
 
 ## AgentDef 解析
 
-`AgentDef` 定义智能体的行为 —— 其模型、可用工具、系统提示词和个性。编排器通过以下方式解析它：
+`AgentDef` 定义代理的行为——其模型、可用工具、系统提示和个性。编排器从以下位置解析它：
 
-- **静态配置** —— `aleph.toml` 或 `.aleph/agent.toml`
-- **动态覆盖** —— 每次请求的参数（例如 `model`、`thinking`）
-- **身份上下文** —— 所有者与访客的权限
+- **静态配置** — `aleph.toml` 或 `.aleph/agent.toml`
+- **动态覆盖** — 每个请求的参数（如 `model`、`thinking`）
+- **身份上下文** — 所有者与访客权限
 
-解析后的 `AgentDef` 作为 `FlowSpec` 的一部分传入工作流。
+解析后的 `AgentDef` 作为 `FlowSpec` 的一部分传递到流程中。
 
 ---
 
 ## FlowSpec 解析
 
-`FlowSpec` 定义单个请求的执行工作流：
+`FlowSpec` 定义单个请求的执行流程：
 
-| Field | Description |
+| 字段 | 说明 |
 |-------|-------------|
-| `agent_id` | Target agent identifier |
-| `input` | User message or command |
-| `identity` | IdentityContext (owner / guest / anonymous) |
-| `abort_signal` | Cancellation token |
-| `tool_filter` | Optional tool whitelist / blacklist |
-| `context_budget` | Token budget override |
+| `agent_id` | 目标代理标识符 |
+| `input` | 用户消息或命令 |
+| `identity` | IdentityContext（所有者 / 访客 / 匿名） |
+| `abort_signal` | 取消令牌 |
+| `tool_filter` | 可选工具白名单 / 黑名单 |
+| `context_budget` | 令牌预算覆盖 |
 
-编排器将请求级别的覆盖与解析后的 `AgentDef` 合并，生成最终的 `FlowSpec`。
+编排器将请求级覆盖与解析后的 `AgentDef` 合并以生成最终的 `FlowSpec`。
 
 ---
 
 ## HarnessDeps 组装
 
-`AgentDef` 和 `FlowSpec` 解析完成后，编排器构建 `HarnessDeps` —— Harness 运行时的完整依赖包：
+解析 `AgentDef` 和 `FlowSpec` 后，编排器构建 `HarnessDeps` —— 工具链运行时的完整依赖包：
 
 ```rust
 pub struct HarnessDeps {
-    pub session: Arc<dyn SessionService>,      // Append-only history
-    pub tool_service: Arc<dyn ToolService>,    // Tool catalog + execution
-    pub sandbox: Arc<dyn Sandbox>,            // Exec environment, capability ledger
-    pub provider: Arc<dyn AiProvider>,         // LLM provider
-    pub trace_sink: Arc<dyn TraceSink>,        // Event streaming
+    pub session: Arc<dyn SessionService>,       // 仅追加历史
+    pub tools: Arc<dyn ToolService>,            // 工具目录 + 执行
+    pub sandbox: Arc<dyn Sandbox>,              // 执行环境、能力账本
+    pub llm: Arc<dyn AiProvider>,               // LLM 提供商
+    pub stop_hooks: Option<Arc<Vec<Arc<dyn StopHookHandler>>>>, // 可选停止钩子
+    pub context_budget: Option<Arc<Mutex<ContextBudget>>>,      // 可选压力传感器
+    pub context_compactor: Option<Arc<ContextCompactor>>,       // 可选基于 LLM 的压缩器
+    pub skill_prefetcher: Option<Arc<SkillPrefetcher>>,         // 可选技能发现
+    pub trace_sink: Option<Arc<dyn TraceSink>>,                 // 可选可观察性接收器
+    pub system_prompt: Option<String>,          // 可选系统提示覆盖
+    pub max_iterations: Option<usize>,          // 可选硬迭代上限
+    pub power: Option<Arc<dyn PowerCapability>>, // 可选睡眠抑制器 (macOS)
 }
 ```
 
-所有依赖均以 `Arc<dyn Trait>` 形式注入，允许使用测试替身和运行时替换。
+所有依赖项都注入为 `Arc<dyn Trait>`（或 `Option<Arc<...>>` 用于可选功能），允许测试替身和运行时交换。
 
 ---
 
-## 分派流程
+## 分发流程
 
 ```
 FlowRequest { agent_id, input, identity, ... }
      │
      ▼
-Resolve AgentDef + FlowSpec
+解析 AgentDef + FlowSpec
      │
      ▼
-Build HarnessDeps
+构建 HarnessDeps
      │
      ▼
 HarnessRunner::run(flow, deps) → FlowOutcome
 ```
 
-`HarnessRunner::run` 函数取得 `FlowRequest` 和 `HarnessDeps` 的所有权，驱动 Think→Act 循环至完成，并返回一个包含最终响应、流式事件及任何错误的 `FlowOutcome`。
+`HarnessRunner::run` 函数取得 `FlowRequest` 和 `HarnessDeps` 的所有权，驱动 Think→Act 循环完成，并返回包含最终响应、流事件和任何错误的 `FlowOutcome`。
 
 ---
 
 ## 关键类型
 
-| Type | Purpose | Location |
+| 类型 | 用途 | 位置 |
 |------|---------|----------|
-| `FlowRequest` | Incoming request from Gateway | `src/orchestrator/` |
-| `HarnessDeps` | Assembled dependency bundle | `src/orchestrator/` |
-| `FlowOutcome` | Execution result (response, events, errors) | `src/orchestrator/` |
-| `HarnessRunner` | Entry point for Harness execution | `src/harness/` |
+| `FlowRequest` | 来自网关的传入请求 | `src/orchestrator/` |
+| `HarnessDeps` | 组装的依赖包 | `src/orchestrator/` |
+| `FlowOutcome` | 执行结果（响应、事件、错误） | `src/orchestrator/` |
+| `HarnessRunner` | 工具链执行的入口点 | `src/harness/` |
 
 ---
 
 ## 另请参阅
 
-- [Harness](./harness) — Think→Act 循环运行时
-- [Session Service](./sessions) — 追加式事件日志
-- [Thinker](./thinker) — LLM 交互层
+- [工具链](./harness) — Think→Act 循环运行时
+- [会话服务](./session-service) — 仅追加事件日志
+- [思考器](./thinker) — LLM 交互层

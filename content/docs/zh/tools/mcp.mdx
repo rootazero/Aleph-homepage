@@ -1,8 +1,382 @@
 ---
 title: "MCP 集成"
-description: "Model Context Protocol 集成"
+description: "Aleph 如何与模型上下文协议集成以实现可扩展的工具服务器"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/tools/mcp)。
+## 什么是 MCP？
+
+[模型上下文协议](https://modelcontextprotocol.io/) (MCP) 是一个开放标准，定义了 AI 应用程序如何与外部工具服务器通信。它为 LLM 提供了一种结构化方式来发现和调用工具、读取资源以及从外部进程检索提示。
+
+Aleph 充当 **MCP 客户端**，连接到一个或多个提供工具、资源和提示的 MCP 服务器。这种架构允许你扩展 Aleph 的功能而无需修改其核心 —— 只需在 Aleph 旁边运行一个 MCP 服务器。
+
+## 架构
+
+```
+┌──────────────────────────────┐
+│        Aleph Core            │
+│                              │
+│  ┌────────────────────────┐  │
+│  │    McpManager (Actor)  │  │      ┌────────────────────────┐
+│  │                        │──┼──────│  MCP Server: Filesystem │
+│  │  ┌──────────────────┐  │  │      └────────────────────────┘
+│  │  │   McpClient      │  │  │
+│  │  │                  │──┼──┼──────┌────────────────────────┐
+│  │  │  tool_location   │  │  │      │  MCP Server: GitHub     │
+│  │  │  external_servers│  │  │      └────────────────────────┘
+│  │  └──────────────────┘  │  │
+│  │                        │──┼──────┌────────────────────────┐
+│  │  Health monitoring     │  │      │  MCP Server: Database   │
+│  │  Circuit breaker       │  │      └────────────────────────┘
+│  │  Auto-restart          │  │
+│  └────────────────────────┘  │
+│                              │
+│  ┌────────────────────────┐  │
+│  │   AlephToolServer     │  │
+│  │   (unified registry)  │  │
+│  └────────────────────────┘  │
+└──────────────────────────────┘
+```
+
+集成有三个层次：
+
+1. **McpClient** (`src/mcp/client.rs`) —— 管理到外部 MCP 服务器的连接、工具发现和工具调用
+2. **McpManager** (`src/mcp/manager/`) —— 一个 actor，通过健康监控和熔断器模式编排服务器生命周期
+3. **McpToolWrapper** (`src/builtin_tools/mcp_wrapper.rs`) —— 将 MCP 工具包装为 `AlephToolDyn` 实例以在 `AlephToolServer` 中注册
+
+## 传输类型
+
+Aleph 支持三种 MCP 传输机制：
+
+| 传输 | 用例 | 连接 |
+|------|------|------|
+| **Stdio** | 本地进程 | 生成子进程，通过 stdin/stdout 通信 |
+| **HTTP** | 远程服务器 | 标准 HTTP 请求/响应 |
+| **SSE** | 带流式传输的远程服务器 | 服务器发送事件用于实时更新 |
+
+```rust
+pub enum McpTransportType {
+    Stdio,  // 子进程通信
+    Http,   // HTTP 传输
+    Sse,    // 服务器发送事件
+}
+```
+
+## 服务器配置
+
+### 持久化配置
+
+MCP 服务器配置存储在 `~/.aleph/mcp_config.json`：
+
+```json
+{
+  "version": 1,
+  "servers": {
+    "filesystem": {
+      "id": "filesystem",
+      "name": "Filesystem Server",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/projects"],
+      "env": {},
+      "requires_runtime": "node",
+      "auto_start": true,
+      "timeout_seconds": 300
+    },
+    "github": {
+      "id": "github",
+      "name": "GitHub Server",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "requires_runtime": "node",
+      "auto_start": true
+    }
+  }
+}
+```
+
+### 配置选项
+
+| 字段 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `id` | string | 是 | 唯一服务器标识符 |
+| `name` | string | 是 | 人类可读的显示名称 |
+| `transport` | string | 是 | `stdio`, `http`, 或 `sse` |
+| `command` | string | 仅 Stdio | 要执行的命令 |
+| `args` | array | 否 | 命令参数 |
+| `url` | string | 仅 HTTP/SSE | 服务器端点 URL |
+| `env` | object | 否 | 环境变量 |
+| `requires_runtime` | string | 否 | 必需运行时 (`node`, `python`, `bun`) |
+| `auto_start` | boolean | 否 | 自动启动（默认：true） |
+| `timeout_seconds` | integer | 否 | 请求超时（秒） |
+
+### 环境变量展开
+
+配置值支持 `${VAR}` 语法以展开环境变量：
+
+```json
+{
+  "env": {
+    "API_KEY": "${MY_API_KEY}",
+    "HOME": "${HOME}"
+  },
+  "command": "${HOME}/.local/bin/my-server"
+}
+```
+
+未知变量保持原样，因此你可以安全地引用可能在所有环境中都未设置的变量。
+
+## McpManager Actor
+
+`McpManager` 使用 actor 模式进行安全的并发服务器管理：
+
+```rust
+// 创建 actor 和 handle
+let (actor, handle) = McpManagerActor::new(None).await?;
+
+// 生成 actor 任务
+tokio::spawn(actor.run());
+
+// 使用 handle 进行所有操作
+handle.add_server(config).await?;
+handle.list_servers().await?;
+handle.shutdown().await?;
+```
+
+### 服务器生命周期命令
+
+manager 通过命令支持完整的服务器生命周期：
+
+| 命令 | 描述 |
+|------|------|
+| `AddServer` | 注册新服务器配置 |
+| `RemoveServer` | 按 ID 移除服务器 |
+| `StartServer` | 启动已停止的服务器 |
+| `StopServer` | 停止运行中的服务器 |
+| `RestartServer` | 重启特定服务器 |
+| `ListServers` | 列出所有服务器及其状态 |
+| `GetStatus` | 获取服务器的详细状态 |
+| `AggregateTools` | 从所有服务器获取工具 |
+| `AggregateResources` | 从所有服务器获取资源 |
+| `AggregatePrompts` | 从所有服务器获取提示 |
+| `ReloadConfig` | 从磁盘重新加载配置 |
+| `Shutdown` | 优雅关闭所有服务器 |
+
+### 事件系统
+
+manager 向订阅者广播事件以进行实时监控：
+
+```rust
+let mut events = handle.subscribe();
+while let Ok(event) = events.recv().await {
+    match event {
+        McpManagerEvent::ServerStarted { server_id, tool_count, .. } => {
+            println!("{} started with {} tools", server_id, tool_count);
+        }
+        McpManagerEvent::ServerCrashed { server_id, error, .. } => {
+            eprintln!("{} crashed: {}", server_id, error);
+        }
+        _ => {}
+    }
+}
+```
+
+## 健康监控
+
+McpManager 实现了熔断器模式来监控服务器健康：
+
+```
+Healthy -> Degraded (2+ failures) -> Unhealthy (5+ failures) -> Restarting -> Healthy
+                                                              -> Dead (max restarts exceeded)
+```
+
+| 状态 | 描述 |
+|------|------|
+| `Healthy` | 服务器正常运行 |
+| `Degraded` | 检测到一些故障（2-4 次连续） |
+| `Unhealthy` | 熔断器打开（5+ 次连续故障） |
+| `Restarting` | 服务器正在重启 |
+| `Dead` | 超过最大重启次数 |
+| `Stopped` | 服务器被有意停止 |
+
+健康跟踪包括：
+- 连续失败计数
+- 重启窗口管理（防止重启风暴）
+- 最后错误消息保留
+- 自上次健康检查以来的经过时间
+
+## 工具发现
+
+当 MCP 服务器启动时，Aleph 会自动发现其工具：
+
+```rust
+// 服务器启动并列出其工具
+let tools = connection.list_tools().await;
+
+// 工具在工具位置映射中注册
+for tool in &tools {
+    tool_location_map.insert(tool.name.clone(), ToolLocation::External(server_name));
+}
+```
+
+发现的工具与内置工具一起供 agent 使用。`AlephToolServer` 将它们同等对待 —— agent 不需要知道工具是内置的还是由 MCP 服务器提供的。
+
+## 工具调用
+
+当 agent 调用 MCP 工具时：
+
+1. `AlephToolServer` 将工具名称解析为其 MCP 服务器
+2. `McpClient` 向服务器发送 JSON-RPC `tools/call` 请求
+3. 服务器执行工具并返回结果
+4. 结果作为 `tool_result` 转发给 LLM
+
+```rust
+pub async fn call_tool(&self, name: &str, args: Value) -> Result<McpToolResult> {
+    // 尝试带服务器前缀的工具名称（例如 "github:create_issue"）
+    if let Some((server_name, _)) = name.split_once(':') {
+        if let Some(connection) = servers.get(server_name) {
+            return connection.call_tool(name, args).await;
+        }
+    }
+
+    // 尝试所有服务器
+    for connection in servers.values() {
+        if connection.has_tool(name).await {
+            return connection.call_tool(name, args).await;
+        }
+    }
+
+    Err(AlephError::McpToolNotFound(name.to_string()))
+}
+```
+
+## 资源和提示
+
+除了工具之外，Aleph 还支持 MCP 资源和提示：
+
+### 资源
+
+从 MCP 服务器读取结构化数据：
+
+```rust
+// 列出可用资源
+let resources = client.list_resources().await;
+
+// 按 URI 读取资源
+let content = client.read_resource("filesystem:file:///path/to/file").await?;
+```
+
+`mcp_read_resource` 内置工具将此功能暴露给 agent。
+
+### 提示
+
+从 MCP 服务器检索提示模板：
+
+```rust
+// 列出可用提示
+let prompts = client.list_prompts().await;
+
+// 获取带参数的提示
+let result = client.get_prompt("github:review_pr", Some(args)).await?;
+```
+
+`mcp_get_prompt` 内置工具将此功能暴露给 agent。
+
+## 采样支持
+
+Aleph 支持 MCP 采样请求，其中服务器要求客户端（Aleph）使用其 LLM 生成文本。这支持高级服务器端编排：
+
+```rust
+// 设置采样处理程序
+client.set_sampling_callback(|request| async {
+    // 转发给 Aleph 的 LLM 提供商
+    let response = provider.complete(request.messages).await?;
+    Ok(SamplingResponse { content: response })
+}).await;
+```
+
+## 运行时检查
+
+在启动服务器之前，Aleph 会验证所需的运行时是否可用：
+
+```rust
+ExternalServerConfig {
+    name: "my-server".to_string(),
+    command: "npx".to_string(),
+    args: vec!["-y", "@my/mcp-server"],
+    requires_runtime: Some("node".to_string()),
+    // ...
+}
+```
+
+支持的运行时：`node`, `python`, `bun`。如果未找到运行时，服务器将被跳过并发出警告，而不是导致整个启动失败。
+
+## 启动报告
+
+`start_external_servers` 方法返回一个报告，详细说明哪些服务器成功启动，哪些失败：
+
+```rust
+let report = client.start_external_servers(configs).await;
+
+println!("Started: {:?}", report.succeeded);  // ["filesystem", "github"]
+println!("Failed: {:?}", report.failed);       // [("database", "connection refused")]
+
+if !report.all_succeeded() {
+    eprintln!("Some MCP servers failed to start");
+}
+```
+
+这允许 Aleph 在某些 MCP 服务器不可用时继续运行。
+
+## 远程服务器
+
+对于运行在远程机器上的 MCP 服务器，使用 HTTP 或 SSE 传输：
+
+```json
+{
+  "id": "remote-api",
+  "name": "Remote API Server",
+  "transport": "http",
+  "url": "https://mcp.example.com/api",
+  "headers": {
+    "Authorization": "Bearer ${API_TOKEN}"
+  },
+  "timeout_seconds": 60
+}
+```
+
+```json
+{
+  "id": "streaming-server",
+  "name": "Streaming Server",
+  "transport": "sse",
+  "url": "https://mcp.example.com/sse",
+  "timeout_seconds": 300
+}
+```
+
+<Callout type="info">
+当 `transport` 设置为 `auto` 时，Aleph 默认使用 HTTP。未来版本可能通过能力协商添加自动传输检测。
+</Callout>
+
+## 安全注意事项
+
+- **进程隔离**：Stdio MCP 服务器作为具有自己权限的单独进程运行
+- **环境变量**：敏感值（如 API 密钥）应使用 `${VAR}` 展开，而不是以明文存储
+- **工具确认**：MCP 工具可以放在工具过滤配置的 `requireConfirmation` 列表中
+- **网络边界**：远程 MCP 服务器应使用 HTTPS 和适当的认证头
+- **运行时验证**：在服务器启动前检查所需的运行时，以防止任意命令执行
+
+## 最佳实践
+
+1. 对应该始终可用的基本服务器使用 **`auto_start: true`**
+2. 设置合理的超时以防止挂起的操作
+3. 指定 **`requires_runtime`** 以在缺少依赖时获得清晰的错误消息
+4. 对机密使用环境变量 —— 切勿在配置中硬编码 API 密钥
+5. 通过 manager 的事件系统监控事件以获得操作可见性
+6. 将相关工具分组到单个 MCP 服务器以减少连接开销

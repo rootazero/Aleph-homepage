@@ -1,8 +1,277 @@
 ---
-title: "消息系统"
-description: "Aleph 的消息模型和流转机制"
+title: "消息"
+description: "消息如何从任何接口流经 Aleph 到达代理并返回，包括消息类型、路由规则、会话线程和持久化。"
 ---
 
-> 此页面正在翻译中。
+消息是 Aleph 中的基本通信单位。无论用户通过 Telegram 发送文本、在 CLI 中键入命令，还是通过桌面应用提交提示，每个交互在被代理接收之前都被规范化为 Aleph 的统一消息格式。这种抽象允许同一个代理大脑为每个接口服务而无需修改。
 
-请参阅[英文版](/en/docs/concepts/messages)。
+## 消息类型
+
+Aleph 使用受 LLM 聊天完成标准启发的基于角色的消息模型，扩展了用于工具交互的附加类型：
+
+| 角色 | 方向 | 说明 |
+|------|-----------|-------------|
+| `user` | 入站 | 来自人类用户的消息 |
+| `assistant` | 出站 | 来自 AI 代理的响应 |
+| `system` | 内部 | 系统提示词、环境合约、身份指令 |
+| `tool_call` | 代理到工具 | 代理调用特定工具的请求 |
+| `tool_result` | 工具到代理 | 工具执行返回的输出 |
+
+### 消息结构
+
+会话中的每条消息都携带内容之外的元数据：
+
+```rust
+pub struct Message {
+    pub role: Role,
+    pub content: MessageContent,    // 文本、结构化块或工具负载
+    pub metadata: MessageMetadata,
+}
+
+pub struct MessageMetadata {
+    pub timestamp: i64,
+    pub source_channel: String,     // "telegram", "cli", "discord" 等
+    pub session_key: String,        // 此消息所属的会话
+    pub run_id: Option<String>,     // 产生此消息的代理运行
+    pub token_count: Option<u32>,   // 用于预算跟踪的 token 计数
+}
+```
+
+### 内容块
+
+助手消息可以包含多个内容块，支持丰富的多模态响应：
+
+```json
+{
+  "role": "assistant",
+  "content": [
+    { "type": "thinking", "text": "让我分析这段代码..." },
+    { "type": "text", "text": "这是重构后的版本：" },
+    { "type": "tool_use", "id": "call_1", "name": "file_write", "input": { "path": "main.rs", "content": "..." } }
+  ]
+}
+```
+
+`thinking` 块类型用于思维链透明度，允许客户端在启用扩展思考时显示代理的推理过程。
+
+## 消息路由
+
+当消息从任何接口到达时，它通过网关遵循精确的路由路径到达代理：
+
+```
+用户发送消息 (例如 Telegram)
+    │
+    ▼
+接口层 (Telegram Bot)
+    │ 规范化为 ChannelMessage
+    ▼
+网关: 入站路由器
+    │ 解析 JSON-RPC，验证认证
+    ▼
+会话密钥解析
+    │ 确定此消息属于哪个会话
+    ▼
+会话管理器
+    │ 加载会话历史，追加新消息
+    ▼
+代理循环
+    │ 观察 → 思考 → 行动 → 反馈
+    ▼
+网关: 出站发射器
+    │ 通过 EventBus 流式传输事件
+    ▼
+接口层
+    │ 为平台格式化响应
+    ▼
+用户接收响应
+```
+
+### 通道抽象
+
+每个接口都实现 `Interface` trait，将平台特定的消息规范化为通用格式：
+
+```rust
+#[async_trait]
+pub trait Interface: Send + Sync {
+    fn name(&self) -> &str;
+    async fn start(&self) -> Result<()>;
+    async fn stop(&self) -> Result<()>;
+    async fn send_message(
+        &self,
+        target: &InterfaceTarget,
+        message: &str,
+    ) -> Result<()>;
+    fn is_running(&self) -> bool;
+}
+```
+
+这意味着代理永远不需要知道消息是来自 Telegram、Discord 还是 CLI。无论来源如何，它都接收相同规范化的消息结构。
+
+### 交互清单
+
+每个通道通过 `InteractionManifest` 声明其能力：
+
+```rust
+InteractionManifest {
+    paradigm: InteractionParadigm::Messaging,
+    capabilities: [RichText, ImageInline],
+    constraints: { max_output_chars: Some(4096), supports_streaming: false }
+}
+```
+
+可用的范式：
+
+| 范式 | 说明 | 典型能力 |
+|----------|-------------|---------------------|
+| `CLI` | 终端接口 | RichText, CodeHighlight, Streaming |
+| `WebRich` | 完整 Web 接口 | 包括 Canvas 的所有能力 |
+| `Messaging` | 聊天平台 (Telegram, Discord) | RichText, ImageInline |
+| `Background` | 计划/cron 任务 | SilentReply |
+| `Embedded` | 受限环境 | 无 |
+
+思考器使用这些清单来调整其输出格式。例如，当通道不支持 Mermaid 图表时它会避免使用，并且对于消息长度受限的平台它会保持响应更短。
+
+## 会话线程
+
+Aleph 使用分层会话密钥系统来隔离跨通道、用户和上下文的对话：
+
+### 会话密钥变体
+
+| 变体 | 格式 | 用例 |
+|---------|--------|----------|
+| **Main** | `agent:main:main` | 跨通道共享会话 |
+| **DirectMessage** | `agent:main:telegram:dm:user123` | 特定平台上的每用户 DM |
+| **Group** | `agent:main:discord:group:guild-id` | 群组/频道聊天 |
+| **Task** | `agent:main:cron:daily-summary` | Cron 作业、Webhooks |
+| **Subagent** | `subagent:agent:main:translator` | 子代理委派 |
+| **Ephemeral** | `agent:main:ephemeral:uuid` | 临时会话，无持久化 |
+
+### DM 范围策略
+
+对于直接消息，Aleph 支持三种隔离策略：
+
+```rust
+pub enum DmScope {
+    Main,           // 所有 DM 共享主会话
+    PerPeer,        // 按用户隔离 (默认)
+    PerChannelPeer, // 按通道 + 用户隔离
+}
+```
+
+默认的 `PerPeer` 策略意味着每个与 Aleph 聊天的人都获得自己的对话历史，无论他们使用哪个平台。切换到 `Main` 让所有 DM 共享单个会话 -- 当你想要跨平台连续性时很有用。
+
+## 消息持久化
+
+会话及其消息在 SQLite 中持久化：
+
+```sql
+CREATE TABLE sessions (
+    session_key TEXT PRIMARY KEY,
+    messages TEXT,           -- Message 对象的 JSON 数组
+    created_at INTEGER,
+    updated_at INTEGER,
+    message_count INTEGER,
+    token_count INTEGER
+);
+
+CREATE TABLE session_metadata (
+    session_key TEXT PRIMARY KEY,
+    agent_id TEXT,
+    channel TEXT,
+    last_compaction INTEGER
+);
+```
+
+### 会话压缩
+
+当会话积累太多 token（超过配置的阈值）时，会话管理器触发压缩：
+
+1. 从旧消息中提取关键事实。
+2. 将提取的事实存储在[内存系统](/docs/zh/architecture/memory)中以供长期检索。
+3. 用简洁的摘要替换旧消息。
+4. 更新 token 计数。
+
+这个过程对用户透明。代理通过摘要和事实存储保留对完整对话的意识。
+
+## 事件流式传输
+
+当代理处理消息时，它通过网关的 EventBus 发出实时事件。客户端使用 glob 模式订阅事件主题：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "events.subscribe",
+  "params": { "pattern": "stream.*" },
+  "id": 1
+}
+```
+
+关键事件主题：
+
+| 主题 | 负载 |
+|-------|---------|
+| `stream.chunk` | 代理响应的增量文本内容 |
+| `stream.tool_start` | 工具执行已开始通知 |
+| `stream.tool_end` | 工具执行结果 |
+| `agent.started` | 代理运行已开始处理 |
+| `agent.completed` | 代理运行已完成 |
+| `agent.error` | 处理期间发生错误 |
+
+这种流式模型在所有接口上启用响应式 UI -- CLI 可以在 token 到达时显示它们，桌面应用可以显示打字指示器，Telegram 可以发送分块消息。
+
+## 安全上下文
+
+每条消息都携带一个流经整个执行链的身份上下文：
+
+```rust
+pub struct IdentityContext {
+    pub request_id: String,
+    pub session_key: String,
+    pub role: Role,              // Owner, Guest, Anonymous
+    pub identity_id: String,
+    pub scope: Option<GuestScope>,
+    pub created_at: i64,
+    pub source_channel: String,
+}
+```
+
+身份上下文一旦创建就不可变，并确定代理可以代表用户调用哪些工具。所有者会话具有不受限制的访问权限，而访客会话限于其 `GuestScope` 中指定的工具。有关权限模型的详细信息，请参阅[安全部分](/docs/zh/security/overview)。
+
+## JSON-RPC 协议
+
+客户端和网关之间的所有消息交换都使用 JSON-RPC 2.0 over WebSocket：
+
+**发送消息：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "msg-001",
+  "method": "agent.run",
+  "params": {
+    "message": "解释 Rust 借用检查器",
+    "session_key": "agent:main:main",
+    "thinking": "medium"
+  }
+}
+```
+
+**接收流式响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "stream.chunk",
+    "data": {
+      "run_id": "run-123",
+      "content": "借用检查器是 Rust 的..."
+    }
+  }
+}
+```
+
+## 相关页面
+
+- [网关概览](/docs/zh/gateway/overview) -- WebSocket 协议和事件总线
+- [代理运行时](/docs/zh/concepts/agent-runtime) -- 代理如何处理消息
+- [工作区](/docs/zh/concepts/workspaces) -- 会话存储和状态目录

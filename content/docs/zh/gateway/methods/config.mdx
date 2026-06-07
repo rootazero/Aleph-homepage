@@ -1,8 +1,312 @@
 ---
-title: "配置方法"
-description: "配置管理 RPC 方法"
+title: "config.*"
+description: "运行时配置 RPC 方法"
 ---
 
-> 此页面正在翻译中。
+配置方法提供运行时配置管理。读取当前配置、应用部分更新、替换完整配置、从磁盘重新加载、验证配置对象——全部无需重启网关服务器。
 
-请参阅[英文版](/en/docs/gateway/methods/config)。
+:::warning
+本页记录的是预期 API。实际运行时注册的方法为：`config.reload`、`config.get`、`config.validate`、`config.path`、`config.get_tool_permissions`、`config.update_tool_permissions`。像 `config.patch` 和 `config.apply` 这样的方法反映的是设计目标，但可能与当前的运行时接线有所不同。请参阅[方法参考](/docs/zh/gateway/methods)获取准确的方法列表。
+:::
+
+## 方法
+
+### config.get
+
+获取当前活动配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "config.get"
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "config": {
+      "agent": {
+        "default_model": "claude-sonnet-4-20250514",
+        "thinking_level": "medium",
+        "max_iterations": 25,
+        "token_budget": 128000
+      },
+      "gateway": {
+        "bind": "127.0.0.1:18790",
+        "require_auth": true,
+        "cors_origins": ["http://localhost:3000"]
+      },
+      "interfaces": {
+        "telegram": {
+          "enabled": true,
+          "token": "[REDACTED]"
+        }
+      },
+      "exec": {
+        "security": "allowlist",
+        "allowlist": ["git *", "npm install", "cargo build"]
+      }
+    },
+    "source": "~/.aleph/config.json",
+    "loaded_at": 1706400000000
+  }
+}
+```
+
+此方法不接受参数。敏感值（API 密钥、令牌）在响应中会被编辑。
+
+### config.patch
+
+使用 JSON Merge Patch（RFC 7386）应用部分更新。仅更改指定的字段；所有其他字段保持不变。更改立即生效。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "config.patch",
+  "params": {
+    "patch": {
+      "agent": {
+        "thinking_level": "high",
+        "max_iterations": 50
+      }
+    }
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "applied": true,
+    "changed_keys": [
+      "agent.thinking_level",
+      "agent.max_iterations"
+    ],
+    "restart_required": false
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----------|------|----------|-------------|
+| `patch` | object | 是 | JSON Merge Patch 对象。将键设为 `null` 可删除它。 |
+
+某些配置更改需要接口或服务重启。在这种情况下，`restart_required` 将为 `true`，并列出受影响的组件。
+
+**示例——删除字段：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "config.patch",
+  "params": {
+    "patch": {
+      "interfaces": {
+        "discord": null
+      }
+    }
+  }
+}
+```
+
+### config.apply
+
+替换整个配置。这是完全覆盖——新配置中未包含的任何字段都将被删除。请谨慎使用；对于增量更改，优先使用 `config.patch`。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "config.apply",
+  "params": {
+    "config": {
+      "agent": {
+        "default_model": "claude-sonnet-4-20250514",
+        "thinking_level": "medium",
+        "max_iterations": 25,
+        "token_budget": 128000
+      },
+      "gateway": {
+        "bind": "127.0.0.1:18790",
+        "require_auth": false
+      }
+    }
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "applied": true,
+    "restart_required": true,
+    "restart_components": ["gateway"]
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----------|------|----------|-------------|
+| `config` | object | 是 | 要应用的完整配置对象 |
+
+### config.reload
+
+从磁盘上的配置文件（`~/.aleph/config.json`）重新加载配置。在手动编辑文件或从 dotfiles 仓库拉取更改后很有用。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "config.reload"
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "reloaded": true,
+    "source": "~/.aleph/config.json",
+    "changed_keys": [
+      "agent.default_model",
+      "interfaces.telegram.token"
+    ],
+    "restart_required": true,
+    "restart_components": ["telegram"]
+  }
+}
+```
+
+此方法不接受参数。网关自动检测哪些部分发生了更改，并报告是否需要组件重启。
+
+### config.validate
+
+根据模式验证配置对象而不应用它。返回发现的任何验证错误。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "config.validate",
+  "params": {
+    "config": {
+      "agent": {
+        "default_model": "nonexistent-model",
+        "thinking_level": "ultra",
+        "max_iterations": -5
+      }
+    }
+  }
+}
+```
+
+**响应（有效）：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "valid": true,
+    "warnings": []
+  }
+}
+```
+
+**响应（无效）：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "valid": false,
+    "errors": [
+      {
+        "path": "agent.thinking_level",
+        "message": "Invalid value 'ultra'. Expected one of: off, minimal, low, medium, high, xhigh"
+      },
+      {
+        "path": "agent.max_iterations",
+        "message": "Value must be a positive integer"
+      }
+    ],
+    "warnings": [
+      {
+        "path": "agent.default_model",
+        "message": "Model 'nonexistent-model' is not in the known model list"
+      }
+    ]
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----------|------|----------|-------------|
+| `config` | object | 是 | 要验证的配置对象 |
+
+## 热重载
+
+网关使用文件系统监视器监视 `~/.aleph/config.json` 的更改。当文件被修改时：
+
+1. **去抖**——等待 500ms 以确保额外的写入完成
+2. **解析**——读取并解析新配置
+3. **验证**——根据配置模式进行检查
+4. **差异**——计算哪些部分发生了变化
+5. **应用**——更新内存中的配置并重启受影响的接口
+6. **发送**——向所有订阅的客户端发送 `config.changed` 事件
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "config.changed",
+    "data": {
+      "changed_keys": ["agent.thinking_level"],
+      "source": "file_watcher",
+      "timestamp": 1706400000000
+    }
+  }
+}
+```
+
+## 配置部分
+
+| 部分 | 说明 | 热重载 |
+|---------|-------------|------------|
+| `agent` | 模型、思考级别、迭代限制 | 是 |
+| `gateway` | 绑定地址、认证设置 | 需要重启 |
+| `interfaces` | Telegram、Discord、iMessage 配置 | 重启受影响的接口 |
+| `exec` | 安全级别、允许列表、拒绝列表 | 是 |
+| `memory` | 向量数据库设置、嵌入模型 | 需要重启 |
+| `cron` | 调度器设置 | 是 |
+| `browser` | CDP 设置、无头模式 | 需要重启 |
+
+## 另请参阅
+
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [协议](/docs/zh/gateway/protocol)——JSON-RPC 2.0 传输

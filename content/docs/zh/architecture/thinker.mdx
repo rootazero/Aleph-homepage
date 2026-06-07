@@ -1,135 +1,139 @@
 ---
 title: "思考器"
-description: "LLM 交互层、29 层 PromptBuilder、节缓存与思考级别。"
+description: "LLM 交互层、具有 29 层的 PromptBuilder、节缓存和思考级别。"
 ---
 
 # 思考器
 
-思考器负责所有 LLM 交互与决策。它是 Think→Act 循环的大脑。
+思考器负责所有 LLM 交互和决策。它是 Think→Act 循环的大脑。
 
-**位置**：`src/thinker/`
+**位置**: `src/thinker/`
 
-唯一的公开入口点是 `thinker::PromptBuilder`，它包装了一个 `PromptPipeline`。旧的 `agent_loop::PromptBuilder` 已在 Harness 迁移期间（第 6/7 阶段）移除。
+唯一的公共入口点是 `thinker::PromptBuilder`，它包装了 `PromptPipeline`。旧的 `agent_loop::PromptBuilder` 在工具链迁移期间（第 6/7 阶段）被删除。
 
 ---
 
 ## 组件
 
-| Component | File | Purpose |
+| 组件 | 文件 | 用途 |
 |-----------|------|---------|
-| `Thinker` | `mod.rs` | Main thinker interface |
-| `PromptBuilder` | `prompt_builder.rs` | Construct prompts from context |
-| `DecisionParser` | `decision_parser.rs` | Parse LLM responses |
-| `ModelRouter` | `model_router.rs` | Select optimal model |
-| `ToolFilter` | `tool_filter.rs` | Filter available tools |
-| `StreamingHandler` | `streaming/` | Handle streaming responses |
-| `InteractionManifest` | `interaction.rs` | Channel capability awareness |
-| `SecurityContext` | `security_context.rs` | Policy-driven permissions |
-| `ContextAggregator` | `context.rs` | Reconcile interaction and security |
-| `SoulManifest` | `soul.rs` | Identity/personality definition |
-| `IdentityResolver` | `identity.rs` | Layered identity resolution |
+| `ProviderRegistry` | `mod.rs` | 模型路由和提供商解析 |
+| `PromptBuilder` | `prompt_builder/` | 从上下文构建提示 |
+| `PromptPipeline` | `prompt_pipeline.rs` | 可组合提示组装引擎 |
+| `PromptLayer` | `prompt_layer.rs` | 单个提示层的 trait |
+| `InteractionManifest` | `interaction.rs` | 频道能力感知 |
+| `SecurityContext` | `security_context.rs` | 策略驱动的权限 |
+| `ContextAggregator` | `context.rs` | 协调交互和安全 |
+| `SoulManifest` | `soul.rs` | 身份/个性定义 |
+| `IdentityResolver` | `identity.rs` | 分层身份解析 |
+| `MemoryContextProvider` | `memory_context_provider.rs` | 用于上下文注入的记忆检索 |
+| `TokenBudget` | `prompt_budget.rs` | 提示预算执行 |
 
 ---
 
 ## PromptBuilder
 
 ```rust
-// Standard usage
+// 标准用法
 let builder = PromptBuilder::new(config);
 let prompt = builder.build_system_prompt(&tools);
 
-// With soul identity
+// 带灵魂身份
 let prompt = builder.build_system_prompt_with_soul(&tools, &soul, profile);
 
-// Sub-agent usage (replaces old prompt_sections::resolve())
+// 子代理用法（替换旧的 prompt_sections::resolve()）
 let prompt = builder.build_for_agent(&agent_def, &tools, &soul);
 
-// Mode + budget control
+// 模式 + 预算控制
 let result = builder.build_with_budget(&tools, &soul, profile, PromptMode::Compact, &budget);
 ```
 
 ---
 
-## 29 层
+## 33 层
 
-提示词系统由 29 个有序层组装而成。层根据缓存资格分为两个区域。
+提示系统从 33 个有序层组装提示。层根据缓存资格分为两个区域。
 
-### 稳定区（优先级 50–1600）
+### 稳定区域（优先级 50–1600）
 
-内容很少变化 —— 符合节级别缓存条件。
+内容很少更改——符合节级缓存条件。
 
-| Priority | Layer | Notes |
+| 优先级 | 层 | 说明 |
 |----------|-------|-------|
-| 50 | `SoulLayer` | Identity / personality |
-| 55 | `AgentRoleLayer` | Sub-agent role header + protocol blocks |
-| 75 | `ProfileLayer` | Workspace profile overlay |
-| 100 | `RoleLayer` | Base assistant role |
-| 300 | `EnvironmentLayer` | OS, date, working directory |
-| 400 | `RuntimeCapabilitiesLayer` | Python, Node.js, FFmpeg, etc. |
-| 500 | `ToolsLayer` | Tool definitions (text schema) |
-| 501 | `HydratedToolsLayer` | Semantic-retrieval tool definitions |
-| 550 | `ToolUsageGrammarLayer` | Data-driven tool usage conventions |
-| 600 | `SecurityLayer` | Safety / security guidelines |
-| 700 | `ProtocolTokensLayer` | JSON-RPC protocol tokens |
-| 710 | `HeartbeatLayer` | Session keep-alive instructions |
-| 800 | `OperationalGuidelinesLayer` | Operational rules |
-| 900 | `CitationStandardsLayer` | Citation formatting |
-| 1000 | `GenerationModelsLayer` | Available image/video/audio models |
-| 1050 | `SkillInstructionsLayer` | Active skill instructions |
-| 1100 | `SpecialActionsLayer` | Special action syntax |
-| 1200 | `ResponseFormatLayer` | Response structure |
-| 1300 | `GuidelinesLayer` | General guidelines |
-| 1350 | `ThinkingGuidanceLayer` | Structured reasoning guidance |
-| 1400 | `SkillModeLayer` | Strict skill workflow enforcement |
-| 1500 | `CustomInstructionsLayer` | User custom instructions |
-| 1600 | `LanguageLayer` | Response language |
+| 50 | `SoulLayer` | 身份 / 个性 |
+| 55 | `AgentRoleLayer` | 子代理角色标头 + 协议块 |
+| 75 | `ProfileLayer` | 工作空间配置文件覆盖 |
+| 100 | `RoleLayer` | 基础助手角色 |
+| 300 | `EnvironmentLayer` | OS、日期、工作目录 |
+| 400 | `RuntimeCapabilitiesLayer` | Python、Node.js、FFmpeg 等 |
+| 500 | `ToolsLayer` | 工具定义（文本模式） |
+| 501 | `HydratedToolsLayer` | 语义检索工具定义 |
+| 550 | `ToolUsageGrammarLayer` | 数据驱动的工具使用约定 |
+| 600 | `SecurityLayer` | 安全 / 安全指南 |
+| 700 | `ProtocolTokensLayer` | JSON-RPC 协议令牌 |
+| 710 | `HeartbeatLayer` | 会话保持活动指令 |
+| 800 | `OperationalGuidelinesLayer` | 操作规则 |
+| 900 | `CitationStandardsLayer` | 引用格式 |
+| 1000 | `GenerationModelsLayer` | 可用图像/视频/音频模型 |
+| 1050 | `SkillInstructionsLayer` | 活动技能指令 |
+| 1100 | `SpecialActionsLayer` | 特殊操作语法 |
+| 1200 | `ResponseFormatLayer` | 响应结构 |
+| 1300 | `GuidelinesLayer` | 一般指南 |
+| 1350 | `ThinkingGuidanceLayer` | 结构化推理指南 |
+| 1400 | `SkillModeLayer` | 严格技能工作流执行 |
+| 1500 | `CustomInstructionsLayer` | 用户自定义指令 |
+| 1600 | `LanguageLayer` | 响应语言 |
 
-### 动态区（优先级 1700–1750）
+### 动态区域（优先级 1700–1760）
 
-每次请求，永不缓存。
+每个请求，从不缓存。
 
-| Priority | Layer | Notes |
+| 优先级 | 层 | 说明 |
 |----------|-------|-------|
-| 1700 | `InboundContextLayer` | Sender, channel, session metadata |
-| 1710 | `VoiceModeLayer` | Voice-specific response instructions |
-| 1720 | `RuntimeContextLayer` | Current time, session info |
-| 1730 | `IdentityFilesLayer` | SOUL.md, IDENTITY.md workspace files |
-| 1740 | `MemoryAugmentationLayer` | Dual-path memory injection |
-| 1750 | `SessionContextGuideLayer` | Compressed session context guidance |
+| 1700 | `InboundContextLayer` | 发送者、频道、会话元数据 |
+| 1704 | `AgentCatalogLayer` | 可用子代理目录 |
+| 1705 | `McpInstructionsLayer` | MCP 服务器指令 |
+| 1706 | `McpToolIndexLayer` | MCP 工具索引条目 |
+| 1710 | `VoiceModeLayer` | 语音特定响应指令 |
+| 1720 | `RuntimeContextLayer` | 当前时间、会话信息 |
+| 1730 | `IdentityFilesLayer` | SOUL.md、IDENTITY.md 工作空间文件 |
+| 1740 | `MemoryAugmentationLayer` | 双路径记忆注入 |
+| 1750 | `SessionContextGuideLayer` | 压缩会话上下文指南 |
+| 1760 | `SessionResumeLayer` | 会话恢复上下文 |
 
 ---
 
 ## 组装路径
 
-每个层声明其参与的路径。流水线在组装时按路径过滤。
+每个层声明它参与哪些路径。管道在组装时按路径过滤。
 
-| Path | Description |
+| 路径 | 说明 |
 |------|-------------|
-| `Basic` | Minimal — config + tool list only |
-| `Hydration` | Tools come from semantic retrieval (`HydrationResult`) |
-| `Soul` | Soul-enriched — includes identity / personality |
-| `Context` | Context-aware — uses `ResolvedContext` |
-| `Cached` | Pre-cached stable prefix |
+| `Basic` | 最小化——仅配置 + 工具列表 |
+| `Hydration` | 工具来自语义检索 (`HydrationResult`) |
+| `Soul` | 灵魂丰富——包括身份 / 个性 |
+| `Context` | 上下文感知——使用 `ResolvedContext` |
+| `Cached` | 预缓存的稳定前缀 |
 
 ---
 
-## 提示词模式
+## 提示模式
 
-| Mode | Behavior |
+| 模式 | 行为 |
 |------|----------|
-| `Full` (default) | All 29 layers participate |
-| `Compact` | Excludes 13 heavy layers (`RuntimeContextLayer`, `EnvironmentLayer`, `RuntimeCapabilitiesLayer`, `ProtocolTokensLayer`, `HeartbeatLayer`, `OperationalGuidelinesLayer`, `CitationStandardsLayer`, `GenerationModelsLayer`, `SkillInstructionsLayer`, `SpecialActionsLayer`, `GuidelinesLayer`, `ThinkingGuidanceLayer`, `SkillModeLayer`) |
-| `Minimal` | Only 5 core layers: `SoulLayer`, `ToolsLayer`, `HydratedToolsLayer`, `ResponseFormatLayer`, `LanguageLayer` |
+| `Full` (默认) | 所有 33 层参与 |
+| `Compact` | 排除 13 个重型层 (`RuntimeContextLayer`、`EnvironmentLayer`、`RuntimeCapabilitiesLayer`、`ProtocolTokensLayer`、`HeartbeatLayer`、`OperationalGuidelinesLayer`、`CitationStandardsLayer`、`GenerationModelsLayer`、`SkillInstructionsLayer`、`SpecialActionsLayer`、`GuidelinesLayer`、`ThinkingGuidanceLayer`、`SkillModeLayer`) |
+| `Minimal` | 仅 5 个核心层：`SoulLayer`、`ToolsLayer`、`HydratedToolsLayer`、`ResponseFormatLayer`、`LanguageLayer` |
 
 ---
 
-## 节级别缓存
+## 节级缓存
 
-`execute_cached()` 在首次调用后缓存每个 `LayerStability::Stable` 层的输出。动态层始终重新计算。29 层中约 23 层为 Stable。
+`execute_cached()` 在第一次调用后缓存每个 `LayerStability::Stable` 层的输出。动态层始终重新计算。~23/33 层是稳定的。
 
 ```rust
-pipeline.invalidate("soul");    // Invalidate one layer by name
-pipeline.invalidate_all();      // Clear all cached sections
+pipeline.invalidate("soul");    // 按名称使一层无效
+pipeline.invalidate_all();      // 清除所有缓存的节
 pipeline.cache_stats();         // CacheStats { hits, misses, entries }
 ```
 
@@ -139,10 +143,10 @@ pipeline.cache_stats();         // CacheStats { hits, misses, entries }
 
 ```rust
 pub enum ThinkingLevel {
-    Off,        // No extended thinking
+    Off,        // 无扩展思考
     Minimal,    // budget_tokens: 1024
     Low,        // budget_tokens: 2048
-    Medium,     // budget_tokens: 4096 (default)
+    Medium,     // budget_tokens: 4096 (默认)
     High,       // budget_tokens: 8192
     XHigh,      // budget_tokens: 16384
 }
@@ -150,18 +154,18 @@ pub enum ThinkingLevel {
 
 ---
 
-## 提供者降级
+## 提供商回退
 
-当提供者不支持扩展思考时，Aleph 会优雅地降级：
+当提供商不支持扩展思考时，Aleph 会优雅地回退：
 
 ```
-User requests: thinking = High
+用户请求：thinking = High
     │
-    ├─▶ Claude Opus → ✓ Native extended thinking
+    ├─▶ Claude Opus → ✓ 原生扩展思考
     │
-    ├─▶ GPT-4o → ✗ No support → Fallback to o1
+    ├─▶ GPT-4o → ✗ 不支持 → 回退到 o1
     │
-    └─▶ Gemini → ✗ No support → Use thinkingPreface prompt
+    └─▶ Gemini → ✗ 不支持 → 使用 thinkingPreface 提示
 ```
 
 ---
@@ -169,27 +173,27 @@ User requests: thinking = High
 ## 流式架构
 
 ```
-LLM Response Stream
+LLM 响应流
     │
     ▼
 ┌─────────────────────────────────────────┐
 │ BlockStateManager                        │
-│   • Track current block type             │
-│   • Detect block boundaries              │
+│   • 跟踪当前块类型                       │
+│   • 检测块边界                           │
 └─────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────┐
 │ BlockReplyChunker                        │
-│   • Split into semantic chunks           │
-│   • Handle code blocks, lists, etc.      │
+│   • 分割成语义块                         │
+│   • 处理代码块、列表等                   │
 └─────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────┐
 │ BlockCoalescer                           │
-│   • Merge small chunks                   │
-│   • Emit complete blocks                 │
+│   • 合并小块                             │
+│   • 发出完整块                           │
 └─────────────────────────────────────────┘
     │
     ▼
@@ -200,6 +204,6 @@ Event: StreamChunk { content, block_type }
 
 ## 另请参阅
 
-- [Harness](./harness) — Think→Act 循环
-- [Dispatcher](./dispatcher) — 任务编排
-- [Memory System](./memory) — 上下文增强
+- [工具链](./harness) — Think→Act 循环
+- [分发器](./dispatcher) — 任务编排
+- [记忆系统](./memory) — 上下文增强

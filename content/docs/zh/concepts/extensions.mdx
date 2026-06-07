@@ -1,8 +1,452 @@
 ---
-title: "扩展系统"
-description: "构建和管理 Aleph 扩展"
+title: "扩展"
+description: "Aleph 的插件架构支持 WASM 和 Node.js 运行时、清单驱动配置、钩子系统、后台服务和频道/提供商插件。"
 ---
 
-> 此页面正在翻译中。
+扩展系统是 Aleph 超越其内置能力的方式。通过清单驱动的插件架构，第三方开发人员（或您）可以添加新工具、拦截系统事件、定义自定义 AI 提供商、暴露 HTTP 端点，甚至创建全新的消息频道。扩展在沙箱运行时中运行 —— 要么是快速的 WebAssembly 模块，要么是功能齐全的 Node.js 进程 —— 具有声明式权限控制。
 
-请参阅[英文版](/en/docs/concepts/extensions)。
+## 架构概览
+
+```
+Extension Manager
+├── Loader           ── 发现、清单解析、验证
+├── Registry         ── 插件注册、工具查找、状态跟踪
+├── Watcher          ── 文件更改时热重载
+└── Plugin Runtimes
+    ├── WASM Runtime (Extism)  ── 沙箱、快速启动、有限 I/O
+    └── Node.js Runtime (IPC)  ── 完整 Node.js API、stdio 通信
+```
+
+Extension Manager 协调所有插件的加载、生命周期和通信。每个插件在清单文件中声明其能力，管理器将工具调用、钩子事件和服务命令路由到适当的运行时。
+
+## 插件结构
+
+每个插件都存在于自己的目录中，并带有一个清单文件：
+
+```
+~/.aleph/plugins/my-plugin/
+├── aleph_plugin.toml    # 插件清单（必需）
+├── dist/
+│   └── index.js         # 入口点（Node.js）
+├── src/
+│   └── index.ts         # 源代码
+├── SKILL.md             # 可选提示文件
+└── docs/
+    └── INSTRUCTIONS.md  # 可选工具特定说明
+```
+
+## 清单格式
+
+清单文件（`aleph_plugin.toml`）是插件与 Aleph 运行时之间的契约。它声明插件提供的一切和需要的一切。
+
+### 完整示例
+
+```toml
+[plugin]
+id = "my-plugin"                    # 唯一标识符
+name = "My Plugin"                  # 显示名称
+version = "1.0.0"                   # SemVer 版本
+description = "Does something useful"
+author = "Your Name"
+kind = "nodejs"                     # nodejs | wasm | static
+entry = "dist/index.js"            # nodejs/wasm 的入口点
+
+[permissions]
+network = ["connect:https://*"]     # 网络访问规则
+filesystem = ["read:./data", "write:./output"]
+env = ["API_KEY", "DEBUG"]          # 允许的环境变量
+
+[prompt]
+file = "SKILL.md"                   # 提示文件路径
+scope = "system"                    # system | tool | standalone | disabled
+
+[[tools]]
+name = "my_tool"
+description = "Performs a specific task"
+handler = "handleMyTool"
+instruction_file = "docs/INSTRUCTIONS.md"
+
+[[tools]]
+name = "another_tool"
+description = "Another useful tool"
+handler = "handleAnotherTool"
+
+[[hooks]]
+event = "before_tool_call"
+kind = "interceptor"                # interceptor | observer | resolver
+priority = "normal"                 # system | high | normal | low
+handler = "onBeforeTool"
+
+[[hooks]]
+event = "after_tool_call"
+kind = "observer"
+priority = "low"
+handler = "onAfterTool"
+```
+
+### 插件种类
+
+| 种类 | 说明 | 入口点 | 用例 |
+|------|-------------|-------------|----------|
+| `nodejs` | 通过 JSON-RPC over stdio 通信的 Node.js 进程 | JavaScript/TypeScript 文件 | 具有网络访问的全功能插件 |
+| `wasm` | 加载到 Extism 运行时的 WebAssembly 模块 | `.wasm` 二进制 | 快速、沙箱计算 |
+| `static` | 无可执行代码，仅提示和配置 | 无 | 编码标准、风格指南、知识库 |
+
+### 清单优先级
+
+当存在多种清单格式时，Aleph 使用此解析顺序：
+
+1. `aleph_plugin.toml` (V2 TOML) -- 首选
+2. `aleph_plugin.json` (V2 JSON)
+3. 带有 `alephPlugin` 部分的 `package.json`
+4. 旧版清单格式
+
+## WASM 运行时
+
+WASM 运行时使用 [Extism](https://extism.org/) 在沙箱环境中执行 WebAssembly 插件。WASM 插件适用于不需要文件系统或网络访问的计算密集型操作。
+
+```rust
+pub struct WasmRuntime {
+    plugins: HashMap<String, ExtismPlugin>,
+}
+
+impl WasmRuntime {
+    pub fn load(&mut self, path: &Path) -> Result<()>;
+    pub fn call(&self, plugin: &str, function: &str, input: &[u8])
+        -> Result<Vec<u8>>;
+}
+```
+
+### 编写 WASM 插件（Rust）
+
+```rust
+use extism_pdk::*;
+
+#[plugin_fn]
+pub fn my_tool(input: String) -> FnResult<String> {
+    let args: serde_json::Value = serde_json::from_str(&input)?;
+    let result = process(args);
+    Ok(serde_json::to_string(&result)?)
+}
+```
+
+### WASM 沙箱限制
+
+| 资源 | 约束 |
+|----------|-----------|
+| 文件系统 | 无访问（完全沙箱） |
+| 网络 | 无访问（完全沙箱） |
+| 内存 | 可配置限制（默认：256 MB） |
+| CPU 时间 | 可配置超时（默认：30 秒） |
+
+这些限制在扩展设置中配置：
+
+```toml
+[extensions.runtimes.wasm]
+enabled = true
+memory_limit = "256MB"
+timeout_ms = 30000
+```
+
+## Node.js 运行时
+
+Node.js 插件作为子进程运行，并通过 JSON-RPC over stdio 与 Aleph 通信。它们可以访问完整的 Node.js API，使其适用于需要网络访问、文件 I/O 或复杂依赖的插件。
+
+```rust
+pub struct NodejsRuntime {
+    processes: HashMap<String, Child>,
+}
+
+impl NodejsRuntime {
+    pub async fn start(&mut self, plugin: &PluginManifest) -> Result<()>;
+    pub async fn call(&self, plugin: &str, method: &str, args: Value)
+        -> Result<Value>;
+}
+```
+
+### 编写 Node.js 插件
+
+```typescript
+import { createServer } from '@aleph/plugin-sdk';
+
+const server = createServer({
+  name: 'my-plugin',
+  tools: {
+    my_tool: async (args: { input: string }) => {
+      return { result: `Processed: ${args.input}` };
+    },
+    another_tool: async (args: { query: string }) => {
+      const response = await fetch(`https://api.example.com?q=${args.query}`);
+      return response.json();
+    }
+  }
+});
+
+server.start();
+```
+
+`@aleph/plugin-sdk` 自动处理所有 JSON-RPC 通信。您只需将工具处理程序定义为异步函数。
+
+## 插件发现和注册
+
+### 发现
+
+`PluginDiscovery` 组件扫描三个目录以查找插件：
+
+1. `~/.aleph/plugins/` -- 用户插件
+2. `/usr/local/share/aleph/plugins/` -- 系统插件
+3. `./plugins/` -- 项目本地插件
+
+### 注册流程
+
+```
+插件目录找到
+    │
+    ▼
+1. 解析清单 (aleph_plugin.toml)
+    │
+    ▼
+2. 验证清单
+   • 存在必填字段
+   • 版本兼容性
+   • 无工具名称冲突
+    │
+    ▼
+3. 选择运行时
+   WASM → WasmRuntime
+   Node.js → NodejsRuntime
+   Static → 无需运行时
+    │
+    ▼
+4. 在 ToolServer 中注册工具
+    │
+    ▼
+插件就绪
+```
+
+### 插件状态
+
+```rust
+pub enum PluginStatus {
+    Loaded,      // 清单已解析，尚未启动
+    Running,     // 运行时活动，工具可用
+    Stopped,     // 手动停止
+    Error(String), // 启动失败或崩溃
+}
+```
+
+## 钩子系统
+
+钩子允许插件在执行流程中定义的点上拦截和响应系统事件。
+
+### 钩子类型
+
+| 类型 | 执行 | 行为 |
+|------|-----------|----------|
+| **Interceptor** | 顺序 | 可以修改上下文或阻止执行。每个钩子接收前一个的输出。 |
+| **Observer** | 并行 | 即发即弃。错误被记录但不影响执行。用于遥测和日志。 |
+| **Resolver** | 顺序 | 先到先赢竞争。当钩子返回非空结果时执行停止。 |
+
+### 可用事件
+
+| 事件 | 说明 |
+|-------|-------------|
+| `before_tool_call` | 在调用任何工具之前 |
+| `after_tool_call` | 工具执行完成后 |
+| `on_message` | 当收到用户消息时 |
+| `on_response` | 在将响应发送给用户之前 |
+| `on_error` | 当发生错误时 |
+
+### 钩子优先级
+
+| 优先级 | 值 | 用例 |
+|----------|-------|----------|
+| `system` | -1000 | 核心系统钩子（最先运行） |
+| `high` | -100 | 安全检查、验证 |
+| `normal` | 0 | 默认优先级 |
+| `low` | 100 | 日志、遥测、清理 |
+
+值越低越先执行。在同一优先级内，钩子按注册顺序执行。
+
+### 钩子示例
+
+```typescript
+// Interceptor: 可以修改或阻止
+async function onBeforeTool(context: HookContext): Promise<HookContext> {
+  if (context.toolName === 'dangerous_tool') {
+    throw new Error('安全策略阻止的工具');
+  }
+  context.args.timestamp = Date.now();
+  return context;
+}
+
+// Observer: 即发即弃
+async function onAfterTool(context: HookContext): Promise<void> {
+  console.log(`工具 ${context.toolName} 在 ${context.duration}ms 内执行`);
+}
+
+// Resolver: 先到先赢
+async function resolveConfig(context: HookContext): Promise<Config | null> {
+  if (context.key in myConfigs) {
+    return myConfigs[context.key];  // 获胜，停止链
+  }
+  return null;  // 继续到下一个解析器
+}
+```
+
+## 提示范围
+
+插件可以注入具有精细控制的提示到代理上下文中：
+
+| 范围 | 行为 |
+|-------|----------|
+| `system` | 插件激活时始终注入 |
+| `tool` | 仅当绑定工具在当前上下文中可用时注入 |
+| `standalone` | 用户必须显式调用（例如 `/my-plugin`） |
+| `disabled` | 从不注入（用于临时禁用提示） |
+
+## 直接命令
+
+直接命令绕过 LLM，当用户调用时立即执行插件函数：
+
+```toml
+[[commands]]
+name = "ping"
+description = "检查插件是否响应"
+handler = "handlePing"
+
+[[commands]]
+name = "status"
+description = "获取当前插件状态"
+handler = "handleStatus"
+```
+
+直接命令速度快（无 LLM 往返），确定性（相同输入始终产生相同输出），显式（用户必须显式调用它们）。它们通过网关 RPC 方法 `plugins.executeCommand` 调用。
+
+## 后台服务
+
+插件可以运行独立于请求/响应周期的长期后台进程：
+
+```toml
+[[services]]
+name = "file-watcher"
+description = "监视文件系统更改"
+start_handler = "startFileWatcher"
+stop_handler = "stopFileWatcher"
+auto_start = true
+
+[[services]]
+name = "sync-daemon"
+description = "后台同步服务"
+start_handler = "startSync"
+stop_handler = "stopSync"
+auto_start = false
+```
+
+服务遵循状态机：`Stopped` -> `Starting` -> `Running` -> `Stopping` -> `Stopped`。`ServiceManager` 协调所有后台服务并通过网关 RPC 方法（`services.start`、`services.stop`、`services.list`、`services.status`）暴露它们。
+
+## 频道插件
+
+频道插件启用新的消息集成。它们是外部平台和 Aleph 之间的双向桥接：
+
+```toml
+[[channels]]
+name = "slack"
+description = "Slack 工作区集成"
+connect_handler = "connectSlack"
+disconnect_handler = "disconnectSlack"
+send_handler = "sendSlack"
+```
+
+频道插件实现三个处理程序：
+- **connect** -- 建立与外部平台的连接并注册消息回调。
+- **disconnect** -- 清理连接和资源。
+- **send** -- 格式化并将消息传递到平台上的特定聊天。
+
+## 提供商插件
+
+提供商插件向 Aleph 添加自定义 AI 后端：
+
+```toml
+[[providers]]
+name = "local-llama"
+description = "本地 Llama.cpp 服务器"
+list_models_handler = "listModels"
+chat_handler = "handleChat"
+stream_handler = "handleStream"
+embed_handler = "handleEmbed"
+```
+
+`PluginProviderAdapter` 将插件提供商与 Aleph 的 `AiProvider` trait 桥接，使插件提供的模型与内置提供商一起可用。
+
+## HTTP 路由
+
+插件可以暴露 REST 端点用于 webhook、集成和自定义 API：
+
+```toml
+[[http_routes]]
+method = "POST"
+path = "/webhooks/github"
+handler = "handleGithubWebhook"
+
+[[http_routes]]
+method = "GET"
+path = "/api/status"
+handler = "handleStatus"
+```
+
+HTTP 路由在网关 HTTP 服务器上的 `/plugins/{plugin_name}/` 下提供。
+
+## 热重载
+
+`PluginWatcher` 监视插件目录的更改并自动重新加载插件：
+
+```rust
+pub struct PluginWatcher {
+    watcher: RecommendedWatcher,
+    registry: Arc<RwLock<PluginRegistry>>,
+}
+```
+
+当文件更改时，监视器：
+- **Create/Modify** -- 重新加载受影响的插件（重新解析清单，重新启动运行时）。
+- **Remove** -- 卸载插件并从注册表中移除其工具。
+
+## 扩展配置
+
+`config.toml` 中的全局扩展设置：
+
+```toml
+[extensions]
+enabled = true
+search_paths = ["~/.aleph/plugins", "./plugins"]
+hot_reload = true
+
+[extensions.runtimes.wasm]
+enabled = true
+memory_limit = "256MB"
+timeout_ms = 30000
+
+[extensions.runtimes.nodejs]
+enabled = true
+node_version = "20"
+```
+
+## 网关 RPC 方法
+
+| 方法 | 说明 |
+|--------|-------------|
+| `plugins.list` | 列出所有已安装插件及其状态 |
+| `plugins.install` | 从路径或 URL 安装插件 |
+| `plugins.uninstall` | 移除插件 |
+| `plugins.enable` | 启用已禁用的插件 |
+| `plugins.disable` | 禁用插件而不移除它 |
+| `plugins.reload` | 强制重新加载特定插件 |
+| `plugins.executeCommand` | 执行直接命令 |
+
+## 相关页面
+
+- [技能](/docs/en/concepts/skills) -- 技能如何与扩展系统集成
+- [模型提供商](/docs/en/concepts/model-providers) -- 自定义 AI 后端的提供商插件
+- [工作区](/docs/en/concepts/workspaces) -- 插件目录结构和发现路径
+- [架构概览](/docs/en/architecture/overview) -- 扩展层的系统级视图

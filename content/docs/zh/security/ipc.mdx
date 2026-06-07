@@ -1,8 +1,279 @@
 ---
 title: "IPC 协议"
-description: "进程间通信安全协议"
+description: "用于 Gateway 和桌面客户端之间安全审批通信的 HMAC-SHA256 认证 Unix 套接字协议"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/security/ipc)。
+## 概览
+
+Aleph 使用 Unix 域套接字 IPC（进程间通信）协议在 Gateway（服务器）和本地 UI 客户端（如 macOS 桌面应用）之间安全地路由执行审批请求。该协议提供 HMAC-SHA256 挑战-响应认证、换行符分隔的 JSON 消息和 keepalive 支持。
+
+该协议解决了一个特定问题：当 AI Agent 想要执行 shell 命令时，Gateway 需要请求用户批准。如果用户通过 macOS 桌面应用（而非聊天接口）交互，审批请求必须在两个本地进程之间安全传输。
+
+**源代码位置：**
+- IPC 协议：`src/exec/ipc.rs`
+- 套接字消息：`src/exec/socket.rs`
+- 审批桥：`src/exec/bridge.rs`
+- 配置：`src/exec/config.rs`
+
+## 架构
+
+```
+┌──────────────────────┐          Unix 套接字          ┌──────────────────────┐
+│       Gateway        │ ◄────────────────────────────► │     macOS App        │
+│    (IPC 服务器)       │   ~/.aleph/exec-approvals.sock │    (IPC 客户端)       │
+│                      │                                │                      │
+│  ExecApprovalManager │   ◄── 挑战/响应 ──►            │  IpcClient           │
+│  IpcServer           │   ◄── 审批请求 ──►             │  IpcConnection       │
+│                      │   ◄── 决策 ─────────►          │                      │
+└──────────────────────┘                                └──────────────────────┘
+```
+
+IPC 服务器在 `~/.aleph/exec-approvals.sock` 的 Unix 域套接字上监听，权限设置为 `0600`（仅所有者读/写）。每个传入连接必须在交换任何消息之前完成 HMAC-SHA256 认证。
+
+## 连接生命周期
+
+### 认证流程
+
+每个新连接必须完成三步挑战-响应握手：
+
+```
+服务器                                          客户端
+  │                                                │
+  │──── 挑战 { nonce: "a1b2c3..." } ─────────────►│
+  │                                                │
+  │◄─── 挑战响应 { response: "d4e5..." }──────────│
+  │                                                │
+  │     [服务器验证 HMAC-SHA256]                    │
+  │                                                │
+  │──── 认证结果 { success: true } ──────────────►│
+  │                                                │
+  │     [已建立认证会话]                            │
+  │                                                │
+  │◄──► 消息（审批、决策、ping）◄──►              │
+  │                                                │
+```
+
+**步骤 1：挑战。** 服务器使用加密 RNG（`OsRng`）生成 32 字节随机 nonce 并将其作为十六进制编码字符串发送。
+
+**步骤 2：响应。** 客户端计算 `HMAC-SHA256(shared_secret, nonce_bytes)` 并以十六进制编码发送结果。
+
+**步骤 3：验证。** 服务器独立计算相同的 HMAC 并进行比较。如果值匹配，认证成功。该层不使用恒定时间比较（令牌本身是共享的本地密钥，不是面向用户的凭据）。
+
+```rust
+fn compute_hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut mac = HmacSha256::new_from_slice(key)
+        .expect("HMAC key size issue");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+```
+
+### 共享密钥
+
+共享密钥（令牌）在 `exec-approvals.json` 中配置：
+
+```json
+{
+  "socket": {
+    "path": "~/.aleph/exec-approvals.sock",
+    "token": "hex-encoded-32-byte-secret"
+  }
+}
+```
+
+如果未配置令牌，Gateway 在首次启动时生成随机的 32 字节密钥并持久化它。
+
+## 消息格式
+
+所有消息都是换行符分隔的 JSON。每条消息都是一个 JSON 对象后跟 `\n`。`type` 字段（snake_case）确定消息变体：
+
+### 消息类型
+
+```rust
+pub enum IpcMessage {
+    // 认证
+    Challenge { nonce: String },
+    ChallengeResponse { response: String },
+    AuthResult { success: bool, error: Option<String> },
+
+    // 审批工作流
+    ApprovalRequest { id: String, request: ApprovalRequestPayload, timeout_ms: u64 },
+    ApprovalDecision { id: String, decision: ApprovalDecisionType, resolved_by: Option<String> },
+
+    // 待处理查询
+    GetPending,
+    PendingList { pending: Vec<PendingInfo> },
+
+    // Keepalive
+    Ping,
+    Pong,
+
+    // 错误
+    Error { message: String },
+}
+```
+
+### 审批请求负载
+
+当 Gateway 需要命令审批时，它发送：
+
+```json
+{
+  "type": "approval_request",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "request": {
+    "command": "npm install express",
+    "cwd": "/Users/alice/project",
+    "agent_id": "main",
+    "session_key": "agent:main:main",
+    "executable": "npm",
+    "resolved_path": "/usr/local/bin/npm",
+    "segments": [
+      {
+        "raw": "npm install express",
+        "executable": "npm",
+        "resolved_path": "/usr/local/bin/npm",
+        "args": ["install", "express"]
+      }
+    ]
+  },
+  "timeout_ms": 120000
+}
+```
+
+`segments` 数组支持管道命令 —— 每个段代表管道中的一个命令。
+
+### 审批决策
+
+客户端响应：
+
+```json
+{
+  "type": "approval_decision",
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "decision": "allow-once",
+  "resolved_by": "Alice (macOS App)"
+}
+```
+
+决策值是 kebab-case 字符串：
+
+| 值 | 含义 |
+|-------|---------|
+| `allow-once` | 仅执行此命令 |
+| `allow-always` | 执行并添加到永久白名单 |
+| `deny` | 阻止执行 |
+
+### 待处理查询
+
+客户端可以请求所有待处理审批的列表：
+
+```json
+// 请求
+{ "type": "get_pending" }
+
+// 响应
+{
+  "type": "pending_list",
+  "pending": [
+    {
+      "id": "550e8400-...",
+      "command": "npm install",
+      "cwd": "/project",
+      "agent_id": "main",
+      "remaining_ms": 95000
+    }
+  ]
+}
+```
+
+当 macOS 应用打开并需要显示已在等待的任何审批请求时使用此功能。
+
+### Keepalive
+
+客户端发送定期 ping 以保持连接：
+
+```json
+// 客户端
+{ "type": "ping" }
+
+// 服务器
+{ "type": "pong" }
+```
+
+## 套接字安全
+
+### 文件权限
+
+套接字文件以模式 `0600`（Unix 权限）创建，将套接字访问限制为所有者：
+
+```rust
+#[cfg(unix)]
+{
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(0o600);
+    std::fs::set_permissions(&self.socket_path, perms)?;
+}
+```
+
+这防止系统上的其他用户连接到套接字。
+
+### 陈旧套接字清理
+
+如果存在来自先前 Gateway 运行的套接字文件，服务器在绑定前将其删除：
+
+```rust
+if self.socket_path.exists() {
+    std::fs::remove_file(&self.socket_path)?;
+}
+```
+
+### 连接隔离
+
+每个客户端连接在独立的 `tokio::spawn` 任务中处理。受损或行为异常的客户端不能影响其他连接或服务器的主循环。
+
+## 客户端实现
+
+`IpcClient` 结构体提供用于连接和与 Gateway 交互的高级 API：
+
+```rust
+// 连接并认证
+let client = IpcClient::new("~/.aleph/exec-approvals.sock", secret);
+let mut conn = client.connect().await?;
+
+// 发送决策
+conn.send_decision("req-123", ApprovalDecisionType::AllowOnce, Some("Alice".into())).await?;
+
+// 查询待处理审批
+let pending = conn.get_pending().await?;
+
+// Keepalive
+conn.ping().await?;
+```
+
+<Callout type="info">
+IPC 客户端专为 macOS 桌面应用设计，但任何有权访问共享密钥的本地进程都可以使用它。该协议是传输无关的——虽然目前使用 Unix 域套接字，但消息格式可以适用于 TCP 或命名管道。
+</Callout>
+
+## 错误处理
+
+该协议为常见失败模式定义了类型化错误：
+
+| 错误 | 原因 |
+|-------|-------|
+| `AuthFailed` | HMAC 验证失败或握手期间出现意外消息 |
+| `InvalidMessage` | 收到当前状态的意外消息类型 |
+| `ConnectionClosed` | 远程端关闭套接字（读取到 0 字节） |
+| `Timeout` | 操作在预期时间范围内未完成 |
+| `Io` | 底层 I/O 错误（未找到套接字、权限被拒绝） |
+| `Json` | 消息无法序列化/反序列化 |
+
+当认证失败时，服务器发送带有 `success: false` 的 `AuthResult` 和错误原因，然后关闭连接。
+
+## 另请参阅
+
+- [执行审批](/docs/zh/security/exec-approval) — 生成 IPC 请求的审批系统
+- [设备配对](/docs/zh/security/pairing) — 设备在连接前如何建立信任
+- [Gateway 协议](/docs/zh/gateway/protocol) — 远程客户端使用的高级 RPC 协议

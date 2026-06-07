@@ -3,7 +3,7 @@ title: "services.*"
 description: "内部服务管理 RPC 方法"
 ---
 
-服务方法管理 Aleph 的内部服务 —— 处理特定子系统的后台进程，如索引、同步和维护任务。
+服务方法管理 Aleph 的内部服务——处理特定子系统的后台进程，如索引、同步和维护任务。
 
 ## 方法
 
@@ -97,7 +97,7 @@ description: "内部服务管理 RPC 方法"
 
 ### services.stop
 
-停止运行的服务。
+停止正在运行的服务。
 
 **请求：**
 ```json
@@ -129,15 +129,15 @@ description: "内部服务管理 RPC 方法"
 
 ## 服务状态
 
-| 状态 | 描述 |
+| 状态 | 说明 |
 |-------|-------------|
-| `running` | 服务活跃且健康 |
+| `running` | 服务处于活动状态且健康 |
 | `stopped` | 服务已停止 |
-| `degraded` | 服务运行但不健康 |
+| `degraded` | 服务正在运行但不健康 |
 | `starting` | 服务正在初始化 |
 | `stopping` | 服务正在关闭 |
 
-## 参见
+## 另请参阅
 
-- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
-- [架构：服务](/docs/zh/architecture/services) -- 服务架构
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [架构：服务](/docs/zh/architecture/services)——服务架构

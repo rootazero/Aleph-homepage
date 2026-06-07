@@ -1,15 +1,15 @@
 ---
 title: "channels.*"
-description: "通信通道管理 RPC 方法"
+description: "通信频道管理 RPC 方法"
 ---
 
-通道方法管理通信通道 —— 连接到外部消息平台和通知服务（Discord、Slack、邮件等）。
+频道方法管理通信频道——连接到外部消息平台和通知服务（Discord、Slack、电子邮件等）的连接。
 
 ## 方法
 
 ### channels.list
 
-列出所有已配置的通道。
+列出所有配置的频道。
 
 **请求：**
 ```json
@@ -48,7 +48,7 @@ description: "通信通道管理 RPC 方法"
 
 ### channels.status
 
-获取特定通道的状态。
+获取特定频道的状态。
 
 **请求：**
 ```json
@@ -64,7 +64,7 @@ description: "通信通道管理 RPC 方法"
 
 ### channels.add
 
-添加新通道配置。
+添加新的频道配置。
 
 **请求：**
 ```json
@@ -86,16 +86,16 @@ description: "通信通道管理 RPC 方法"
 
 **参数：**
 
-| 参数 | 类型 | 必填 | 描述 |
+| 参数 | 类型 | 必填 | 说明 |
 |-----------|------|----------|-------------|
-| `id` | string | 是 | 唯一通道标识符 |
+| `id` | string | 是 | 唯一频道标识符 |
 | `name` | string | 是 | 显示名称 |
-| `type` | string | 是 | 通道类型：`"discord"`、`"slack"`、`"email"`、`"webhook"` |
+| `type` | string | 是 | 频道类型：`"discord"`、`"slack"`、`"email"`、`"webhook"` |
 | `config` | object | 是 | 类型特定配置 |
 
 ### channels.update
 
-更新通道配置。
+更新频道配置。
 
 **请求：**
 ```json
@@ -114,7 +114,7 @@ description: "通信通道管理 RPC 方法"
 
 ### channels.delete
 
-删除通道配置。
+删除频道配置。
 
 **请求：**
 ```json
@@ -130,7 +130,7 @@ description: "通信通道管理 RPC 方法"
 
 ### channels.connect
 
-连接断开的通道。
+连接已断开的频道。
 
 **请求：**
 ```json
@@ -146,7 +146,7 @@ description: "通信通道管理 RPC 方法"
 
 ### channels.disconnect
 
-断开连接的通道。
+断开已连接的频道。
 
 **请求：**
 ```json
@@ -162,7 +162,7 @@ description: "通信通道管理 RPC 方法"
 
 ### channels.send
 
-通过通道发送消息。
+通过频道发送消息。
 
 **请求：**
 ```json
@@ -178,15 +178,15 @@ description: "通信通道管理 RPC 方法"
 }
 ```
 
-## 通道类型
+## 频道类型
 
-| 类型 | 描述 | 所需配置 |
+| 类型 | 说明 | 所需配置 |
 |------|-------------|----------------|
 | `discord` | Discord 机器人集成 | `token`、`guild_id` |
 | `slack` | Slack 机器人/应用集成 | `token`、`channel` |
-| `email` | 邮件通知 | `smtp_host`、`from_address` |
+| `email` | 电子邮件通知 | `smtp_host`、`from_address` |
 | `webhook` | 通用 HTTP Webhook | `url`、`headers` |
 
-## 参见
+## 另请参阅
 
-- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间

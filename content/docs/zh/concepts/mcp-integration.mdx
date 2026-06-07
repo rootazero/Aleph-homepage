@@ -1,6 +1,102 @@
 ---
 title: "MCP 集成"
-description: "Model Context Protocol 集成，支持外部工具服务器，包括 stdio、HTTP 和 SSE 传输以及 OAuth 认证。"
+description: "用于外部工具服务器的模型上下文协议集成，支持 stdio、HTTP 和 SSE 传输以及 OAuth 认证。"
 ---
 
-This page is in progress. Please refer to the [English version](/docs/concepts/mcp-integration).
+`mcp` 模块将 Aleph 与外部 MCP（模型上下文协议）服务器集成。它提供传输抽象、工具发现、资源管理和来自第三方 MCP 服务器的提示模板。
+
+## 设计理念
+
+1. **传输抽象** — 所有 MCP 传输实现相同的 `McpTransport` trait
+2. **运行时检测** — 自动检测 Node.js、Python 和 Bun 运行时以用于本地服务器
+3. **安全第一** — SSRF 验证、OAuth 令牌管理和审批工作流
+4. **统一注册表** — 外部 MCP 工具被包装并与原生工具一起注册
+
+## 架构
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                     MCP 集成                                 │
+├─────────────────────────────────────────────────────────────┤
+│  McpClient (注册表)                                          │
+│  ├─ ExternalServerConfig (名称、命令、参数、环境、工作目录)   │
+│  ├─ McpServerConnection (传输 + JSON-RPC 状态)               │
+│  └─ 通过 JSON-RPC `tools/list` 进行工具发现                  │
+├─────────────────────────────────────────────────────────────┤
+│  传输 (McpTransport trait)                                   │
+│  ├─ StdioTransport — 通过 stdio 的本地子进程                 │
+│  ├─ HttpTransport — 通过 HTTP POST 的远程服务器              │
+│  └─ SseTransport — 通过 HTTP + SSE 的远程服务器              │
+├─────────────────────────────────────────────────────────────┤
+│  管理器                                                      │
+│  ├─ McpResourceManager — 服务器暴露的文件和数据              │
+│  ├─ McpPromptManager — 可重用的提示模板                      │
+│  └─ McpManagerActor — 编排和健康检查                         │
+├─────────────────────────────────────────────────────────────┤
+│  认证与安全                                                  │
+│  ├─ OAuth 令牌存储和刷新                                     │
+│  ├─ 所有出站请求的 SSRF 验证                                 │
+│  └─ ApprovalHandler — 敏感操作的用户审批                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 传输
+
+### StdioTransport
+
+用于作为子进程启动的本地 MCP 服务器。当服务器命令在配置中指定时使用（例如，`npx @modelcontextprotocol/server-filesystem`）。
+
+### HttpTransport
+
+用于通过 HTTP POST 通信的远程 MCP 服务器。针对 SSRF 允许列表验证 URL。
+
+### SseTransport
+
+用于使用服务器发送事件进行通知的远程 MCP 服务器。支持带有回调处理的双向通信。
+
+## 工具发现
+
+当 MCP 服务器连接时，Aleph 发送 `tools/list` JSON-RPC 请求。每个发现的工具都包装在 `McpToolWrapper` 中，并与原生工具一起注册在工具注册表中。
+
+```rust
+// 工具包装器将 MCP 模式桥接到 Aleph 的工具系统
+pub struct McpToolWrapper {
+    pub server_name: String,
+    pub tool: McpTool,
+}
+```
+
+## 配置
+
+MCP 服务器在 `providers.toml` 中配置：
+
+```toml
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem"]
+env = { HOME = "/Users/alice" }
+```
+
+## 安全
+
+- **SSRF 验证** — 所有出站 URL 都针对允许列表进行验证
+- **OAuth 令牌管理** — 使用 `saturating_sub` 的自动刷新以防止整数溢出
+- **审批工作流** — 敏感操作需要用户通过审批处理程序进行审批
+- **健康检查** — 带有正确锁卫生的定期服务器健康监控
+
+## 关键源文件
+
+- `src/mcp/mod.rs` — 模块概览和重新导出
+- `src/mcp/client.rs` — `McpClient` 注册表和工具发现
+- `src/mcp/transport/` — 传输实现 (stdio, HTTP, SSE)
+- `src/mcp/auth/` — OAuth 和令牌管理
+- `src/mcp/manager/` — 编排层
+- `src/mcp/protocol.rs` — JSON-RPC 协议类型
+- `src/mcp/external.rs` — 运行时检测 (node, python, bun)
+
+## 另请参阅
+
+- [内置工具](/docs/zh/concepts/builtin-tools) — 原生 Aleph 工具
+- [能力系统](/docs/zh/concepts/capability-system) — 工具权限框架
+- [扩展系统](/docs/zh/concepts/extension-system) — 插件架构

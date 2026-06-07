@@ -1,8 +1,145 @@
 ---
 title: "群聊"
-description: "多参与方对话系统架构"
+description: "多代理群聊，具有频道无关的编排功能，用于协作讨论。"
 ---
 
-> 此页面正在翻译中。
+`group_chat` 模块提供多代理群聊功能，使多个角色能够在共享对话中进行协作讨论。
 
-请参阅[英文版](/en/docs/architecture/groupchat)。
+## 概览
+
+群聊支持：
+- **多角色对话** —— 多个代理角色参与单个聊天
+- **频道无关** —— 适用于 Telegram、Discord、Slack 和其他频道
+- **协作决策** —— 代理可以讨论并达成共识
+- **基于角色的参与** —— 每个角色都有特定的专业知识和行为
+
+## 架构
+
+```
+GroupChatOrchestrator
+  ├── 协调器 —— 管理轮流和流程
+  ├── 会话 —— 群聊状态和历史
+  ├── 角色注册表 —— 可用角色
+  ├── 协议 —— 消息协议
+  ├── 执行器 —— 运行角色响应
+  └── 频道 —— 频道特定适配器
+```
+
+## 核心组件
+
+### GroupChatOrchestrator
+
+群聊的中央协调器：
+
+```rust
+// src/group_chat/orchestrator.rs
+pub struct GroupChatOrchestrator {
+    session: GroupChatSession,
+    personas: PersonaRegistry,
+    coordinator: TurnCoordinator,
+}
+
+impl GroupChatOrchestrator {
+    pub async fn add_persona(
+        &mut self,
+        persona: PersonaId,
+    ) -> Result<()>;
+    
+    pub async fn process_message(
+        &mut self,
+        msg: UserMessage,
+    ) -> Result<Vec<PersonaResponse>>;
+    
+    pub async fn run_round(
+        &self,
+    ) -> Result<RoundSummary>;
+}
+```
+
+### PersonaRegistry
+
+管理可用角色：
+
+```rust
+// src/group_chat/persona.rs
+pub struct PersonaRegistry {
+    personas: HashMap<PersonaId, Persona>,
+}
+
+pub struct Persona {
+    pub id: PersonaId,
+    pub name: String,
+    pub identity: String,
+    pub expertise: Vec<String>,
+    pub voice: VoiceStyle,
+}
+```
+
+### GroupChatSession
+
+维护共享状态：
+
+```rust
+// src/group_chat/session.rs
+pub struct GroupChatSession {
+    id: SessionId,
+    messages: Vec<ChatMessage>,
+    participants: Vec<PersonaId>,
+}
+```
+
+### SharedSession
+
+跨多个群聊的共享状态：
+
+```rust
+pub struct SharedSession {
+    context: Arc<RwLock<SessionContext>>,
+}
+```
+
+## 消息流
+
+```
+用户消息
+     │
+     ▼
+GroupChatOrchestrator
+     │
+     ├──▶ 协调器（确定轮流顺序）
+     │
+     ├──▶ 角色 A 响应
+     │
+     ├──▶ 角色 B 响应
+     │
+     └──▶ 角色 C 响应
+              │
+              ▼
+         合并响应给用户
+```
+
+## 配置
+
+```toml
+[group_chat]
+enabled = true
+max_personas = 5
+default_personas = ["analyst", "creative", "critic"]
+```
+
+## 代码位置
+
+- `src/group_chat/mod.rs` —— 模块入口点
+- `src/group_chat/orchestrator.rs` —— 主协调器
+- `src/group_chat/coordinator.rs` —— 轮流管理
+- `src/group_chat/session.rs` —— 会话状态
+- `src/group_chat/persona.rs` —— 角色定义
+- `src/group_chat/executor.rs` —— 响应执行
+- `src/group_chat/protocol.rs` —— 消息协议
+- `src/group_chat/channel.rs` —— 频道适配器
+
+## 另请参阅
+
+- [团队](./teams) —— 多代理协作的团队管理
+- [A2A](./a2a) —— 代理到代理协议
+- [网关](../gateway/protocol) —— 频道接口

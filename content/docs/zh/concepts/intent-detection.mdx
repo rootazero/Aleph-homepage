@@ -1,6 +1,286 @@
 ---
 title: "意图检测"
-description: "L1/L2/L3 三层意图分类系统"
+description: "三层意图分类和执行路由系统，确定用户输入是否触发任务执行或对话响应。"
 ---
 
-此页面正在翻译中。请参阅[英文版](/en/docs/concepts/intent-detection)。
+意图检测是一个决策子系统，在每条用户消息到达 LLM 之前对其进行分类。它的核心问题很简单：**这个输入是否应该触发可执行的操作，还是只是一个对话消息？** 通过预先解决这个问题，提示词只需要描述*如何*执行，而永远不需要描述*是否*执行。
+
+## 三层架构
+
+分类通过三层递增延迟和复杂度的架构进行。只要任何一层产生自信的匹配，管道就会短路。
+
+```
+用户输入
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L1: 正则表达式匹配 (<5ms, 置信度 = 1.0)                       │
+│     针对显式命令的快速模式匹配                                │
+│     示例: "整理文件夹里的文件" → FileOrganize                 │
+└─────────────────────────────────────────────────────────────┘
+    │ 无匹配
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L2: 关键词匹配 (<20ms, 置信度 = 0.5-0.95)                    │
+│     带加权评分和 CJK 分词的 KeywordIndex                      │
+│     可通过 config.toml 中的 KeywordPolicy 配置                │
+│     回退: 静态关键词集合                                      │
+└─────────────────────────────────────────────────────────────┘
+    │ 无匹配
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ L3: AI 分类 (可选, 1-3s)                                     │
+│     针对复杂/模糊情况的基于 LLM 的检测                        │
+│     语言无关，提取参数 (路径等)                               │
+└─────────────────────────────────────────────────────────────┘
+    │ 无匹配或 AI 禁用
+    ▼
+ExecutionIntent::Conversational
+```
+
+### L1: 正则表达式匹配
+
+最快的层级使用预编译的正则表达式模式来匹配中文和英文中的显式任务命令。匹配携带完整置信度 (`1.0`)，因为正则表达式模式只在明确的请求上触发。
+
+```rust
+pub static EXECUTABLE_PATTERNS: Lazy<Vec<(Regex, TaskCategory)>> = Lazy::new(|| {
+    vec![
+        // FileOrganize: organize/sort/classify + file
+        (
+            Regex::new(r"(?i)(整理|归类|分类|organize|sort|classify).*(文件|files?|folder)")
+                .unwrap(),
+            TaskCategory::FileOrganize,
+        ),
+        // FileTransfer: move/copy/transfer + to
+        (
+            Regex::new(r"(?i)(移动|复制|拷贝|转移|move|copy|transfer).*(到|to)")
+                .unwrap(),
+            TaskCategory::FileTransfer,
+        ),
+        // CodeExecution: run/execute + script/code
+        (
+            Regex::new(r"(?i)(运行|执行|跑一下|run|execute).*(脚本|代码|script|code)")
+                .unwrap(),
+            TaskCategory::CodeExecution,
+        ),
+        // ... additional patterns for FileCleanup, DocumentGenerate, etc.
+    ]
+});
+```
+
+L1 还使用专用的路径正则表达式从输入中提取文件路径，处理 Unix 路径 (`/path`, `~/path`) 和 Windows 路径 (`C:\path`)。
+
+### L2: 关键词匹配
+
+当正则表达式失败时，关键词层使用两种策略：
+
+**静态关键词集合** -- 每个任务类别的预定义动词-名词组合。动词和名词都必须匹配才能触发该类别（置信度 `0.85`）。
+
+**KeywordIndex (增强)** -- 从 `config.toml` 中的 `KeywordPolicy` 加载的可配置索引。每条规则携带加权关键词和最低分数阈值：
+
+```rust
+let mut rule = KeywordRule::new("file_organize", "FileOrganize");
+rule = rule
+    .with_keyword("整理", 1.0)    // organize (Chinese)
+    .with_keyword("文件", 0.8)    // file
+    .with_keyword("organize", 1.0)
+    .with_match_mode(KeywordMatchMode::Weighted)
+    .with_min_score(0.5);
+```
+
+匹配模式包括 `Any`（第一个关键词获胜）、`All`（需要每个关键词）和 `Weighted`（匹配关键词权重总和相对于阈值）。
+
+### L3: AI 分类
+
+对于逃脱 L1 和 L2 的模糊输入，可选的基于 LLM 的检测器 (`AiIntentDetector`) 提供语言无关的分类。它返回结构化结果，包括意图类型、置信度分数和提取的参数：
+
+```rust
+pub struct AiIntentResult {
+    pub intent: String,           // e.g., "file_organize"
+    pub confidence: f64,          // 0.0 - 1.0
+    pub params: HashMap<String, String>,  // e.g., {"path": "/Downloads"}
+    pub missing: Vec<String>,     // 仍然需要的参数
+}
+```
+
+L3 将其输出映射到与 L1 和 L2 使用的相同的 `TaskCategory` 枚举，因此无论哪个层级对输入进行了分类，下游路由都是统一的。
+
+## 排除模式
+
+一个关键的安全特性：在任何层级运行之前，包含**分析或理解动词**的输入都会被排除在代理模式之外。这防止了像 "分析这个文件" 或 "总结这个文档" 这样的请求触发破坏性的文件操作。
+
+排除动词包括：
+- **中文**: 分析, 理解, 解释, 总结, 摘要, 描述, 概括, 看看
+- **英文**: analyze, understand, explain, summarize, describe, review
+
+排除检查以常数时间运行，优先于所有分类层级。
+
+## TaskCategory
+
+`TaskCategory` 枚举表示 Aleph 可以处理的 20 种可执行任务类别。每个类别映射到特定的工具和提示词模板：
+
+```rust
+pub enum TaskCategory {
+    General,              // 显式 /agent 命令
+    FileOrganize,         // 排序、分类文件
+    FileOperation,        // 读取、写入、搜索
+    FileTransfer,         // 移动、复制
+    FileCleanup,          // 删除、归档
+    CodeExecution,        // 运行脚本/命令
+    AppLaunch,            // 打开应用程序
+    AppAutomation,        // UI 自动化
+    DocumentGeneration,   // 创建文档
+    ImageGeneration,      // 生成图像
+    VideoGeneration,      // 生成视频
+    AudioGeneration,      // 生成音频
+    SpeechGeneration,     // 文本转语音
+    WebSearch,            // 搜索网页
+    WebFetch,             // 获取页面内容
+    SystemInfo,           // 系统查询
+    MediaDownload,        // YouTube 等
+    TextProcessing,       // 翻译、总结
+    DataProcess,          // 数据转换
+}
+```
+
+类别暴露语义辅助方法：`is_file_related()`、`is_generation()` 和 `is_read_only()`，下游系统使用这些方法进行风险评估和工具过滤。
+
+## ExecutionIntent
+
+三值分类结果驱动所有下游行为：
+
+```rust
+pub enum ExecutionIntent {
+    /// 触发带有工具的代理模式
+    Executable(ExecutableTask),
+    /// 需要一个澄清问题
+    Ambiguous { task_hint: String, clarification: String },
+    /// 正常对话响应
+    Conversational,
+}
+
+pub struct ExecutableTask {
+    pub category: TaskCategory,
+    pub action: String,
+    pub target: Option<String>,   // 提取的路径或对象
+    pub confidence: f32,          // 0.0 - 1.0
+}
+```
+
+## ExecutionIntentDecider
+
+`ExecutionIntentDecider` 是一个更高级别的决策系统，将分类扩展到路由。它不仅确定*是否*执行，还确定*如何*执行 -- 路由到适当的执行模式：
+
+```
+用户输入
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ ExecutionIntentDecider                                       │
+│                                                             │
+│  L0: 斜杠命令 (/screenshot, /ocr) → DirectTool              │
+│  L1: 正则表达式模式 → Execute(category)                     │
+│  L2: 上下文信号 (选中的文件) → Execute(category)            │
+│  L3: 语义分析 (可选 LLM) → Execute | Converse               │
+│  L4: 默认回退 → Execute (偏向行动)                          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+    ExecutionMode
+```
+
+### ExecutionMode
+
+决策器路由到六种执行模式之一：
+
+| 模式 | 说明 | 示例 |
+|------|-------------|---------|
+| **DirectTool** | 内置工具调用 | `/screenshot`, `/search` |
+| **Skill** | 带注入指令的技能 | `/knowledge-graph` |
+| **Mcp** | MCP 服务器工具执行 | `/git status` |
+| **Custom** | 带系统提示词的自定义命令 | `/translate` |
+| **Execute** | 带工具的 AI (按 TaskCategory) | "整理我的文件" |
+| **Converse** | 纯对话，无工具 | "什么是机器学习？" |
+
+### 上下文信号
+
+`ExecutionIntentDecider` 的 L2 层使用环境上下文来通知路由，而不需要显式命令：
+
+```rust
+pub struct ContextSignals {
+    pub selected_file: Option<String>,    // UI 中选中的文件
+    pub active_app: Option<String>,       // 当前应用程序
+    pub ui_mode: Option<String>,          // 面板/模式状态
+    pub clipboard_type: Option<String>,   // "image", "text" 等
+}
+```
+
+例如，如果用户选中了一个 `.jpg` 文件并说 "处理这个"，上下文层会路由到 `ImageGeneration` 而无需任何关键词匹配。
+
+## IntentCache
+
+`IntentCache` 为重复模式提供快速路径路由。它使用带有基于时间的置信度衰减和成功/失败跟踪的 LRU 缓存：
+
+```rust
+pub struct IntentCache {
+    cache: Arc<RwLock<LruCache<u64, CachedIntent>>>,
+    config: CacheConfig,
+    metrics: Arc<RwLock<CacheMetrics>>,
+}
+```
+
+关键行为：
+- **置信度衰减**: 条目随时间使用指数衰减失去置信度，可配置的半衰期（默认：1 小时）
+- **自适应学习**: `record_success()` 和 `record_failure()` 跟踪执行结果，通过 `adjusted_confidence = decayed_confidence * success_rate` 调整有效置信度
+- **自动驱逐**: 超过 3 次失败且零成功的条目自动移除
+- **输入归一化**: 键从小写、修剪、前 100 个字符的输入哈希化以实现模糊匹配
+
+### 配置
+
+```rust
+pub struct CacheConfig {
+    pub capacity: usize,        // 默认: 1000
+    pub half_life_secs: f32,    // 默认: 3600 (1 小时)
+    pub min_confidence: f32,    // 默认: 0.5
+    pub enabled: bool,          // 默认: true
+}
+```
+
+## 置信度校准
+
+`ConfidenceCalibrator` 使用历史执行数据调整原始分类分数。它跟踪哪些路由层（L1, L2, L3）为特定工具类型产生可靠结果，并应用学习到的调整：
+
+```rust
+pub struct CalibratedSignal {
+    pub intent_type: String,
+    pub tool_name: String,
+    pub raw_confidence: f32,
+    pub calibrated_confidence: f32,
+    pub layer: RoutingLayer,
+}
+```
+
+然后 `IntentAggregator` 将校准后的信号组合成最终的 `AggregatedIntent`，并带有操作建议：`Execute`、`Confirm`、`Clarify` 或 `GeneralChat`。
+
+## 分类流程总结
+
+```
+用户输入
+    │
+    ├─ 长度 < 3 个字符 ──────────────────► 对话
+    │
+    ├─ 检查 IntentCache ──── 命中 ────────► 缓存路由
+    │
+    ├─ L1 正则表达式 (<5ms) ──── 匹配 ────────► 可执行 (1.0)
+    │
+    ├─ L2 增强关键词 ── 匹配 ─────► 可执行 (0.5-0.95)
+    │
+    ├─ L2 静态关键词 ── 匹配 ───────► 可执行 (0.85)
+    │
+    ├─ L3 AI 检测器 ──── 匹配 ─────────► 可执行 (AI 置信度)
+    │
+    └─ 无匹配 ──────────────────────────► 对话
+```
+
+分类后，`IntentRouter` 将结果包装给代理循环：斜杠命令和直接工具变成 `DirectRoute`（完全绕过 LLM 思考），而类别匹配和模糊输入变成 `NeedsThinking`，带有可选的类别提示，指导工具过滤和提示词选择。

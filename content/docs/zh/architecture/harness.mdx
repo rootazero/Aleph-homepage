@@ -1,15 +1,15 @@
 ---
-title: "执行 Harness"
-description: "Think→Act 循环、状态机、停止钩子、上下文预算及紧急压缩。"
+title: "工具链"
+description: "Think→Act 循环、状态机、停止钩子、上下文预算和紧急压缩。"
 ---
 
-# 执行 Harness
+# 工具链
 
-`AgentHarness` 驱动所有 Gateway 聊天请求的 **Think → Act** 循环。它由编排器构造，并接收预解析的依赖项（`SessionService`、`ToolService`、`Sandbox`、`AiProvider`）。
+`AgentHarness` 驱动所有网关聊天请求的 **Think → Act** 循环。它由编排器构建，并接收预解析的依赖项（`SessionService`、`ToolService`、`Sandbox`、`AiProvider`）。
 
-**位置**：`src/harness/`
+**位置**: `src/harness/`
 
-> **迁移完成**：旧版 `src/agent_loop/` 目录已在第 7 阶段（2026-04-21）删除。所有智能体执行 —— 包括 `SubagentTool` —— 现在均通过 Orchestrator → Harness 路由。
+> **迁移完成**: 遗留的 `src/agent_loop/` 目录在第 7 阶段 (2026-04-21) 被删除。所有代理执行——包括 `SubagentTool`——现在通过 编排器 → 工具链 路由。
 
 ---
 
@@ -20,22 +20,22 @@ description: "Think→Act 循环、状态机、停止钩子、上下文预算及
 │              AgentHarness                │
 ├─────────────────────────────────────────┤
 │  ┌────────┐   ┌────────┐   ┌────────┐  │
-│  │PREPARE │──▶│ THINK  │──▶│RESOLVE │  │
-│  │• Budget│   │ • LLM  │   │• Parse │  │
-│  │• Context│  │ • Decide│  │• Decision││
-│  │• Preflight│ └────────┘   └────┬───┘  │
+│  │准备    │──▶│ 思考   │──▶│解析    │  │
+│  │• 预算  │   │ • LLM  │   │• 解析  │  │
+│  │• 上下文│   │ • 决定 │   │• 决策  ││
+│  │• 预检  │   └────────┘   └────┬───┘  │
 │  └────────┘                      │      │
 │                             ┌────┴───┐  │
-│                             │  ACT   │  │
-│                             │• Execute│  │
-│                             │• Tools  │  │
+│                             │  行动  │  │
+│                             │• 执行  │  │
+│                             │• 工具  │  │
 │                             └────┬───┘  │
 │                                  │      │
 │                             ┌────┴───┐  │
-│                             │FINALIZE│  │
-│                             │• Eval  │  │
-│                             │• Compress││
-│                             │• Decision││
+│                             │完成    │  │
+│                             │• 评估  │  │
+│                             │• 压缩  ││
+│                             │• 决策  ││
 │                             └────────┘  │
 └─────────────────────────────────────────┘
 ```
@@ -46,176 +46,67 @@ description: "Think→Act 循环、状态机、停止钩子、上下文预算及
 
 ```rust
 pub struct AgentHarness {
-    provider: Arc<dyn AiProvider>,           // LLM provider
-    tool_service: Arc<dyn ToolService>,      // Tool catalog + execution
-    sandbox: Arc<dyn Sandbox>,              // Exec environment
-    session: Arc<dyn SessionService>,        // Append-only history
-    stop_hook: Arc<StopHookHandler>,         // Stop hooks
-    compaction_pipeline: CompactionPipeline, // Emergency compaction
-    preflight_pipeline: PreflightPipeline,  // Pre-flight context prep
-    config: LoopConfig,                       // Loop configuration
+    deps: HarnessDeps,              // 构建时注入的所有依赖项
+    hit_limit: AtomicBool,          // 上下文预算强制提前退出时设置
 }
 ```
+
+`AgentHarness` 是无状态的——所有可变状态都存在于 `SessionService` 中。依赖项通过 `HarnessDeps` 在构建时注入：
 
 ---
 
 ## 状态机
 
-Harness 使用 `TurnState` 枚举来跟踪当前回合的状态：
+`Harness` trait 定义了 Think→Act 契约。`TurnState` 是一个简单的二元结果：
 
-```
-┌─────────┐
-│ PREPARE │
-└────┬────┘
-     │ budget computed
-     ▼
-┌─────────┐     ┌─────────┐     ┌─────────┐
-│  THINK  │ ──▶ │ RESOLVE │ ──▶ │   ACT   │
-└─────────┘     └────┬────┘     └────┬────┘
-                     │               │
-                     │ EndTurn       │ tools complete
-                     │ no_action     │
-                     ▼               ▼
-               ┌─────────┐     ┌─────────┐
-               │FINALIZE │     │FINALIZE │
-               └────┬────┘     └────┬────┘
-                    │               │
-                    ▼               ▼
-              ContinueLoop      ExitLoop
-```
-
-`TurnAdvance` 枚举控制循环推进：
-
-| Variant | Meaning |
+| 变体 | 含义 |
 |---------|---------|
-| `Next(TurnState)` | Advance to the next state |
-| `ContinueLoop` | Restart with a new turn |
-| `ExitLoop(decision)` | Terminate loop with final decision |
-| `Cancelled` | Cancelled by abort token |
+| `Continue` | 会话应运行另一个 Think→Act 轮次 |
+| `Done` | 会话完成；不需要进一步的轮次 |
+
+外层循环 (`Harness::run`) 重复调用 `run_turn`，直到它返回 `Done` 或取消令牌触发。
 
 ---
 
-## 关键组件
+## 源映射
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| `AgentHarness` | `src/harness/` | Think→Act loop controller |
-| `LoopConfig` | `src/harness/` | Configuration options |
-| `TurnState` | `src/harness/` | State machine enum |
-| `TurnAdvance` | `src/harness/` | Loop progression enum |
-| `ToolPipeline` | `src/harness/tool_pipeline.rs` | 7-stage tool execution pipeline |
-| `ToolOrchestrator` | `src/harness/tool_orchestrator.rs` | Tool batch orchestration |
-| `ToolExecutionContext` | `src/harness/tool_execution_context.rs` | Per-tool cancel/progress context |
-| `ContextBudget` | `src/harness/context_budget/` | Pressure sensing + directives |
-| `PreflightPipeline` | `src/harness/context_budget/preflight.rs` | Pre-flight async context prep |
-| `CompactionPipeline` | `src/harness/context_budget/pipeline.rs` | Emergency compaction stages |
-| `StreamingBridge` | `src/harness/streaming_bridge.rs` | Streaming + delta management |
-| `SafetyGuard` | `src/harness/safety.rs` | Permission enforcement |
-| `StopHookHandler` | `src/harness/stop_hooks.rs` | Stop hook execution |
-| `TruncationRecovery` | `src/harness/truncation_recovery.rs` | MaxTokens escalation recovery |
-
----
-
-## 守卫
-
-安全检查在每个循环迭代前运行。位于 `src/harness/guards.rs`。
-
-| Guard | Purpose |
-|-------|---------|
-| `MaxIterationsGuard` | Prevent infinite loops |
-| `TokenBudgetGuard` | Enforce token limits |
-| `TimeoutGuard` | Enforce time limits |
-| `ToolRateLimitGuard` | Prevent tool spam |
-| `ErrorAccumulatorGuard` | Stop on repeated errors |
-
-```rust
-pub trait LoopGuard: Send + Sync {
-    fn check(&self, state: &LoopState) -> GuardResult;
-    fn name(&self) -> &str;
-}
-
-pub enum GuardResult {
-    Continue,
-    Warn(String),
-    Stop(String),
-}
-```
-
----
-
-## 循环事件
-
-```rust
-pub enum LoopEvent {
-    Started { run_id: String },
-    ThinkingStarted,
-    ThinkingComplete { decision: Decision },
-    ToolExecutionStarted { tool_name: String },
-    ToolExecutionComplete { result: ToolResult },
-    StreamChunk { content: String },
-    OverflowDetected { tokens: usize },
-    CompressionStarted,
-    CompressionComplete,
-    Completed { response: String },
-    Error { error: String },
-}
-```
-
----
-
-## 配置
-
-```rust
-pub struct LoopConfig {
-    /// Maximum iterations per run
-    pub max_iterations: usize,
-
-    /// Token budget for context
-    pub token_budget: usize,
-
-    /// Timeout per iteration
-    pub iteration_timeout: Duration,
-
-    /// Enable context compression
-    pub enable_compression: bool,
-
-    /// Compression threshold (tokens)
-    pub compression_threshold: usize,
-
-    /// Model routing strategy
-    pub model_routing: ModelRoutingConfig,
-
-    /// Thinking level
-    pub thinking_level: ThinkingLevel,
-}
-```
+| 文件 | 角色 |
+|------|------|
+| `src/harness/agent.rs` | `AgentHarness` — 具体的 Think→Act 实现 |
+| `src/harness/trait_def.rs` | `Harness` trait + `TurnState` + `HarnessError` |
+| `src/harness/deps.rs` | `HarnessDeps` — 依赖包 |
+| `src/harness/callback.rs` | 用于事件流式传输的 `HarnessCallback` trait |
+| `src/harness/loop_callback.rs` | `LoopCallback` / `NoopCallback` |
+| `src/harness/trace.rs` | 跟踪事件类型 |
+| `src/harness/trace_sink.rs` | 用于可观察性的 `TraceSink` trait |
+| `src/harness/chain_context.rs` | 思维链上下文管理 |
 
 ---
 
 ## 睡眠抑制器
 
-每个 Think→Act 回合会获取一个 `IOPMAssertion`，类型为 `PreventUserIdleSystemSleep`，原因字符串为 `"Aleph agent loop"`。该断言由一个 RAII `InhibitorGuard` 持有，其 `Drop` 实现在回合返回的瞬间释放。长时间运行的智能体回合不再会被 macOS 将主机置于睡眠状态而静默中断。
+每个 Think→Act 轮次获取类型为 `PreventUserIdleSystemSleep` 的 `IOPMAssertion`，原因字符串为 `"Aleph agent loop"`。断言由 RAII `InhibitorGuard` 持有，其 `Drop` 实现在轮次返回时立即释放它。长时间运行的代理轮次不再会被 macOS 在飞行中让主机进入睡眠而默默截断。
 
-该守卫在 `src/harness/agent.rs` 中的 `run_turn` 开始时获取，并在函数返回时自动释放，无论成功、返回错误或被取消。
+守卫在 `src/harness/agent.rs` 中的 `run_turn` 开始时获取，并在函数返回时自动释放，无论它成功、返回错误还是被取消。
 
-要验证回合进行中是否有断言处于活动状态：
+要验证轮次进行中时断言是否处于活动状态：
 
 ```bash
 pmset -g assertions | grep "Aleph agent loop"
 ```
 
-断言在回合完成的瞬间从列表中消失。
+断言在轮次完成时从列表中消失。
 
 实现文件：
 - `PowerCapability` trait: `desktop/shared/src/traits/power.rs`
 - macOS IOPMAssertion FFI: `desktop/macos/src/sleep_inhibitor.rs`
-- Agent loop wiring: `src/harness/agent.rs::run_turn`
+- 代理循环接线: `src/harness/agent.rs::run_turn`
 
 ---
 
 ## 另请参阅
 
-- [Thinker](./thinker) — LLM 交互层
-- [Dispatcher](./dispatcher) — 任务编排
-- [Session Service](./sessions) — 追加式事件日志
-- Sandbox — 执行环境
+- [思考器](./thinker) — LLM 交互层
+- [分发器](./dispatcher) — 任务编排
+- [会话服务](./session-service) — 仅追加事件日志
+- 沙箱 — 执行环境

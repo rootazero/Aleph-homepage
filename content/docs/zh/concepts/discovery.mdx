@@ -1,6 +1,166 @@
 ---
-title: "Discovery"
-description: "统一的组件发现系统。"
+title: "发现"
+description: "统一的组件发现系统，用于跨多个目录查找配置文件、技能、命令、代理和插件。"
 ---
 
-Discovery文档目前提供英文版本。中文翻译正在进行中。
+`discovery` 模块提供统一的发现系统，用于跨多个目录查找配置文件、技能、命令、代理和插件。它支持具有向上目录遍历的全局（用户主目录）和项目级发现。
+
+## 设计理念
+
+发现系统遵循三个原则：
+
+1. **多源解析** —— 组件可以位于多个位置；后面的条目覆盖前面的条目
+2. **向上遍历** —— 通过从工作目录向上搜索到 git 根目录来找到配置文件
+3. **Claude Code 兼容性** —— 读取 `.claude/` 目录以与 Claude Code 工作流无缝集成
+
+---
+
+## 目录策略
+
+### 读取路径（按优先级）
+
+后面的条目覆盖前面的条目：
+
+| 优先级 | 路径 | 说明 |
+|---|---|---|
+| 1 | `~/.claude/skills/` | Claude Code 兼容（只读） |
+| 2 | `~/.claude/commands/` | Claude Code 兼容（只读） |
+| 3 | `~/.aleph/skills/` | Aleph 原生 |
+| 4 | `~/.aleph/commands/` | Aleph 原生 |
+| 5 | `~/.aleph/plugins/` | Aleph 原生 |
+| 6 | `./.claude/skills/` | 项目级 Claude Code（只读） |
+| 7 | `./.claude/commands/` | 项目级 Claude Code（只读） |
+
+### 写入路径
+
+- 始终使用 `~/.aleph/` 进行写入
+
+---
+
+## 核心组件
+
+### DiscoveryManager
+
+发现系统的主入口点：
+
+```rust
+pub struct DiscoveryManager {
+    config: DiscoveryConfig,
+    scanner: DirectoryScanner,
+}
+
+impl DiscoveryManager {
+    pub fn new(config: DiscoveryConfig) -> DiscoveryResult<Self> { /* ... */ }
+    pub fn with_defaults() -> DiscoveryResult<Self> { /* ... */ }
+    
+    pub fn discover_skill_dirs(&self,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn discover_plugins(&self,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn find_config_files(
+        &self,
+        filename: &str,
+    ) -> DiscoveryResult<Vec<PathBuf>> { /* ... */ }
+}
+```
+
+### DiscoveryConfig
+
+```rust
+pub struct DiscoveryConfig {
+    pub working_dir: PathBuf,
+    pub scan_claude_dirs: bool,
+    pub scan_project_dirs: bool,
+    pub max_upward_depth: usize,
+}
+```
+
+**默认值：**
+- `working_dir`：当前目录
+- `scan_claude_dirs`：true
+- `scan_project_dirs`：true
+- `max_upward_depth`：10
+
+### DirectoryScanner
+
+处理实际的文件系统扫描：
+
+```rust
+pub struct DirectoryScanner { /* ... */ }
+
+impl DirectoryScanner {
+    pub fn discover_component(
+        &self,
+        name: &str,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn discover_plugins(&self,
+    ) -> DiscoveryResult<Vec<DiscoveredPath>> { /* ... */ }
+    
+    pub fn find_upward(
+        &self,
+        filename: &str,
+    ) -> DiscoveryResult<Vec<PathBuf>> { /* ... */ }
+}
+```
+
+**插件发现**包括 monorepo 支持 —— 在 `~/.aleph/plugins/` 中扫描一级深度以查找克隆的插件仓库。
+
+---
+
+## 发现结果
+
+```rust
+pub struct DiscoveredPath {
+    pub path: PathBuf,
+    pub source: DiscoverySource,
+    pub priority: usize,
+}
+
+pub enum DiscoverySource {
+    Global,
+    Project,
+}
+```
+
+结果按优先级顺序返回（全局优先，项目最后）。
+
+---
+
+## 向上遍历
+
+通过向上遍历目录树来查找配置文件：
+
+```rust
+let manager = DiscoveryManager::with_defaults()?;
+let configs = manager.find_config_files("aleph.jsonc")?;
+// 从 working_dir 搜索到 git 根目录或文件系统根目录
+```
+
+**边界情况：** `canonicalize()` 可能对停止目录成功但对当前目录失败（或反之亦然），导致停止比较从不匹配。这由 `max_depth` 安全保护。
+
+---
+
+## 安全属性
+
+- **无 SQL 注入** —— 没有数据库查询（仅限文件系统）
+- **无锁问题** —— 不使用 Mutex/RwLock
+- **无 UTF-8 切片** —— 没有字节级字符串操作
+- **路径遍历安全** —— 隐藏目录检查（`is_hidden()`）防止扫描 `.git`、`.node_modules` 等
+
+---
+
+## 代码位置
+
+- `src/discovery/mod.rs` —— 模块入口点和 `DiscoveryManager`
+- `src/discovery/paths.rs` —— 路径常量和工具
+- `src/discovery/scanner.rs` —— 目录扫描实现
+- `src/discovery/types.rs` —— 核心类型
+
+## 另请参阅
+
+- [技能](./skills) —— 发现的技能如何使用
+- [扩展](./extensions) —— 插件架构
+- [配置](./configuration) —— 配置文件格式

@@ -1,8 +1,208 @@
 ---
 title: "错误处理"
-description: "错误处理约定：库使用 thiserror，应用使用 anyhow。安全截断、泛型约束和防御式设计。"
+description: "使用 thiserror 作为库和 anyhow 作为应用程序的错误处理约定。安全截断、通用约束和防御性设计。"
 ---
 
-> **TODO: 从英文版本翻译**
->
-> 原文：`content/docs/en/concepts/error-handling.mdx`
+`error` 模块定义 Aleph 的错误处理哲学。它使用双重方法：`thiserror` 用于需要类型化错误的库代码，`anyhow` 用于需要灵活上下文的应用程序代码。
+
+## 设计理念
+
+Aleph 中的错误处理遵循三个原则：
+
+1. **边界处的类型安全** —— 库 API 返回类型化错误，以便调用者可以处理特定情况
+2. **符合人体工程学的传播** —— 应用程序代码使用 `?` 和上下文，而不是 match 意大利面条
+3. **防御性显示** —— 错误消息对用户是安全的；它们从不泄露内部路径或密钥
+
+---
+
+## 双重错误方法
+
+### 库错误（thiserror）
+
+库使用 `thiserror` 定义类型化错误：
+
+```rust
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("无法读取配置文件：{0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("无效的配置格式：{0}")]
+    Parse(String),
+
+    #[error("未知频道：{0}")]
+    UnknownChannel(String),
+}
+```
+
+**好处：**
+- 调用者可以匹配特定变体（`ConfigError::Parse`）
+- 错误消息稳定且经过测试
+- 自动 `From` 实现减少样板
+
+**在库中的用法：**
+```rust
+pub fn load_config(path: &str) -> Result<Config, ConfigError> {
+    let content = std::fs::read_to_string(path)?; // 自动转换 io::Error
+    toml::from_str(&content)
+        .map_err(|e| ConfigError::Parse(e.to_string()))
+}
+```
+
+### 应用程序错误（anyhow）
+
+应用程序代码使用 `anyhow` 以获得灵活性：
+
+```rust
+use anyhow::{Context, Result};
+
+async fn start_server(config_path: &str) -> Result<()> {
+    let config = load_config(config_path)
+        .with_context(|| format!("无法从 {config_path} 加载配置"))?;
+
+    let db = connect_database(&config.database_url)
+        .await
+        .context("数据库连接失败")?;
+
+    run_server(config, db).await?;
+    Ok(())
+}
+```
+
+**好处：**
+- 使用 `.context()` 轻松添加上下文
+- 无需为每个函数定义错误类型
+- 回溯捕获以进行调试
+
+---
+
+## 防御性模式
+
+### 安全字符串截断
+
+切勿在字节边界截断字符串 —— 这可能会拆分多字节 UTF-8 字符：
+
+```rust
+// 坏 —— 可能 panic 或产生无效的 UTF-8
+let truncated = &text[..max_len];
+
+// 好 —— 安全的 UTF-8 截断
+fn safe_truncate(text: &str, max_len: usize) -> &str {
+    if text.len() <= max_len {
+        return text;
+    }
+    // 在 max_len 之前找到最后一个有效的 UTF-8 边界
+    match text[..max_len].char_indices().last() {
+        Some((idx, _)) => &text[..idx],
+        None => "",
+    }
+}
+```
+
+Aleph 在整个代码库中使用此模式用于日志消息、错误显示和 UI 截断。
+
+### 通用约束
+
+对符合人体工程学的 API 使用 `impl Into<String>`：
+
+```rust
+// 之前 —— 调用者必须分配 String
+fn new_error(message: String) -> MyError;
+
+// 之后 —— 调用者可以传递 &str、String 或任何可转换的内容
+fn new_error(message: impl Into<String>) -> MyError {
+    MyError { message: message.into() }
+}
+
+// 用法：
+new_error("简单错误");           // &str
+new_error(format!("代码：{}", 42)); // String
+```
+
+### 错误上下文栈
+
+错误在冒泡时累积上下文：
+
+```
+根本原因：连接被拒绝（os error 61）
+  → 数据库连接失败
+    → 初始化会话服务失败
+      → 启动服务器失败
+```
+
+此栈由 `anyhow::Error` 生成并使用 `{:?}` 显示：
+
+```rust
+if let Err(e) = start_server("config.toml").await {
+    eprintln!("错误：{:#}", e); // 漂亮打印上下文栈
+}
+```
+
+---
+
+## Aleph 中的错误类型
+
+| 类型 | 位置 | 用途 |
+|---|---|---|
+| `ConfigError` | `src/config/` | 配置文件错误 |
+| `SessionError` | `src/session/` | 会话生命周期错误 |
+| `ToolError` | `src/tools/` | 工具执行错误 |
+| `MemoryError` | `src/memory/` | 存储和检索错误 |
+| `GatewayError` | `src/gateway/` | WebSocket/HTTP 错误 |
+| `ProviderError` | `src/providers/` | LLM API 错误 |
+
+---
+
+## UniFFI 兼容性
+
+对于跨语言绑定（已弃用，改用网关 WebSocket），错误实现 `From` 转换为 `AlephException`：
+
+```rust
+impl From<ConfigError> for AlephException {
+    fn from(err: ConfigError) -> Self {
+        AlephException::Config {
+            message: err.to_string(),
+        }
+    }
+}
+```
+
+这用简单性换取细节 —— UniFFI 消费者获得字符串消息，不是类型化变体。
+
+---
+
+## 最佳实践
+
+### 应该做
+
+- 对库公共 API 使用 `thiserror`
+- 对应用程序主函数使用 `anyhow`
+- 在每个重要边界添加 `.context()`
+- 仔细实现 `Display`（面向用户的消息）
+- 对稳定错误消息使用 `#[error("...")]`
+
+### 不应该做
+
+- 在生产代码中使用 `unwrap()`
+- 使用带有简单消息的 `expect()`
+- 在错误消息中泄露内部路径或密钥
+- 创建深度嵌套的错误枚举（最多 3 层）
+- 使用 `String` 作为错误类型（始终使用 `thiserror`）
+
+---
+
+## 代码位置
+
+- `src/error.rs` —— 错误类型定义和转换
+- `src/config/error.rs` —— 配置特定错误
+- `src/session/error.rs` —— 会话特定错误
+- `src/tools/error.rs` —— 工具特定错误
+
+## 另请参阅
+
+- [Rust 错误处理](https://doc.rust-lang.org/book/ch09-00-error-handling.html) —— 官方 Rust 指南
+- [thiserror](https://docs.rs/thiserror) —— 类型化错误派生宏
+- [anyhow](https://docs.rs/anyhow) —— 灵活的错误处理
+- [日志](./logging) —— 错误如何记录

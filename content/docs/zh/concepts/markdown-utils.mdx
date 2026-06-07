@@ -1,6 +1,175 @@
 ---
-title: "Markdown Parsing"
-description: "Markdown代码围栏解析和文本格式化工具。"
+title: "Markdown 解析"
+description: "用于流式输出处理的 Markdown 代码围栏解析和文本格式化工具。"
 ---
 
-Markdown Parsing文档目前提供英文版本。中文翻译正在进行中。
+`markdown` 和 `utils` 模块提供 Markdown 内容的解析工具以及在整个代码库中使用的一般用途文本格式化函数。
+
+## 设计理念
+
+1. **流式友好** — 围栏解析处理来自流式 LLM 输出的不完整 Markdown
+2. **轻量** — 最小依赖，聚焦范围
+3. **UTF-8 安全** — 所有字符串操作尊重字符边界
+
+---
+
+## Markdown 围栏解析
+
+`markdown::fences` 模块解析 Markdown 中的代码围栏块：
+
+```rust
+pub struct FenceSpan {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub fence_char: char,  // '`' 或 '~'
+    pub info_string: String,
+}
+```
+
+### 解析函数
+
+```rust
+pub fn parse_fence_spans(text: &str) -> Vec<FenceSpan>
+```
+
+解析文本中的所有代码围栏块，处理：
+- 反引号围栏 (```)
+- 波浪号围栏 (~~~)
+- 信息字符串（语言标识符）
+- 嵌套围栏（比开头更长的结尾围栏）
+- 未闭合围栏（延伸到文本末尾）
+
+```rust
+pub fn find_fence_at(
+    text: &str,
+    line: usize,
+) -> Option<&FenceSpan>
+```
+
+查找包含特定行的围栏跨度。
+
+```rust
+pub fn is_safe_fence_break(
+    text: &str,
+    pos: usize,
+) -> bool
+```
+
+检查在给定位置中断文本是否安全（不在围栏内）。
+
+```rust
+pub fn get_fence_split(
+    text: &str,
+) -> FenceSplit
+```
+
+在安全边界处分割文本，优先选择围栏边界。
+
+---
+
+## 文本格式化
+
+`utils::text_format` 模块提供文本操作工具：
+
+```rust
+pub fn truncate_text(
+    text: &str,
+    max_chars: usize,
+) -> String
+```
+
+使用 `char_indices().nth()` 截断文本到最大字符数以确保 UTF-8 安全。
+
+---
+
+## JSON 提取
+
+`utils::json_extract` 模块从文本中提取 JSON：
+
+```rust
+pub fn extract_json_objects(
+    text: &str,
+) -> Vec<&str>
+```
+
+在任意文本中查找顶级 JSON 对象（对于解析可能包含 Markdown + JSON 的 LLM 输出很有用）。
+
+---
+
+## 路径工具
+
+`utils::paths` 模块提供路径操作：
+
+```rust
+pub fn get_agent_config_dir(
+    agent_id: &str,
+) -> Result<PathBuf>
+```
+
+返回特定代理的配置目录，并针对路径遍历进行验证（`/`, `\`, `..`, 空字符串）。
+
+```rust
+pub fn expand_tilde(
+    path: &str,
+) -> PathBuf
+```
+
+将 `~` 扩展为用户的主目录。
+
+---
+
+## PII 清理
+
+`utils::pii` 模块提供日志安全的 PII 清理（不如网关 `pii` 模块严格）：
+
+```rust
+pub fn scrub_pii(text: &str) -> String
+```
+
+接受误报（对日志安全，不适用于 LLM API 调用）。
+
+---
+
+## OneOrMany
+
+`utils::one_or_many` 模块处理单个值或数组的序列化：
+
+```rust
+pub enum OneOrMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+```
+
+对于反序列化可以是 `"value"` 或 `["value1", "value2"]` 的配置字段很有用。
+
+---
+
+## 安全属性
+
+- **UTF-8 安全** — `char_indices()` 用于截断，`.get(..n)` 用于切片
+- **无锁问题** — 这些模块中无 Mutex/RwLock
+- **无 `static mut`** — 使用 `OnceLock` 和 `LazyLock`
+- **路径遍历保护** — `get_agent_config_dir` 针对 `..` 和分隔符进行验证
+- **TOCTOU 安全** — `create_dir_all` 直接调用（幂等，无需存在性检查）
+
+---
+
+## 代码位置
+
+**Markdown:**
+- `src/markdown/mod.rs` — 模块入口点
+- `src/markdown/fences.rs` — 围栏解析
+
+**Utils:**
+- `src/utils/mod.rs` — 模块入口点
+- `src/utils/text_format.rs` — 文本截断
+- `src/utils/json_extract.rs` — JSON 提取
+- `src/utils/paths.rs` — 路径工具
+- `src/utils/pii.rs` — 日志安全 PII 清理
+- `src/utils/one_or_many.rs` — 单/数组序列化
+
+## 另请参阅
+
+- [内置工具](/docs/zh/concepts/builtin-tools) — 使用 Markdown 解析的工具
+- [PII 保护](/docs/zh/concepts/pii-protection) — 网关级 PII 过滤

@@ -1,17 +1,17 @@
 ---
 title: "沙箱"
-description: "针对 exec 类工具的每会话工作空间配置、能力执行和操作系统级隔离。"
+description: "每会话工作空间配置、能力执行和 exec 类工具的 OS 级隔离。"
 ---
 
-沙箱是 exec 类工具实际运行的地方。它提供 Aleph 和操作系统之间的执行边界——确保每个子进程都在一个限定的工作空间内运行，具有受限的文件系统、网络和进程能力。
+沙箱是 exec 类工具实际运行的地方。它提供 Aleph 与操作系统之间的执行边界 —— 确保每个子进程在具有受限文件系统、网络和进程能力的作用域工作空间内运行。
 
-有关更广泛的安全模型，请参阅[安全概述](/docs/zh/security/overview)。有关工具如何使用沙箱，请参阅[工具架构](/docs/zh/architecture/tools)。
+有关更广泛的安全模型，请参阅[安全概览](./security/overview)。有关工具如何使用沙箱，请参阅[工具架构](./tools)。
 
 ---
 
-## 概述
+## 概览
 
-`Sandbox` trait 是 exec 类工具和操作系统之间的单方法接缝：
+`Sandbox` trait 是 exec 类工具与操作系统之间的单方法接缝：
 
 ```rust
 #[async_trait]
@@ -27,16 +27,16 @@ pub trait Sandbox: Send + Sync + 'static {
 
 生产启动将 `Arc<dyn Sandbox>` 指向 `WorkspaceSandbox`。`WorkspaceSandbox` 拥有三个关注点：
 
-1. **工作空间配置** —— 在首次执行时物化 `~/.aleph/workspaces/{hash(session_id)}/`，在会话期间保持活动状态，在后续调用时复用。
-2. **能力执行** —— 根据会话的基线 `SandboxCapabilities` 对每个 `SandboxCommand` 进行分类，通过 `ApprovalGate` 升级超出基线的请求，缓存每会话的授权。
-3. **操作系统隔离** —— 将实际子进程启动委托给 `OsSandboxDriverTrait` 实现（macOS `sandbox-exec` 或 Linux `bwrap`）。
+1. **工作空间配置** —— 在第一次 exec 时物化 `~/.aleph/workspaces/{hash(session_id)}/`，在会话期间保持活动状态，在后续调用时重用。
+2. **能力执行** —— 根据会话的基线 `SandboxCapabilities` 对每个 `SandboxCommand` 进行分类，通过 `ApprovalGate` 升级超出基线的请求，缓存每会话授权。
+3. **OS 隔离** —— 将实际子进程启动委托给 `OsSandboxDriverTrait` 实现（macOS `sandbox-exec` 或 Linux `bwrap`）。
 
 ---
 
 ## 架构
 
 ```
-exec-class tool (code_exec, bash_exec)
+exec 类工具 (code_exec, bash_exec)
         │   Arc<dyn Sandbox>
         ▼
 WorkspaceSandbox   ──► ApprovalGate
@@ -46,24 +46,24 @@ WorkspaceSandbox   ──► ApprovalGate
 OsSandboxDriver    ──► macOS sandbox-exec / Linux bwrap
 ```
 
-exec 类工具（`code_exec`、`bash_exec` 等）在启动时注入一个 `Arc<dyn Sandbox>`。当工具的 `execute` 方法被调用时，它构建一个 `SandboxCommand` 并通过沙箱接缝传递。`WorkspaceSandbox` 在将实际子进程启动委托给操作系统特定驱动程序之前，处理工作空间解析、能力检查和审批门控。
+exec 类工具（`code_exec`、`bash_exec` 等）在启动时注入一个 `Arc<dyn Sandbox>`。当工具的 `execute` 方法被调用时，它构建一个 `SandboxCommand` 并将其通过沙箱接缝传递。`WorkspaceSandbox` 在将实际子进程启动委托给 OS 特定驱动程序之前处理工作空间解析、能力检查和审批门控。
 
 ---
 
 ## 生命周期 —— 每会话工作空间
 
-`WorkspaceSandbox` 在 `RwLock` 后面维护一个 `HashMap<SessionId, Arc<SessionWorkspace>>`。`for_session(&sid)` 是入口点：
+`WorkspaceSandbox` 在 `RwLock` 后面保持一个 `HashMap<SessionId, Arc<SessionWorkspace>>`。`for_session(&sid)` 是入口点：
 
-- **快速路径**: `read().await` → 缓存命中 → 返回现有的 `Arc<SessionWorkspace>`。
-- **慢速路径**: `write().await` → 双重检查（另一个任务可能已创建它）→ `tokio::fs::create_dir_all(cwd)` → 插入到 map 中。
+- **快速路径**：`read().await` → 缓存命中 → 返回现有的 `Arc<SessionWorkspace>`。
+- **慢速路径**：`write().await` → 双重检查（另一个任务可能已经创建了它） → `tokio::fs::create_dir_all(cwd)` → 插入到映射中。
 
-磁盘路径是确定性的：
+磁盘上的路径是确定性的：
 
 ```
 ~/.aleph/workspaces/{hash(session_id)}/
 ```
 
-目录名称源自 JSON 序列化 `SessionId` 的 SHA-256 哈希，截断为 16 字节（32 个十六进制字符）。这使得路径简短且安全，无论 `SessionKey` 变体可能携带什么字符。
+目录名通过 SHA-256 哈希 JSON 序列化的 `SessionId` 派生，截断为 16 字节（32 个十六进制字符）。这保持了路径简短且安全，无论这些变体可能携带什么字符，都适用于每个 `SessionKey` 变体。
 
 每个 `SessionWorkspace` 携带：
 
@@ -75,21 +75,21 @@ exec 类工具（`code_exec`、`bash_exec` 等）在启动时注入一个 `Arc<d
 
 ---
 
-## 六步执行流水线
+## 六步执行管道
 
-`WorkspaceSandbox::execute` 实现完整流水线：
+`WorkspaceSandbox::execute` 实现完整管道：
 
 ### 1. 会话解析
 
-`self.for_session(&cmd.session_id)` → 首次调用时惰性目录创建；否则缓存 `Arc<SessionWorkspace>`。
+`self.for_session(&cmd.session_id)` → 如果是第一次调用则惰性创建目录；否则缓存的 `Arc<SessionWorkspace>`。
 
 ### 2. cwd 验证
 
-`cmd.cwd` 要么是 `None`（默认为工作空间根目录），要么是一个必须 `starts_with(&ws.cwd)` 的路径。其他情况返回：
+`cmd.cwd` 要么是 `None`（默认为工作空间根目录），要么必须是 `starts_with(&ws.cwd)` 的路径。其他任何路径返回：
 
 ```rust
 SandboxError::CapabilityDenied {
-    reason: "cwd outside workspace root".into(),
+    reason: "cwd 在工作空间根目录之外".into(),
 }
 ```
 
@@ -99,27 +99,27 @@ SandboxError::CapabilityDenied {
 
 1. 查询 `granted_elevations` —— 如果请求在先前授权范围内，通过。
 2. 否则询问 `ApprovalGate::request_approval_for_tool`。
-   - `ApprovalOutcome::Approved` → 将 `cmd.capabilities` 插入 `granted_elevations`（将来相同或更窄的请求被缓存）。
+   - `ApprovalOutcome::Approved` → 将 `cmd.capabilities` 插入 `granted_elevations`（未来相同或更窄的请求被缓存）。
    - `ApprovalOutcome::Denied` 或 `Timeout` → `SandboxError::CapabilityDenied`。
 
-`SandboxCapabilities::is_within` 强制执行四个单调检查：
+`SandboxCapabilities::is_within` 执行四个单调检查：
 - `fs_read` ⊆（前缀包含）
 - `fs_write` ⊆（前缀包含）
-- `network`: `None` ⊆ `AllowHosts` ⊆ `AllowAll`
-- `spawn_subprocess`: `false` ⊆ any
+- `network`：`None` ⊆ `AllowHosts` ⊆ `AllowAll`
+- `spawn_subprocess`：`false` ⊆ any
 
 ### 4. 配置文件生成
 
-`os_driver.profile_for(&caps, &cwd)` 返回一个不透明的 `OsSandboxProfile`。在 macOS 上，这是 SBPL 配置文件文本；在 Linux 上，它是一个 bubblewrap 参数列表。
+`os_driver.profile_for(&caps, &cwd)` 返回一个不透明的 `OsSandboxProfile`。在 macOS 上，这是 SBPL 配置文件文本；在 Linux 上，它是 bubblewrap 参数列表。
 
 ### 5. 运行
 
 `os_driver.run(program, args, env, stdin, cwd, profile, timeout, max_output_bytes)`。
 
-| 参数 | 默认值 | 描述 |
+| 参数 | 默认值 | 说明 |
 |-----------|---------|-------------|
-| `timeout` | 60s | 每条命令的时间限制 |
-| `max_output_bytes` | 1 MB | 组合 stdout + stderr 预算（平均分配） |
+| `timeout` | 60s | 每命令时间限制 |
+| `max_output_bytes` | 1 MB | 组合 stdout + stderr 预算（均分） |
 
 两者都可以通过 `WorkspaceSandbox` 上的 `with_timeout` / `with_max_output_bytes` 覆盖。
 
@@ -133,7 +133,7 @@ SandboxError::CapabilityDenied {
 - `signal`
 - `duration_ms`
 
-这是 capability-ledger 钩子；下游跟踪订阅者可以将其下沉到任何存储。
+这是能力账本钩子；下游追踪订阅者可以将其接收至任何存储。
 
 ---
 
@@ -160,11 +160,11 @@ pub enum NetworkPolicy {
 
 基线是 `SandboxCapabilities::strict()`（等同于 `::default()`）：
 
-- 工作空间 cwd 之外无文件系统访问（由操作系统驱动程序配置文件自动授予）
-- 无网络访问
-- 无子进程生成
+- 工作空间 cwd 之外没有文件系统访问（由 OS 驱动程序配置文件自动授予）
+- 没有网络访问
+- 没有子进程生成
 
-任何需要更多功能的命令必须通过 `ApprovalGate` 升级。`granted_elevations` 缓存确保用户每会话只批准一次能力模式。
+任何需要更多能力的命令都必须通过 `ApprovalGate` 升级。`granted_elevations` 缓存确保用户每会话只批准一次能力模式。
 
 ---
 
@@ -174,10 +174,10 @@ pub enum NetworkPolicy {
 
 1. 检查会话的 `granted_elevations` 缓存
 2. 如果未缓存，调用 `ApprovalGate::request_approval_for_tool(tool_name, reason)`
-3. 批准后，将授权的能力插入缓存
+3. 批准后，将授予的能力插入缓存
 4. 拒绝或超时时，返回 `SandboxError::CapabilityDenied`
 
-同一个 `ApprovalGate` 实例与 `PermissionLayer` 共享，以便 Ask 层工具确认和沙箱能力升级使用同一个门。
+相同的 `ApprovalGate` 实例与 `PermissionLayer` 共享，以便 Ask 层工具确认和沙箱能力升级使用单个门。
 
 **位置**: `src/sandbox/exec_approval/gate.rs`
 
@@ -185,7 +185,7 @@ pub enum NetworkPolicy {
 
 ## OsSandboxDriver
 
-`OsSandboxDriverTrait` 是操作系统级沙箱的平台抽象：
+`OsSandboxDriverTrait` 是 OS 级沙箱的平台抽象：
 
 ```rust
 pub trait OsSandboxDriverTrait: Send + Sync {
@@ -213,39 +213,39 @@ pub trait OsSandboxDriverTrait: Send + Sync {
 
 | 平台 | 实现 | 机制 |
 |----------|---------------|-----------|
-| macOS | `OsSandboxDriver` in `src/exec/sandbox/executor.rs` | `sandbox-exec` seatbelt 配置文件 |
-| Linux | Bubblewrap driver | `bwrap` 命名空间 + seccomp |
+| macOS | `src/exec/sandbox/executor.rs` 中的 `OsSandboxDriver` | `sandbox-exec` seatbelt 配置文件 |
+| Linux | Bubblewrap 驱动程序 | `bwrap` 命名空间 + seccomp |
 
 ---
 
 ## 配置
 
-启动时调优位于 `SandboxConfig`：
+启动时调优存在于 `SandboxConfig` 上：
 
 ```rust
 pub struct SandboxConfig {
-    pub workspace_root: PathBuf,       // 默认: ~/.aleph/workspaces
-    pub enabled: bool,                 // 默认: true
-    pub default_timeout_seconds: u64,  // 默认: 60
-    pub max_output_bytes: usize,       // 默认: 1 MiB
+    pub workspace_root: PathBuf,       // 默认：~/.aleph/workspaces
+    pub enabled: bool,                 // 默认：true
+    pub default_timeout_seconds: u64,  // 默认：60
+    pub max_output_bytes: usize,       // 默认：1 MiB
 }
 ```
 
 **位置**: `src/sandbox/config.rs`
 
-Serde 读取带有默认值的 `[sandbox]` TOML 部分，因此现有配置可以继续工作。测试和 CI 可以设置 `enabled = false` 来禁用子系统；`build_sandbox` 将返回一个 `NoopSandbox`，其 `execute` 总是返回错误 `SandboxError::Other("sandbox disabled: ...")`——这是一个故意的快速失败，而不是静默绕过。
+Serde 读取 `[sandbox]` TOML 部分并使用默认值，因此现有配置继续工作。测试和 CI 可以设置 `enabled = false` 以禁用子系统；`build_sandbox` 然后将返回一个 `NoopSandbox`，其 `execute` 总是出错 `SandboxError::Other("sandbox disabled: ...")` —— 这是故意的快速失败，不是静默绕过。
 
 ---
 
 ## 任务本地会话上下文
 
-Exec 类工具不知道当前会话 id——它们的 `AlephTool::execute` 签名不携带它。沙箱子系统使用 tokio `task_local!` 来线程化 id，而无需触及每个工具 trait：
+Exec 类工具不知道当前会话 id —— 它们的 `AlephTool::execute` 签名不携带它。沙箱子系统使用 tokio `task_local!` 来线程化 id，而无需触碰每个工具 trait：
 
 - `crate::sandbox::context::SESSION_ID` —— 在 `src/sandbox/context.rs` 中声明
 - `current_session() -> Option<SessionId>` —— 读取辅助函数
-- **写入者**: `crate::session::invoke_with_session_trace` (`src/session/tool_trace.rs`) 将 `tool_svc.execute(...)` 包装在 `SESSION_ID.scope(session_id.clone(), async move { ... })` 中。
+- **写入者**：`crate::session::invoke_with_session_trace` (`src/session/tool_trace.rs`) 将 `tool_svc.execute(...)` 包装在 `SESSION_ID.scope(session_id.clone(), async move { ... })` 中。
 
-需要在会话外部调用但需要一个工作空间的工具可以选择它们的回退策略（今天它们依赖于调用者显式传递 `SandboxCommand { session_id, ... }`）。
+需要在会话外调用但需要工作空间的工具可以选择其回退策略（今天它们依赖调用者显式传递 `SandboxCommand { session_id, ... }`）。
 
 ---
 
@@ -261,12 +261,12 @@ pub fn build_sandbox(
 ) -> Arc<dyn Sandbox>;
 ```
 
-生成的 `Arc<dyn Sandbox>` 通过工具注册线程化到每个 exec 类工具构造函数中（`CodeExecTool::with_sandbox`、`BashExecTool::with_sandbox` 等）。没有沙箱构造的工具返回一个结构化的 "sandbox not configured" 错误，而不是回退到无范围执行——默认是安全的，而不是宽松的。
+生成的 `Arc<dyn Sandbox>` 通过工具注册线程化到每个 exec 类工具构造函数（`CodeExecTool::with_sandbox`、`BashExecTool::with_sandbox` 等）。没有沙箱构造的工具返回结构化的"沙箱未配置"错误，而不是回退到无作用域执行 —— 默认是安全的，不是宽松的。
 
 ---
 
 ## 相关页面
 
-- [工具架构](/docs/zh/architecture/tools) —— Exec 类工具如何使用沙箱
-- [安全概述](/docs/zh/security/overview) —— 更广泛的安全模型
-- [沙箱深入](/docs/zh/security/sandboxing) —— 操作系统级沙箱机制
+- [工具架构](./tools) —— exec 类工具如何使用沙箱
+- [安全概览](./security/overview) —— 更广泛的安全模型
+- [沙箱深度解析](./security/sandboxing) —— OS 级沙箱机制

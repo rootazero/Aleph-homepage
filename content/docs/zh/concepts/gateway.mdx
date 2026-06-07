@@ -1,6 +1,195 @@
 ---
 title: "网关"
-description: "用于客户端连接的 WebSocket JSON-RPC 网关，支持会话管理、执行引擎和多接口。"
+description: "用于客户端连接、会话管理、执行引擎和多接口支持的 WebSocket JSON-RPC 网关。"
 ---
 
-This page is in progress. Please refer to the [English version](/docs/concepts/gateway).
+`gateway` 模块是 Aleph 的 WebSocket JSON-RPC 网关。它处理客户端连接、会话管理、执行引擎以及与多个消息平台（Discord、Telegram、CLI、TUI 等）的接口。
+
+## 设计理念
+
+1. **接口无关核心** —— 相同的代理大脑服务每个接口
+2. **会话隔离** —— 每个对话都是具有自己上下文的独立会话
+3. **流式响应** —— 实时 token 流式传输到所有连接的客户端
+
+---
+
+## 架构
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        网关                                  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │   WebSocket  │  │   会话       │  │  执行        │     │
+│  │   处理程序   │  │   管理器     │  │  引擎        │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
+│  │   Discord    │  │   Telegram   │  │     CLI      │     │
+│  │  接口        │  │  接口        │  │  接口        │     │
+│  └──────────────┘  └──────────────┘  └──────────────┘     │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 核心组件
+
+### WebSocket 处理程序
+
+接受 JSON-RPC 2.0 连接：
+
+```rust
+pub struct WebSocketHandler;
+
+impl WebSocketHandler {
+    pub async fn handle(
+        &self,
+        socket: WebSocket,
+    ) -> Result<()> { /* ... */ }
+}
+```
+
+**方法：**
+- `session.create` —— 创建新会话
+- `session.send` —— 发送消息
+- `session.history` —— 获取对话历史
+- `session.clear` —— 清除会话上下文
+- `tool.call` —— 直接调用工具
+
+### SessionManager
+
+管理活动会话：
+
+```rust
+pub struct SessionManager {
+    sessions: HashMap<SessionId, Session>,
+}
+
+impl SessionManager {
+    pub async fn create(
+        &self,
+        config: SessionConfig,
+    ) -> Result<SessionId> { /* ... */ }
+
+    pub async fn get(
+        &self,
+        id: SessionId,
+    ) -> Option<Session> { /* ... */ }
+}
+```
+
+**会话类型：**
+- `Owner` —— 对所有功能的完全访问
+- `Guest` —— 受限访问，无持久历史
+- `Paired` —— 链接到特定频道（Telegram、Discord）
+
+### ExecutionEngine
+
+处理消息的代理循环：
+
+```rust
+pub struct ExecutionEngine {
+    thinker: Thinker,
+    tool_service: ToolService,
+    provider: Arc<dyn LlmProvider>,
+}
+
+impl ExecutionEngine {
+    pub async fn run(
+        &self,
+        request: RunRequest,
+    ) -> Result<RunOutput> { /* ... */ }
+}
+```
+
+**流程：**
+1. 接收 `RunRequest`（消息 + 附件 + 上下文）
+2. 通过 `MediaProcessor` 处理附件
+3. 通过 `Thinker` 构建系统提示词
+4. 调用 LLM 提供商
+5. 解析响应（文本 + 工具调用）
+6. 执行工具
+7. 将结果流式传输回客户端
+
+### 接口
+
+平台特定适配器：
+
+**Discord：**
+- 通过 `serenity` 的机器人集成
+- 斜杠命令
+- DM 和公会频道支持
+
+**Telegram：**
+- 通过 `teloxide` 的机器人集成
+- 内联查询
+- 群聊支持
+
+**CLI：**
+- 交互式终端界面
+- 命令历史
+- Tab 补全
+
+**TUI：**
+- 使用 `ratatui` 的终端 UI
+- 多窗格布局
+- 实时流式传输
+
+---
+
+## 路由
+
+消息被路由到适当的处理程序：
+
+```rust
+pub struct InboundRouter {
+    handlers: HashMap<InterfaceType, Box<dyn MessageHandler>>,
+}
+```
+
+**路由规则：**
+- WebSocket → SessionManager → ExecutionEngine
+- Discord → ChannelManager → SessionManager
+- Telegram → BotHandler → SessionManager
+- CLI → DirectExecution
+
+---
+
+## 速率限制
+
+```rust
+pub struct RateLimiter {
+    buckets: HashMap<String, TokenBucket>,
+}
+```
+
+每会话和每用户速率限制防止滥用。
+
+---
+
+## 安全属性
+
+- **UTF-8 安全** —— 所有字符串操作使用 `char_indices()` 或 `.find()`
+- **锁恢复** —— `unwrap_or_else(|e| e.into_inner())`
+- **生产中无 unwrap** —— 所有热路径返回 `Result`
+- **饱和算术** —— 索引计算使用 `saturating_sub`
+
+---
+
+## 代码位置
+
+- `src/gateway/` —— 模块根
+- `src/gateway/handlers/` —— WebSocket 和 HTTP 处理程序
+- `src/gateway/session/` —— 会话管理
+- `src/gateway/execution_engine/` —— 代理执行循环
+- `src/gateway/interfaces/` —— 平台适配器（Discord、Telegram、CLI、TUI）
+- `src/gateway/routing/` —— 消息路由
+
+## 另请参阅
+
+- [会话管理](./session-service) —— 会话生命周期
+- [事件系统](./event-system) —— 事件分发
+- [思考器](./thinker) —— 提示词构造

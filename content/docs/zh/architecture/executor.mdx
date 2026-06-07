@@ -1,38 +1,38 @@
 ---
 title: "执行器"
-description: "工具执行引擎、3 种处理器来源、分层中间件与超时管理。"
+description: "具有 3 个处理程序源、分层中间件和超时管理的工具执行引擎。"
 ---
 
 # 执行器
 
-执行器是工具执行引擎。它接收来自思考器（通过调度器）的工具决策，并将其路由到相应的处理器。
+执行器是工具执行引擎。它接收来自思考器（通过分发器）的工具决策，并将它们路由到适当的处理程序。
 
-**位置**：`src/engine/`
+**位置**: `src/tools/`
 
 ---
 
 ## 执行流程
 
 ```
-Thinker Decision (tool_use)
+Thinker 决策 (tool_use)
      │
      ▼
-Dispatcher
+分发器
      │
      ▼
-Executor
+执行器
      │
-     ├───▶ Builtin Tool (AlephTool trait)
-     │       Direct Rust execution
+     ├───▶ 内置工具 (AlephTool trait)
+     │       直接 Rust 执行
      │
-     ├───▶ MCP Tool (Model Context Protocol)
-     │       JSON-RPC to external process
+     ├───▶ MCP 工具 (Model Context Protocol)
+     │       对外部进程的 JSON-RPC
      │
-     └───▶ Extension Tool (WASM / Node.js)
-             Plugin runtime execution
+     └───▶ 扩展工具 (WASM / Node.js)
+             插件运行时执行
 ```
 
-Exec 类工具（`code_exec`、`bash_exec`）在工具与进程执行之间通过额外的 **Sandbox 层**（`src/sandbox/`）路由。Sandbox 负责每个会话的工作空间配置、能力执行以及通过 `OsSandboxDriver` 进行操作系统级别的 seatbelt 隔离。
+Exec 类工具 (`code_exec`, `bash_exec`) 在工具和进程执行之间通过额外的**沙箱层** (`src/sandbox/`)。沙箱拥有每会话工作空间配置、能力执行和通过 `OsSandboxDriver` 的 OS 级 seatbelt 隔离。
 
 ---
 
@@ -56,53 +56,53 @@ pub trait ToolService: Send + Sync + 'static {
 ExecAuditLayer → PermissionLayer → ContextRuleLayer → TimeoutLayer → CoreDispatch
 ```
 
-| Layer | Purpose |
+| 层 | 用途 |
 |-------|---------|
-| `ExecAuditLayer` | Audit logging |
-| `PermissionLayer` | Permission checks (`SmartFilter`) |
-| `ContextRuleLayer` | Context-based rules |
-| `TimeoutLayer` | Timeout enforcement |
-| `CoreDispatch` | Innermost layer holding the `ToolRegistry` with `BuiltinHandler`, `McpHandler`, and `ExtensionHandler` |
+| `ExecAuditLayer` | 审计日志 |
+| `PermissionLayer` | 权限检查 (`SmartFilter`) |
+| `ContextRuleLayer` | 基于上下文的规则 |
+| `TimeoutLayer` | 超时执行 |
+| `CoreDispatch` | 最内层，持有 `ToolRegistry`，包含 `BuiltinHandler`、`McpHandler` 和 `ExtensionHandler` |
 
-`CoreDispatch` 持有一个由 `ArcSwap` 支持的 `ToolRegistry`，包含三种处理器来源：
+`CoreDispatch` 持有由 `ArcSwap` 支持的 `ToolRegistry`，包含三个处理程序源：
 - `BuiltinHandler`
 - `McpHandler`
 - `ExtensionHandler`
 
 ---
 
-## 核心分派
+## 核心分发
 
-工具作者实现 `AlephTool` —— 外观通过 `BuiltinHandler` 适配它们。无需作者侧 API 变更。
+工具作者实现 `AlephTool` —— 外观通过 `BuiltinHandler` 适配它们。作者端 API 无需更改。
 
-会话事件追踪：调用者通过 `crate::session::invoke_with_session_trace(tool_svc, session_svc, ...)` 将 `ToolService` 分派与 `SessionService` 事件发射捆绑在一起。
+会话事件跟踪：调用者通过 `crate::session::invoke_with_session_trace(tool_svc, session_svc, ...)` 捆绑 `ToolService` 分发 + `SessionService` 事件发送。
 
 ---
 
 ## AlephTool Trait
 
-### 静态分派（编译时）
+### 静态分发（编译时）
 
 ```rust
 pub trait AlephTool: Clone + Send + Sync + 'static {
-    /// Tool name (used in LLM tool_use)
+    /// 工具名称（在 LLM tool_use 中使用）
     const NAME: &'static str;
 
-    /// Tool description for LLM
+    /// LLM 的工具描述
     const DESCRIPTION: &'static str;
 
-    /// Argument type (auto JSON Schema via schemars)
+    /// 参数类型（通过 schemars 自动生成 JSON Schema）
     type Args: Serialize + DeserializeOwned + JsonSchema + Send;
 
-    /// Return type
+    /// 返回类型
     type Output: Serialize + Send;
 
-    /// Execute the tool
+    /// 执行工具
     async fn call(&self, args: Self::Args) -> Result<Self::Output>;
 }
 ```
 
-### 动态分派（运行时）
+### 动态分发（运行时）
 
 ```rust
 pub trait AlephToolDyn: Send + Sync {
@@ -111,24 +111,24 @@ pub trait AlephToolDyn: Send + Sync {
     fn call(&self, args: Value) -> BoxFuture<'_, Result<Value>>;
 }
 
-// Blanket impl: Any AlephTool is also AlephToolDyn
-impl<T: AlephTool> AlephToolDyn for T { // Blanket implementation }
+// 空实现：任何 AlephTool 也是 AlephToolDyn
+impl<T: AlephTool> AlephToolDyn for T { // 空实现 }
 ```
 
 ---
 
-## Exec 类工具与 Sandbox
+## Exec 类工具 & 沙箱
 
-- `code_exec`、`bash_exec` 通过 Sandbox 层路由
+- `code_exec`, `bash_exec` 通过沙箱层路由
 - `Sandbox` trait → `WorkspaceSandbox` → `OsSandboxDriver`
-- 每个会话的工作空间位于 `~/.aleph/workspaces/{hash(session_id)}/`
-- 工具级权限（`SmartFilter`）控制调用*是否*运行
-- Sandbox 的能力检查控制子进程一旦获准运行后*能做什么*
+- 每会话工作空间位于 `~/.aleph/workspaces/{hash(session_id)}/`
+- 工具级权限 (`SmartFilter`) 控制*是否*允许调用
+- 沙箱的能力检查控制一旦允许*子进程可以做什么*
 
 ---
 
 ## 另请参阅
 
-- [Tool Architecture](./tools) — 工具开发指南
-- Sandbox — 执行隔离
-- MCP — Model Context Protocol
+- [工具架构](./tools) — 工具开发指南
+- 沙箱 — 执行隔离
+- MCP — 模型上下文协议

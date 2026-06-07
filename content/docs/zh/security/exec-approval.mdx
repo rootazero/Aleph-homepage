@@ -1,8 +1,316 @@
 ---
 title: "执行审批"
-description: "三级安全模型和命令审批机制"
+description: "用于 shell 命令执行的人机回环审批系统，具有白名单、风险分析和多通道决策路由"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/security/exec-approval)。
+## 概览
+
+Aleph 的执行审批系统是一个三级安全模型，管理 AI Agent 如何执行 shell 命令。每个命令在到达操作系统之前都通过解析、风险分析和审批流程。这种人机回环设计确保 AI 不能在你的机器上静默执行破坏性操作。
+
+该系统围绕三个核心原则构建：
+
+1. **默认拒绝** — 命令被阻止，除非被显式批准或匹配白名单条目。
+2. **渐进信任** — 用户可以一次性、会话内或永久地批准命令（添加到白名单）。信任会随着时间的推移而积累。
+3. **多通道路由** — 审批请求可以交付给 CLI、macOS 应用、Telegram、Discord 或任何已连接的接口。
+
+**源代码位置：**
+- 执行内核：`src/exec/kernel.rs`
+- 审批管理器：`src/exec/manager.rs`
+- 风险分析器：`src/exec/risk.rs`
+- 命令解析器：`src/exec/parser.rs`
+- 白名单：`src/exec/allowlist.rs`
+- 配置：`src/exec/config.rs`
+
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      执行内核流程                               │
+│                                                               │
+│  命令 ──→ 解析器 ──→ 风险分析器 ──→ 审批管理器                │
+│                                               │               │
+│                              ┌────────────────┼──────┐       │
+│                              │                │      │       │
+│                              ▼                ▼      ▼       │
+│                          白名单检查         人工    自动      │
+│                                           审批    批准       │
+│                              │                │      │       │
+│                              └────────────────┼──────┘       │
+│                                               │               │
+│                                               ▼               │
+│                              执行 ──→ 输出掩码器              │
+│                                               │               │
+│                                               ▼               │
+│                                          审计日志             │
+└──────────────────────────────────────────────────────────────┘
+```
+
+当命令进入流程时：
+1. **命令解析器** 将其分解为结构化段（程序、参数、管道、重定向）。
+2. **风险分析器** 根据基于模式的规则对每个段进行评分。
+3. **审批管理器** 检查白名单、黑名单，如果需要，将请求路由给人工审批。
+4. 批准后，命令被执行，输出通过**输出掩码器**传递以编辑密钥。
+5. 每个决策都写入**审计日志**。
+
+## 安全级别
+
+执行审批配置中的 `security` 字段确定基本行为：
+
+| 级别 | 行为 | 用例 |
+|-------|----------|----------|
+| `deny` | 阻止所有命令执行 | 最大锁定，无 shell 访问 |
+| `allowlist` | 仅允许匹配白名单模式的命令 | 默认——平衡安全 |
+| `full` | 无需批准允许所有命令 | 完全信任（开发环境） |
+
+`ask` 策略控制命令不在白名单中时会发生什么：
+
+| 策略 | 行为 |
+|--------|----------|
+| `off` | 从不提示用户；使用 `ask_fallback` |
+| `on-miss` | 当命令不在白名单中时提示（默认） |
+| `always` | 对每个命令提示，即使是白名单中的 |
+
+## 风险分析
+
+在到达审批管理器之前，每个命令由风险分析器评分。风险级别决定审批提示的显示方式：
+
+```rust
+pub enum RiskLevel {
+    Low,       // 只读操作（ls、cat、git log）
+    Medium,    // 文件修改（cp、mv、mkdir）
+    High,      // 系统更改（chmod、chown、sudo）
+    Critical,  // 破坏性操作（rm -rf、mkfs、dd）
+}
+```
+
+### 内置风险规则
+
+| 模式 | 风险 | 描述 |
+|---------|------|-------------|
+| `rm -rf /` | Critical | 递归删除根目录 |
+| `rm -rf ~` | Critical | 删除主目录 |
+| `curl * \| sh` | Critical | 远程代码执行 |
+| `> /dev/sd*` | Critical | 磁盘覆盖 |
+| `dd if=* of=/dev/` | Critical | 原始设备写入 |
+| `mkfs.*` | Critical | 文件系统格式化 |
+| `:(){ :\|: & };:` | Critical | Fork bomb |
+| `sudo *` | High | 提升权限 |
+| `chmod 777 /` | High | 宽松权限 |
+| `git *` | Low | 版本控制 |
+| `ls *` | Low | 目录列表 |
+| `cat *` | Low | 文件读取 |
+
+你可以通过配置添加自定义拦截模式：
+
+```json
+{
+  "agents": {
+    "main": {
+      "blocklist": [
+        "curl.*evil\\.com",
+        "npm publish"
+      ]
+    }
+  }
+}
+```
+
+## 白名单系统
+
+白名单是渐进信任模型的核心。每个条目都是一个与解析的可执行路径匹配的 glob 模式：
+
+```rust
+pub struct AllowlistEntry {
+    pub id: Option<String>,          // 唯一标识符
+    pub pattern: String,             // Glob 模式（例如 "/usr/bin/git"）
+    pub last_used_at: Option<i64>,   // Unix 时间戳
+    pub last_used_command: Option<String>,
+    pub last_resolved_path: Option<String>,
+}
+```
+
+### 模式匹配
+
+模式与命令可执行文件的完全解析路径匹配：
+
+| 模式 | 匹配 |
+|---------|---------|
+| `/usr/bin/git` | 精确路径匹配 |
+| `/usr/bin/*` | `/usr/bin/` 中的任何可执行文件 |
+| `git` | 基于名称的匹配（通过 PATH 解析） |
+| `~/bin/*` | 用户 bin 目录 |
+
+### 自动白名单增长
+
+当用户用**始终允许**批准命令时，解析的可执行路径会自动添加到 Agent 的白名单中。这意味着白名单会随着用户工作而有机增长：
+
+```
+1. Agent 想要运行：git status
+2. 解析路径：/usr/bin/git
+3. 用户点击 "始终允许"
+4. /usr/bin/git 添加到白名单
+5. 所有未来的 git 命令自动批准
+```
+
+## 审批决策
+
+当命令需要人工审批时，用户会看到三个选项：
+
+```rust
+pub enum ApprovalDecisionType {
+    AllowOnce,    // 仅执行此命令
+    AllowAlways,  // 执行并添加到白名单
+    Deny,         // 阻止执行
+}
+```
+
+每个决策都有范围：
+
+| 决策 | 范围 | 持久性 |
+|----------|-------|-------------|
+| 允许一次 | 仅此次执行 | 无 |
+| 始终允许 | 所有未来匹配的命令 | 写入 `exec-approvals.json` |
+| 拒绝 | 仅此次执行 | 无 |
+
+### 审批超时
+
+审批请求有默认 **120 秒**（2 分钟）的超时。如果在超时内未收到决策，命令将被拒绝。这防止 Agent 无限期挂起。
+
+```rust
+pub const DEFAULT_APPROVAL_TIMEOUT_MS: u64 = 120_000;
+```
+
+## 多通道审批路由
+
+审批请求同时广播到所有已连接的接口。第一个响应获胜：
+
+```
+┌─────────────┐
+│ 审批         │───→ CLI 终端（内联提示）
+│ 管理器       │───→ macOS 应用（通过 IPC 套接字）
+│              │───→ Telegram（内联键盘）
+│              │───→ Discord（按钮组件）
+└─────────────┘
+```
+
+### 聊天频道审批 UI
+
+在聊天接口（Telegram、Discord）中，审批请求被渲染为带有内联按钮的交互式消息：
+
+```
+🔒 需要命令审批
+
+命令: npm install express
+工作目录: /project
+Agent: main
+
+┌─────────────┬────────────────┐
+│ ✅ 允许一次  │ ✅ 始终允许     │
+├─────────────┴────────────────┤
+│          ❌ 拒绝              │
+└──────────────────────────────┘
+```
+
+按钮按下的回调数据格式为：
+```
+approve:{approval_id}:{decision}
+```
+其中 `decision` 是 `once`、`always` 或 `deny`。
+
+### 本地 IPC 审批
+
+对于 macOS 桌面应用，审批请求通过 Unix 域套接字 IPC 协议路由。参见 [IPC 协议](/docs/zh/security/ipc) 获取详情。
+
+## 每个 Agent 的配置
+
+每个 Agent 都可以有自己的安全策略。Agent 特定设置覆盖全局默认值：
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "security": "allowlist",
+    "ask": "on-miss",
+    "ask_fallback": "deny"
+  },
+  "agents": {
+    "main": {
+      "security": "allowlist",
+      "auto_allow_skills": true,
+      "allowlist": [
+        { "pattern": "/usr/bin/git" },
+        { "pattern": "/usr/local/bin/node" }
+      ],
+      "skill_allowlist": ["github", "ffmpeg"]
+    },
+    "sandbox": {
+      "security": "deny"
+    }
+  }
+}
+```
+
+<Callout type="info">
+配置存储在 `~/.aleph/exec-approvals.json` 中，并通过内容哈希支持乐观锁定以防止并发写入冲突。
+</Callout>
+
+### 配置解析
+
+解析特定 Agent 的配置时，系统应用分层合并：
+
+1. 从内置默认值开始（`security: deny`、`ask: on-miss`）
+2. 应用全局 `defaults` 部分
+3. 应用 Agent 特定覆盖
+
+```rust
+// 解析优先级：agent > 全局 > 内置
+let security = agent.security
+    .or(global.security)
+    .unwrap_or(ExecSecurity::Deny);
+```
+
+## 输出掩码
+
+执行后，命令输出通过输出掩码器传递，在返回给 AI 或显示给用户之前编辑敏感数据：
+
+| 模式 | 替换 |
+|---------|-------------|
+| API 密钥 | `[API_KEY_REDACTED]` |
+| 密码 | `[PASSWORD_REDACTED]` |
+| AWS 凭据 | `[AWS_CRED_REDACTED]` |
+| 私钥 | `[PRIVATE_KEY_REDACTED]` |
+| OAuth 令牌 | `[TOKEN_REDACTED]` |
+
+## 审计日志
+
+每个执行决策都被记录以供日后审查：
+
+```rust
+pub struct AuditEntry {
+    pub timestamp: DateTime<Utc>,
+    pub command: String,
+    pub risk_level: RiskLevel,
+    pub decision: ApprovalDecision,
+    pub executor: String,
+    pub session_key: String,
+    pub duration_ms: u64,
+    pub exit_code: Option<i32>,
+}
+```
+
+查询最近的高风险执行：
+
+```sql
+SELECT * FROM audit_log
+WHERE risk_level >= 'High'
+AND timestamp > datetime('now', '-7 days')
+ORDER BY timestamp DESC;
+```
+
+## 另请参阅
+
+- [IPC 协议](/docs/zh/security/ipc) — 进程间如何通信审批请求
+- [沙箱](/docs/zh/security/sandboxing) — 基于能力的执行沙箱
+- [设备配对](/docs/zh/security/pairing) — 远程设备的信任建立

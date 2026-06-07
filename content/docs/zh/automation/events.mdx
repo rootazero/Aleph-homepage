@@ -1,8 +1,384 @@
 ---
-title: "事件系统"
-description: "事件驱动的自动化工作流"
+title: "事件"
+description: "用于实时监控、集成和反应式工作流的事件驱动架构"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/automation/events)。
+Aleph 建立在事件驱动架构之上。每个重要动作 —— 工具调用、会话启动、cron 作业触发、配置更改 —— 都会发出结构化事件。您可以实时通过 WebSocket 订阅这些事件，启用仪表板、监控系统、外部集成和反应式自动化管道。
+
+## 架构
+
+事件流经两个内部总线：
+
+1. **核心事件总线** —— 处理代理生命周期事件 (`AlephEvent`)。基于 `tokio::sync::broadcast` 通道构建，用于低延迟进程内交付。代理循环的每个组件都在这里发布：工具调用、会话状态更改、规划事件、子代理活动。
+
+2. **守护进程事件总线** —— 处理系统级事件 (`DaemonEvent`)。感知守护进程监视环境 —— 文件系统更改、进程活动、系统状态、时间触发器 —— 并在此发布观察结果。
+
+两个总线都输入到 Gateway 的事件订阅系统，该系统将它们作为统一的流通过 WebSocket 暴露给外部客户端。
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      内部总线                                 │
+│                                                               │
+│  代理循环 ──▶ 核心事件总线 ──┐                           │
+│                                   ├──▶ Gateway 事件路由器   │
+│  守护进程  ──▶ 守护进程事件总线 ──┘         │                │
+│                                              │                │
+│                                     ┌────────┴────────┐      │
+│                                     │  模式匹配器     │      │
+│                                     └────────┬────────┘      │
+│                                              │                │
+│                              ┌───────────────┼───────────┐   │
+│                              ▼               ▼           ▼   │
+│                         客户端 A        客户端 B    客户端 C  │
+│                        stream.*        agent.*        *       │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## 事件类别
+
+### 流式事件 (`stream.*`)
+
+在代理响应生成期间发出。这些是最频繁的事件，为实时 UI 提供动力。
+
+| 主题 | 说明 | 关键字段 |
+|-------|-------------|------------|
+| `stream.start` | 响应流式传输开始 | `run_id` |
+| `stream.chunk` | 来自代理的文本块 | `run_id`, `content` |
+| `stream.tool_start` | 代理正在调用工具 | `run_id`, `tool_name`, `args` |
+| `stream.tool_end` | 工具执行完成 | `run_id`, `tool_name`, `result`, `duration_ms` |
+| `stream.thinking` | 推理步骤（思维链） | `run_id`, `step_type`, `content` |
+| `stream.end` | 响应流式传输完成 | `run_id` |
+
+### 代理事件 (`agent.*`)
+
+代理运行生命周期 —— 开始、完成、错误、取消。
+
+| 主题 | 说明 | 关键字段 |
+|-------|-------------|------------|
+| `agent.started` | 代理运行已开始 | `run_id`, `session_key` |
+| `agent.completed` | 代理运行完成 | `run_id`, `session_key`, `tokens_used`, `duration_ms` |
+| `agent.error` | 代理运行遇到错误 | `run_id`, `error` |
+| `agent.cancelled` | 代理运行被取消 | `run_id` |
+
+### 会话事件 (`session.*`)
+
+会话生命周期更改。
+
+| 主题 | 说明 | 关键字段 |
+|-------|-------------|------------|
+| `session.created` | 新会话已创建 | `session_key` |
+| `session.deleted` | 会话已删除 | `session_key` |
+| `session.compacted` | 会话已压缩 | `session_key`, `tokens_before`, `tokens_after` |
+
+### Cron 事件 (`cron.*`)
+
+计划作业执行事件。
+
+| 主题 | 说明 | 关键字段 |
+|-------|-------------|------------|
+| `cron.triggered` | 作业执行已开始 | `job_id`, `run_id`, `trigger_source` |
+| `cron.completed` | 作业成功完成 | `job_id`, `run_id`, `duration_ms` |
+| `cron.failed` | 所有重试后作业失败 | `job_id`, `run_id`, `error` |
+
+### 配置事件 (`config.*`)
+
+配置更改。
+
+| 主题 | 说明 | 关键字段 |
+|-------|-------------|------------|
+| `config.changed` | 配置已修改 | `changed_keys`, `source` |
+| `config.reloaded` | 配置已从文件重新加载 | `source` |
+
+### 执行事件 (`exec.*`)
+
+命令执行审批流程。
+
+| 主题 | 说明 | 关键字段 |
+|-------|-------------|------------|
+| `exec.approval_requested` | 需要审批命令 | `id`, `command`, `risk_level` |
+| `exec.approval_resolved` | 审批决策已做出 | `id`, `decision` |
+
+### 守护进程事件
+
+守护进程为环境感知发出自己的事件层次结构：
+
+**原始事件** —— 来自监视器的直接观察：
+- `TimeEvent` —— cron 调度匹配、间隔滴答、绝对时间触发器
+- `ProcessEvent` —— 进程启动、停止、CPU/内存阈值超出
+- `FsEvent` —— 文件创建、修改、删除、重命名
+- `SystemStateEvent` —— 电池电量、网络状态、显示器睡眠、用户活动、系统负载
+
+**派生事件** —— 从原始事件中的模式推断：
+- `ActivityChanged` —— 用户活动类型更改（编码、浏览、会议等）
+- `ProgrammingSessionStarted` / `ProgrammingSessionEnded` —— 检测到的编码会话
+- `ResourcePressureChanged` —— 系统资源压力级别转换
+- `MeetingStateChanged` —— 检测到的会议开始/结束
+- `IdleStateChanged` —— 用户空闲或返回
+
+**系统事件** —— 守护进程自我管理：
+- `WatcherStarted` / `WatcherStopped` —— 监视器生命周期
+- `ConfigReloaded` —— 守护进程配置更改
+- `Error` —— 守护进程级错误
+
+## 订阅事件
+
+### 通过 WebSocket (Gateway RPC)
+
+接收事件的主要方式。连接到网关 WebSocket 并使用 glob 模式订阅：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "events.subscribe",
+  "params": {
+    "patterns": ["stream.*", "agent.*", "cron.*"]
+  }
+}
+```
+
+事件作为 JSON-RPC 通知到达（无 `id` 字段）：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "event",
+  "params": {
+    "topic": "agent.completed",
+    "data": {
+      "run_id": "run-uuid-123",
+      "session_key": "agent:main:main",
+      "tokens_used": 1247,
+      "duration_ms": 5000
+    },
+    "timestamp": 1706400000000
+  }
+}
+```
+
+<Callout type="info">
+事件是即发即弃的。服务器不等待确认。如果客户端断开连接，断开连接期间的事件将丢失。没有重放或追赶机制 —— 设计您的消费者以容忍间隙。
+</Callout>
+
+### 管理订阅
+
+订阅是累加的。多次调用 `events.subscribe` 会添加新模式而不移除现有模式。
+
+```json
+// 添加更多模式
+{ "method": "events.subscribe", "params": { "patterns": ["config.*"] } }
+
+// 移除特定模式
+{ "method": "events.unsubscribe", "params": { "patterns": ["stream.*"] } }
+
+// 列出活动订阅
+{ "method": "events.list" }
+```
+
+有关完整 API 规范，请参阅 [events.* RPC 方法](/docs/zh/gateway/methods/events)。
+
+## Glob 模式匹配
+
+事件订阅模式使用 glob 风格匹配来针对主题字符串：
+
+| 模式 | 匹配 |
+|---------|---------|
+| `stream.*` | 所有流式事件 |
+| `agent.*` | 所有代理生命周期事件 |
+| `*` | 所有事件 |
+| `stream.chunk` | 仅精确匹配 |
+| `*.completed` | 所有命名空间中的任何 `completed` 事件 |
+| `cron.*` | 所有 cron 作业事件 |
+
+`*` 通配符匹配任何非点字符序列。单独使用 `*` 订阅系统中的每个事件。
+
+## 事件负载结构
+
+通过 WebSocket 传递的每个事件都遵循此信封：
+
+```typescript
+interface EventNotification {
+  jsonrpc: "2.0";
+  method: "event";
+  params: {
+    topic: string;        // 例如 "agent.completed"
+    data: Record<string, any>;  // 事件特定负载
+    timestamp: number;    // Unix 时间戳（毫秒）
+  };
+}
+```
+
+### 核心事件类型（内部）
+
+在内部，Aleph 使用带有序列号的类型化事件系统进行排序：
+
+```rust
+pub struct TimestampedEvent {
+    pub event: AlephEvent,
+    pub timestamp: i64,      // 毫秒精度
+    pub sequence: u64,       // 单调递增
+}
+```
+
+`AlephEvent` 枚举涵盖所有核心事件类型：`InputReceived`、`ToolCallStarted`、`ToolCallCompleted`、`ToolCallFailed`、`SessionCreated`、`SubAgentStarted`、`AiResponseGenerated` 等。网关将这些映射到基于主题的格式以供外部消费。
+
+## 构建反应式集成
+
+### 实时仪表板
+
+订阅所有事件并在 Web UI 中渲染它们：
+
+```javascript
+const ws = new WebSocket("ws://localhost:3001");
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "events.subscribe",
+    params: { patterns: ["*"] }
+  }));
+};
+
+ws.onmessage = (msg) => {
+  const event = JSON.parse(msg.data);
+  if (event.method === "event") {
+    const { topic, data, timestamp } = event.params;
+    updateDashboard(topic, data, timestamp);
+  }
+};
+```
+
+### 监控和警报
+
+监视整个系统中的错误和失败：
+
+```javascript
+// 订阅失败事件
+ws.send(JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "events.subscribe",
+  params: { patterns: ["agent.error", "cron.failed", "*.error"] }
+}));
+
+ws.onmessage = (msg) => {
+  const event = JSON.parse(msg.data);
+  if (event.method === "event") {
+    sendAlert({
+      channel: "#aleph-alerts",
+      text: `[${event.params.topic}] ${JSON.stringify(event.params.data)}`
+    });
+  }
+};
+```
+
+### 工具使用分析
+
+跟踪代理最常使用哪些工具以及它们花费多长时间：
+
+```javascript
+ws.send(JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "events.subscribe",
+  params: { patterns: ["stream.tool_start", "stream.tool_end"] }
+}));
+
+const toolMetrics = {};
+
+ws.onmessage = (msg) => {
+  const event = JSON.parse(msg.data);
+  if (event.method !== "event") return;
+
+  const { topic, data } = event.params;
+
+  if (topic === "stream.tool_start") {
+    toolMetrics[data.run_id] = {
+      tool: data.tool_name,
+      startedAt: Date.now()
+    };
+  }
+
+  if (topic === "stream.tool_end") {
+    const start = toolMetrics[data.run_id];
+    if (start) {
+      recordMetric(start.tool, Date.now() - start.startedAt);
+      delete toolMetrics[data.run_id];
+    }
+  }
+};
+```
+
+### Cron 作业状态板
+
+监控计划作业健康状态：
+
+```javascript
+ws.send(JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "events.subscribe",
+  params: { patterns: ["cron.*"] }
+}));
+
+ws.onmessage = (msg) => {
+  const event = JSON.parse(msg.data);
+  if (event.method !== "event") return;
+
+  const { topic, data } = event.params;
+
+  switch (topic) {
+    case "cron.triggered":
+      setJobStatus(data.job_id, "running", data.trigger_source);
+      break;
+    case "cron.completed":
+      setJobStatus(data.job_id, "completed", `${data.duration_ms}ms`);
+      break;
+    case "cron.failed":
+      setJobStatus(data.job_id, "failed", data.error);
+      alertOnFailure(data.job_id, data.error);
+      break;
+  }
+};
+```
+
+## 守护进程事件驱动自动化
+
+守护进程的事件系统启用环境感知自动化。守护进程监视世界并发出可以触发代理操作的事件：
+
+### 上下文感知响应
+
+守护进程检测您何时开始编程会话，并可以主动提供帮助：
+
+- **`ProgrammingSessionStarted`** —— 检测到 IDE 启动 + 项目目录中的文件更改
+- **`ActivityChanged`** —— 在编码、浏览、会议等之间转换
+- **`IdleStateChanged`** —— 用户空闲（后台任务的机会）
+- **`ResourcePressureChanged`** —— 系统内存或电池不足
+
+### 基于时间的触发器
+
+守护进程评估 cron 表达式和间隔计时器，发出 `TimeEvent` 事件：
+
+- `Cron { expression }` —— 匹配 cron 调度
+- `Interval { seconds }` —— 间隔计时器滴答
+- `Absolute { time }` —— 达到特定时间戳
+
+这些时间事件是内部驱动 cron 作业系统的原因 —— 守护进程触发触发器，cron 调度器拾取它进行执行。
+
+## 设计原则
+
+1. **事件是不可变的事实** —— 一旦发出，事件永远不会被修改。它们代表发生的事情。
+2. **即发即弃交付** —— 发布者不等待消费者。这使代理循环保持快速。
+3. **不保证交付** —— 如果没有订阅者在监听或缓冲区溢出，事件可能会丢失。相应地设计消费者。
+4. **内部类型化，外部字符串化** —— 核心使用 Rust 枚举进行编译时安全。网关将它们映射到点分隔的主题字符串以供语言无关消费。
+5. **序列排序** —— 每个事件携带单调递增的序列号，用于单个 Aleph 实例内的因果排序。
+
+## 另请参阅
+
+- [events.* RPC 方法](/docs/zh/gateway/methods/events) —— 事件订阅的完整 RPC API 规范
+- [钩子](/docs/zh/automation/hooks) —— 使用 shell 命令和提示对生命周期事件做出反应
+- [Cron 作业](/docs/zh/automation/cron-jobs) —— 发出 cron 事件的计划重复任务
+- [网关协议](/docs/zh/gateway/protocol) —— WebSocket 传输和事件交付格式

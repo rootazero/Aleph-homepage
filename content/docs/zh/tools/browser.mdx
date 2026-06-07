@@ -1,8 +1,404 @@
 ---
-title: "浏览器工具"
-description: "浏览器自动化工具"
+title: "浏览器自动化"
+description: "通过 CDP 控制 Chromium 浏览器进行网页导航、交互和数据提取"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/tools/browser)。
+## 概述
+
+Aleph 包含一个完整的浏览器自动化系统，使 AI agent 能够导航网页、与页面元素交互、提取内容和捕获屏幕截图。该系统使用 Chrome DevTools Protocol (CDP) 控制 Chromium 实例，并使用 ARIA 无障碍树进行结构化页面理解。
+
+**源位置：**
+- 运行时：`src/browser/runtime.rs`
+- 操作：`src/browser/actions.rs`
+- 快照：`src/browser/snapshot.rs`
+- 类型：`src/browser/types.rs`
+- 工具包装器：`src/builtin_tools/browser.rs`
+- 发现：`src/browser/discovery.rs`
+
+## 架构
+
+```
+┌─────────────────────────────────────────────┐
+│               BrowserTool                    │
+│          (AlephTool interface)               │
+│                                             │
+│  Arc<Mutex<Option<BrowserRuntime>>>          │
+│  Optional ApprovalPolicy                    │
+└──────────────────┬──────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│             BrowserRuntime                   │
+│        (CDP transport layer)                │
+│                                             │
+│  Browser (chromiumoxide)                    │
+│  HashMap<TabId, Page>                       │
+│  CDP event loop (tokio task)               │
+└──────────────────┬──────────────────────────┘
+                   │ Chrome DevTools Protocol
+                   ▼
+┌─────────────────────────────────────────────┐
+│             Chromium Instance                │
+│      (headless or headed mode)              │
+└─────────────────────────────────────────────┘
+```
+
+`BrowserTool` 是 agent 与之交互的 `AlephTool` 实现。它将 `BrowserRuntime` 包装在 `Arc<Mutex<Option<...>>>` 中，以便工具可以被克隆（`AlephTool` trait 所需），同时共享单个浏览器实例。`BrowserRuntime` 通过 `chromiumoxide` crate 管理实际的 Chromium 进程。
+
+## 启动模式
+
+Aleph 支持三种获取浏览器实例的方式：
+
+| 模式 | 描述 | 配置 |
+|------|------|------|
+| **Auto** | 自动在系统上发现 Chromium 二进制文件 | `LaunchMode::Auto` |
+| **Binary** | 使用特定的浏览器可执行文件路径 | `LaunchMode::Binary { path }` |
+| **Connect** | 通过 WebSocket 连接到现有浏览器 | `LaunchMode::Connect { endpoint }` |
+
+### 浏览器配置
+
+```rust
+pub struct BrowserConfig {
+    pub mode: LaunchMode,           // Auto, Binary, 或 Connect
+    pub headless: bool,             // 无头模式（默认：false）
+    pub cdp_port: u16,              // CDP 端口（默认：9222）
+    pub user_data_dir: Option<String>, // 自定义配置文件目录
+    pub extra_args: Vec<String>,    // 额外的 Chromium 命令行参数
+}
+```
+
+### Chromium 发现
+
+在 `Auto` 模式下，Aleph 会在已知位置搜索 Chromium。`find_chromium()` 函数检查平台特定的路径以定位合适的浏览器二进制文件。
+
+## 浏览器工具
+
+`browser` 工具通过单个 `action` 参数暴露所有浏览器操作。这种设计为 agent 提供了统一的界面，无需记住几十个单独的工具名称。
+
+### 典型工作流
+
+agent 遵循此工作流与网页交互：
+
+```
+start -> open_tab -> snapshot -> click/type/fill -> screenshot -> stop
+```
+
+1. **启动**浏览器（headed 或 headless）
+2. **打开标签页**到 URL
+3. **拍摄快照**以获取带有 `ref_id` 的 ARIA 无障碍树
+4. 使用快照中的 `ref_id` **交互**元素
+5. **截图**以直观验证结果
+6. 完成后 **停止**浏览器
+
+### 操作参考
+
+#### 生命周期
+
+| 操作 | 描述 | 参数 |
+|------|------|------|
+| `start` | 启动浏览器实例 | 可选：`headless` (bool) |
+| `stop` | 关闭浏览器 | 无 |
+
+```json
+{ "action": "start" }
+{ "action": "start", "headless": true }
+{ "action": "stop" }
+```
+
+#### 标签页管理
+
+| 操作 | 描述 | 参数 |
+|------|------|------|
+| `open_tab` | 打开新标签页 | `url` (必需) |
+| `close_tab` | 关闭现有标签页 | `tab_id` (必需) |
+| `list_tabs` | 列出所有打开的标签页 | 无 |
+| `navigate` | 将标签页导航到 URL | `tab_id`, `url` (均必需) |
+
+```json
+{ "action": "open_tab", "url": "https://example.com" }
+{ "action": "list_tabs" }
+{ "action": "navigate", "tab_id": "ABC123", "url": "https://other.com" }
+{ "action": "close_tab", "tab_id": "ABC123" }
+```
+
+#### 元素交互
+
+| 操作 | 描述 | 参数 |
+|------|------|------|
+| `click` | 点击元素 | `tab_id`, `ref_id` 或 `selector` |
+| `type` | 向元素追加文本 | `tab_id`, `ref_id` 或 `selector`, `text` |
+| `fill` | 替换元素值 | `tab_id`, `ref_id` 或 `selector`, `text` |
+| `scroll` | 滚动页面或元素 | `tab_id`, `direction` (up/down/left/right) |
+| `hover` | 悬停在元素上 | `tab_id`, `ref_id` 或 `selector` |
+
+```json
+{ "action": "click", "tab_id": "ABC123", "ref_id": "e42" }
+{ "action": "type", "tab_id": "ABC123", "ref_id": "e7", "text": "search query" }
+{ "action": "fill", "tab_id": "ABC123", "selector": "input#email", "text": "user@example.com" }
+{ "action": "scroll", "tab_id": "ABC123", "direction": "down" }
+{ "action": "hover", "tab_id": "ABC123", "ref_id": "e15" }
+```
+
+#### 观察
+
+| 操作 | 描述 | 参数 |
+|------|------|------|
+| `screenshot` | 将标签页捕获为 PNG | `tab_id`, 可选 `full_page` |
+| `snapshot` | 获取 ARIA 无障碍树 | `tab_id` |
+| `evaluate` | 在标签页中运行 JavaScript | `tab_id`, `js` |
+
+```json
+{ "action": "screenshot", "tab_id": "ABC123", "full_page": true }
+{ "action": "snapshot", "tab_id": "ABC123" }
+{ "action": "evaluate", "tab_id": "ABC123", "js": "document.title" }
+```
+
+## 元素定位
+
+元素可以使用三种方法定位，按优先级排序：
+
+### 1. ARIA Ref ID（首选）
+
+ARIA 快照中的每个元素都有一个唯一的 `ref_id`。这是最可靠的定位方法，因为它通过无障碍树位置引用元素：
+
+```json
+{ "action": "click", "tab_id": "...", "ref_id": "e42" }
+```
+
+agent 通过首先拍摄 `snapshot` 来获取 `ref_id`：
+
+```json
+{ "action": "snapshot", "tab_id": "..." }
+```
+
+返回：
+
+```json
+{
+  "elements": [
+    {
+      "ref_id": "e1",
+      "role": "heading",
+      "name": "Welcome",
+      "bounds": { "x": 100, "y": 50, "width": 300, "height": 40 }
+    },
+    {
+      "ref_id": "e42",
+      "role": "button",
+      "name": "Submit",
+      "state": ["focused"],
+      "bounds": { "x": 200, "y": 400, "width": 120, "height": 36 }
+    }
+  ],
+  "page_title": "My Page",
+  "page_url": "https://example.com",
+  "focused_ref": "e42"
+}
+```
+
+### 2. CSS 选择器
+
+当 `ref_id` 不可用时，使用 CSS 选择器：
+
+```json
+{ "action": "click", "tab_id": "...", "selector": "button.submit" }
+{ "action": "fill", "tab_id": "...", "selector": "#login-form input[type='email']", "text": "user@example.com" }
+```
+
+选择器使用 `document.querySelector()` 和 `getBoundingClientRect()` 解析。
+
+### 3. 坐标（内部）
+
+操作最终内部解析为视口坐标 `(x, y)`。`Coordinates` 变体存在用于编程用途，但通常不直接由 agent 使用。
+
+## 操作实现
+
+所有浏览器操作都通过将目标解析为视口坐标，然后在页面上下文中执行 JavaScript 来工作：
+
+### Click
+
+将目标解析为 `(x, y)`，然后使用 `document.elementFromPoint(x, y).click()`。
+
+### Type
+
+聚焦目标元素，然后向其 `value` 属性追加文本并调度 `input` 事件，设置 `bubbles: true`。
+
+### Fill
+
+与 type 类似，但替换整个值而不是追加。调度 `input` 和 `change` 事件以确保框架（React, Vue 等）检测到更改。
+
+### Scroll
+
+使用 `scrollBy()` 设置 `behavior: 'smooth'` 和在指定方向上固定增量 300px。
+
+### Hover
+
+在目标坐标调度 `mouseenter` 和 `mouseover` 事件以触发 CSS `:hover` 样式和 JavaScript 事件监听器。
+
+## 屏幕截图
+
+屏幕截图以 PNG（默认）或 JPEG 捕获，并作为 Base64 编码数据返回：
+
+```rust
+pub struct ScreenshotResult {
+    pub data_base64: String,  // Base64 编码图像
+    pub width: u32,           // 图像宽度（像素）
+    pub height: u32,          // 图像高度（像素）
+    pub format: String,       // "png" 或 "jpeg"
+}
+```
+
+### 选项
+
+| 选项 | 类型 | 默认 | 描述 |
+|------|------|------|------|
+| `full_page` | boolean | false | 捕获整个可滚动页面 |
+| `format` | string | "png" | 图像格式：`png`, `jpeg`, `webp` |
+| `quality` | integer | 80 | JPEG 质量（1-100） |
+
+## ARIA 无障碍快照
+
+无障碍快照提供页面的结构化表示：
+
+```rust
+pub struct AriaSnapshot {
+    pub elements: Vec<AriaElement>,   // 元素扁平列表
+    pub page_title: Option<String>,   // 文档标题
+    pub page_url: Option<String>,     // 当前 URL
+    pub focused_ref: Option<String>,  // 当前聚焦元素
+}
+
+pub struct AriaElement {
+    pub ref_id: String,               // 唯一引用 ID
+    pub role: String,                 // ARIA 角色（button, textbox, link 等）
+    pub name: Option<String>,         // 无障碍名称
+    pub value: Option<String>,        // 当前值（用于输入）
+    pub state: Vec<String>,           // 状态（focused, checked, disabled 等）
+    pub bounds: Option<ElementRect>,  // 视口位置和大小
+    pub children: Vec<AriaElement>,   // 嵌套元素
+}
+```
+
+快照是 agent 理解页面结构的主要方式。通过读取 ARIA 树，agent 可以识别交互元素、理解其用途，并通过 `ref_id` 定位它们。
+
+## 审批策略
+
+浏览器工具支持用于控制敏感操作的审批策略。当配置时，变更操作需要审批才能执行：
+
+| 操作类别 | 需要审批 |
+|----------|----------|
+| `start`, `stop` | 否 |
+| `list_tabs`, `screenshot`, `snapshot`, `scroll`, `hover` | 否（只读） |
+| `open_tab`, `navigate` | 是（导航） |
+| `click` | 是（变更） |
+| `type`, `fill` | 是（输入） |
+| `evaluate` | 是（JavaScript 执行） |
+
+```rust
+let policy = Arc::new(MyApprovalPolicy::new());
+let tool = BrowserTool::new().with_approval_policy(policy);
+```
+
+当策略拒绝操作时：
+
+```json
+{
+  "success": false,
+  "message": "Action denied by approval policy: navigation to untrusted domain"
+}
+```
+
+当策略需要用户确认时：
+
+```json
+{
+  "success": false,
+  "message": "Approval required: Confirm navigation to https://example.com",
+  "data": {
+    "approval_required": true,
+    "prompt": "Confirm navigation to https://example.com"
+  }
+}
+```
+
+## 配置
+
+在 Aleph 的配置中配置浏览器工具：
+
+```json
+{
+  "browser": {
+    "headless": false,
+    "cdp_port": 9222,
+    "user_data_dir": "~/.aleph/browser-profile",
+    "extra_args": [
+      "--disable-blink-features=AutomationControlled",
+      "--disable-infobars",
+      "--no-first-run"
+    ]
+  }
+}
+```
+
+<Callout type="info">
+标志 `--disable-blink-features=AutomationControlled` 和 `--disable-infobars` 会自动添加以减少反机器人系统的检测。
+</Callout>
+
+## 优雅降级
+
+当没有浏览器运行时，操作调用返回友好的消息而不是抛出错误：
+
+```json
+{
+  "success": false,
+  "message": "Browser is not running. Use action 'start' to launch a browser first."
+}
+```
+
+这允许 agent 检测到需要浏览器并启动一个，而无需错误处理样板代码。
+
+## 安全注意事项
+
+- **进程隔离**：浏览器作为具有自己沙箱的单独 Chromium 进程运行
+- **无头模式**：在生产环境中使用 `headless: true` 以防止视觉干扰
+- **审批策略**：通过审批系统控制敏感操作（导航、JavaScript 执行）
+- **用户数据目录**：使用专用的浏览器配置文件以将 cookie 和存储与用户的个人浏览器隔离
+- **JavaScript 评估**：`evaluate` 操作可以在页面上下文中执行任意 JS —— 这很强大，但应在安全敏感部署中通过审批策略控制
+- **反自动化标志**：默认 Chromium 标志减少机器人检测，但某些网站仍可能阻止自动化访问
+
+## 示例：搜索和提取
+
+使用浏览器工具的典型 agent 工作流：
+
+```
+Agent: I'll search for the latest Rust release notes.
+
+1. browser(action="start", headless=true)
+   -> "Browser started successfully."
+
+2. browser(action="open_tab", url="https://blog.rust-lang.org/")
+   -> { "tab_id": "TAB_001" }
+
+3. browser(action="snapshot", tab_id="TAB_001")
+   -> { elements: [
+        { ref_id: "e1", role: "heading", name: "Rust Blog" },
+        { ref_id: "e5", role: "link", name: "Rust 1.84.0" },
+        ...
+      ]}
+
+4. browser(action="click", tab_id="TAB_001", ref_id="e5")
+   -> "Clicked."
+
+5. browser(action="snapshot", tab_id="TAB_001")
+   -> { elements: [{ ref_id: "e1", role: "heading", name: "Announcing Rust 1.84.0" }, ...] }
+
+6. browser(action="evaluate", tab_id="TAB_001", js="document.body.innerText")
+   -> "Announcing Rust 1.84.0 ..."
+
+7. browser(action="stop")
+   -> "Browser stopped."
+```
+
+agent 使用快照来理解页面结构，通过 `ref_id` 点击链接，并通过 JavaScript 评估提取内容。

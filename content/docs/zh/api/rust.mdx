@@ -1,8 +1,388 @@
 ---
 title: "Rust API"
-description: "Aleph Rust crate API 文档"
+description: "用于将 Aleph 嵌入为库的核心 crate 参考"
 ---
 
-> 此页面正在翻译中。
+`alephcore` crate 是为每个 Aleph 组件提供支持的 Rust 库——Gateway 守护进程、CLI、桌面应用和消息接口。你也可以直接将其用作库，将 Aleph 的 AI Agent 能力嵌入到你自己的 Rust 应用程序中。
 
-请参阅[英文版](/en/docs/api/rust)。
+```toml
+# Cargo.toml
+[dependencies]
+alephcore = { path = "../Aleph/core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+## Crate 元数据
+
+| 字段 | 值 |
+|-------|-------|
+| Crate 名称 | `alephcore` |
+| 版本 | 2021 |
+| 最低 Rust 版本 | 1.92 |
+| Crate 类型 | `rlib`、`cdylib` |
+| 异步运行时 | Tokio（多线程） |
+
+## 模块层次结构
+
+该 crate 按领域特定模块组织。所有公共模块从 `lib.rs` 重新导出。
+
+```text
+alephcore
+  ├── agent_loop      # OTAF 执行引擎
+  ├── agents          # Agent 定义、子 Agent、群体
+  ├── approval        # 用户审批工作流
+  ├── browser         # CDP 浏览器自动化
+  ├── builtin_tools   # 内置工具实现
+  ├── capability      # 能力检测
+  ├── cli             # CLI 助手（inquire 提示）
+  ├── command         # 命令定义
+  ├── components      # 可重用组件
+  ├── compressor      # 上下文压缩
+  ├── conversation    # 多轮对话管理
+  ├── daemon          # 主动 AI 守护进程（worldmodel、perception）
+  ├── desktop         # 桌面集成
+  ├── discovery       # 服务发现
+  ├── dispatcher      # 统一工具注册表和调度
+  ├── domain          # 领域建模类型
+  ├── engine          # 引擎协调
+  ├── event           # 事件类型
+  ├── exec            # 命令执行和安全内核
+  ├── executor        # 任务执行器
+  ├── extension       # 插件/扩展系统
+  ├── gateway*        # WebSocket JSON-RPC 服务器（功能门控）
+  ├── generation      # 内容生成提供商
+  ├── intent          # 意图路由
+  ├── logging         # 带 PII 清理的结构化日志
+  ├── markdown        # Markdown 处理
+  ├── mcp             # Model Context Protocol 集成
+  ├── memory          # 记忆存储和检索
+  ├── metrics         # 性能遥测
+  ├── payload         # 请求/响应负载
+  ├── permission      # 权限管理
+  ├── pii             # PII 检测和清理
+  ├── poe             # 原则-操作-评估任务
+  ├── prompt          # 提示词构建
+  ├── providers       # AI 提供商抽象
+  ├── resilient       # 弹性任务执行
+  ├── routing         # 会话密钥路由
+  ├── runtimes        # 能力探测/分类账（检测和引导外部工具）
+  ├── scheduler       # 任务调度
+  ├── search          # 搜索提供商
+  ├── secrets         # 密钥管理
+  ├── skill           # 单个技能类型
+  ├── skills          # 技能注册表和管理
+  ├── skill_evolution # 技能固化和进化
+  ├── spec_driven     # 规范驱动开发工作流
+  ├── supervisor      # PTY 进程监督
+  ├── thinker         # LLM 决策层
+  ├── tools           # 工具 trait 系统
+  ├── video           # 视频转录提取
+  ├── vision          # 视觉/图像处理
+  └── wizard          # 配置向导流程
+```
+
+标记 `*` 的模块是功能门控的。参见下面的 [功能标志](#功能标志)。
+
+## 关键公共类型
+
+### 配置
+
+| 类型 | 模块 | 描述 |
+|------|--------|-------------|
+| `Config` | `config` | 主配置结构体（从 `config.toml` 解析） |
+| `FullConfig` | `config` | 包含所有部分的完整配置 |
+| `ProviderConfig` | `config` | 每个提供商的设置（模型、API 密钥、基础 URL） |
+| `MemoryConfig` | `config` | 记忆系统设置 |
+| `BehaviorConfig` | `config` | Agent 行为调整 |
+| `RoutingRuleConfig` | `config` | 意图路由规则 |
+| `GeneralConfig` | `config` | 一般应用程序设置 |
+
+### Agent 循环
+
+| 类型 | 模块 | 描述 |
+|------|--------|-------------|
+| `AgentLoop` | `agent_loop` | 核心 OTAF 执行引擎 |
+| `AgentLoopBuilder` | `agent_loop::builder` | `AgentLoop` 构造的构建器模式 |
+| `LoopConfig` | `agent_loop::config` | 循环执行参数（最大迭代次数、超时） |
+| `LoopResult` | `agent_loop` | Agent 循环运行的最终结果 |
+| `LoopState` | `agent_loop::state` | 跨迭代携带的可变状态 |
+| `RequestContext` | `agent_loop::state` | 每次请求的元数据（会话、身份、附件） |
+| `Message` | `agent_loop::message_builder` | 带角色和内容的聊天消息 |
+| `ToolCall` | `agent_loop::message_builder` | 工具调用记录 |
+| `Decision` | `agent_loop::decision` | 解析的 LLM 决策（响应、调用工具、委托、停止） |
+
+### Thinker（LLM 层）
+
+| 类型 | 模块 | 描述 |
+|------|--------|-------------|
+| `Thinker<P>` | `thinker` | 参数化 `ProviderRegistry` 的通用 LLM 决策引擎 |
+| `ThinkerConfig` | `thinker` | 提示词、过滤、路由和压缩设置 |
+| `ProviderRegistry` | `thinker` | 提供商查找和选择的 trait |
+| `SingleProviderRegistry` | `thinker` | 包装单个 `AiProvider` 的简单注册表 |
+| `PromptBuilder` | `thinker::prompt_builder` | 从上下文构建系统 + 用户提示词 |
+| `ThinkerModelSelector` | `thinker::model_router` | 基于规则将请求路由到模型 |
+
+### 工具系统
+
+| 类型 | 模块 | 描述 |
+|------|--------|-------------|
+| `AlephTool` | `tools` | 静态分发 trait——编译时类型化工具 |
+| `AlephToolDyn` | `tools` | 动态分发 trait——运行时加载的工具（MCP、插件） |
+| `AlephToolServer` | `tools` | 支持热重载的工具服务器 |
+| `AlephToolServerHandle` | `tools` | 运行中工具服务器的线程安全句柄 |
+| `ToolRegistry` | `dispatcher` | 聚合所有工具来源的统一注册表 |
+| `ToolDefinition` | `dispatcher` | 工具元数据（名称、描述、JSON Schema、类别） |
+| `UnifiedTool` | `dispatcher` | 统一原生、MCP、技能和插件工具的包装器 |
+| `ToolResult` | `dispatcher` | 任何工具的执行结果 |
+
+### 提供商
+
+| 类型 | 模块 | 描述 |
+|------|--------|-------------|
+| `AiProvider` | `providers` | AI 后端的核心 trait（process、process_with_tools、stream） |
+| `HttpProvider` | `providers::http_provider` | 协议无关的 HTTP 提供商 |
+| `OllamaProvider` | `providers::ollama` | 原生 Ollama 集成 |
+| `FailoverProvider` | `providers::failover` | 自动提供商故障转移 |
+| `AuthProfileManager` | `providers::profile_manager` | 多配置文件凭据轮换 |
+
+### 错误处理
+
+| 类型 | 模块 | 描述 |
+|------|--------|-------------|
+| `AlephError` | `error` | 具有 20+ 变体的统一错误枚举 |
+| `Result<T>` | `error` | `std::result::Result<T, AlephError>` 的类型别名 |
+
+每个 `AlephError` 变体都携带一个可选的 `suggestion` 字段，包含用户友好的修复建议。调用 `.suggestion()` 获取它，或 `.user_friendly_message()` 获取格式化的显示字符串。
+
+## 核心 Trait
+
+### `AlephTool` — 静态工具 Trait
+
+```rust
+#[async_trait]
+pub trait AlephTool: Clone + Send + Sync + 'static {
+    const NAME: &'static str;
+    const DESCRIPTION: &'static str;
+
+    type Args: Serialize + DeserializeOwned + JsonSchema + Send;
+    type Output: Serialize + Send;
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output>;
+
+    // 提供的方法
+    fn category(&self) -> ToolCategory { ToolCategory::Builtin }
+    fn requires_confirmation(&self) -> bool { false }
+    fn examples(&self) -> Option<Vec<String>> { None }
+    fn definition(&self) -> ToolDefinition { /* 自动生成 JSON Schema */ }
+}
+```
+
+全覆盖实现将任何 `AlephTool` 转换为 `AlephToolDyn`，因此静态工具可以存储在动态集合中：
+
+```rust
+let tools: Vec<Box<dyn AlephToolDyn>> = vec![
+    Box::new(SearchTool::new()),
+    Box::new(WebFetchTool::new()),
+];
+```
+
+### `AiProvider` — LLM 后端 Trait
+
+```rust
+pub trait AiProvider: Send + Sync {
+    fn process(&self, input: &str, system_prompt: Option<&str>)
+        -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>>;
+
+    fn process_with_tools(&self, messages: Vec<Message>, tools: Vec<ToolDefinition>, ...)
+        -> Pin<Box<dyn Future<Output = Result<LlmResponse>> + Send + '_>>;
+
+    fn name(&self) -> &str;
+    fn color(&self) -> &str;
+    fn model_id(&self) -> &str;
+}
+```
+
+Aleph 提供 OpenAI 兼容、Anthropic、Gemini 和 Ollama 协议的适配器。通过实现此 trait 或注册 YAML 定义的协议适配器来添加新的提供商。
+
+### `LoopCallback` — Agent 循环事件
+
+```rust
+pub trait LoopCallback: Send + Sync {
+    fn on_event(&self, event: LoopEvent);
+}
+```
+
+实现此 trait 以在 Agent 执行期间接收实时事件：迭代开始/结束、工具调用、思考步骤、错误和最终结果。内置实现包括 `LoggingCallback`、`CollectingCallback` 和 `NoOpLoopCallback`。
+
+## 功能标志
+
+| 功能 | 描述 | 依赖 |
+|---------|-------------|--------------|
+| `gateway`（默认） | WebSocket JSON-RPC 服务器 | tokio-tungstenite、axum、clap |
+| `telegram` | Telegram 机器人接口 | teloxide |
+| `discord` | Discord 机器人接口 | serenity |
+| `whatsapp` | WhatsApp 接口 | (gateway) |
+| `all-channels` | 所有消息通道 | telegram + discord + whatsapp |
+| `cron` | Cron 作业调度器 | cron、chrono-tz |
+| `cli` | 交互式 CLI 提示 | inquire |
+| `control-plane` | 嵌入式 Web UI | rust-embed |
+| `plugin-wasm` | WebAssembly 插件运行时 | extism |
+| `plugin-nodejs` | Node.js 插件运行时 | (占位符) |
+| `plugin-all` | 所有插件运行时 | plugin-wasm + plugin-nodejs |
+| `test-helpers` | 测试工具 | -- |
+
+使用功能组合控制二进制大小：
+
+```toml
+# 最小库使用（无服务器、无通道）
+alephcore = { path = "...", default-features = false }
+
+# 仅 Gateway + Telegram
+alephcore = { path = "...", features = ["gateway", "telegram"] }
+
+# 全部
+alephcore = { path = "...", features = ["gateway", "all-channels", "cron", "plugin-all"] }
+```
+
+## 使用示例
+
+### 运行 Agent 循环
+
+```rust
+use alephcore::{
+    AgentLoop, AgentLoopConfig, RequestContext,
+    Thinker, ThinkerConfig, SingleProviderRegistry,
+    ContextCompressor,
+};
+use alephcore::agent_loop::NoOpLoopCallback;
+use alephcore::providers::{create_provider, ProviderConfig};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> alephcore::Result<()> {
+    // 1. 初始化日志
+    alephcore::init_logging();
+
+    // 2. 创建 AI 提供商
+    let config = ProviderConfig::test_config("claude-sonnet-4-20250514");
+    let provider = create_provider("anthropic", config)?;
+
+    // 3. 构建 Thinker（LLM 层）
+    let registry = SingleProviderRegistry::new(provider);
+    let thinker = Thinker::new(
+        Arc::new(registry),
+        ThinkerConfig::default(),
+    );
+
+    // 4. 创建 Agent 循环
+    let loop_config = AgentLoopConfig::default();
+    let compressor = ContextCompressor;
+    let agent = AgentLoop::new(thinker, compressor, loop_config);
+
+    // 5. 运行
+    let result = agent.run(
+        "东京的天气怎么样？".to_string(),
+        RequestContext::empty(),
+        vec![], // 工具
+        NoOpLoopCallback,
+    ).await;
+
+    println!("结果: {:?}", result);
+    Ok(())
+}
+```
+
+### 实现自定义工具
+
+```rust
+use alephcore::tools::AlephTool;
+use alephcore::error::Result;
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone)]
+struct WeatherTool;
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct WeatherArgs {
+    /// 要查询天气的城市名称
+    city: String,
+    /// 温度单位（摄氏度或华氏度）
+    unit: Option<String>,
+}
+
+#[derive(Serialize)]
+struct WeatherOutput {
+    temperature: f64,
+    condition: String,
+    city: String,
+}
+
+#[async_trait]
+impl AlephTool for WeatherTool {
+    const NAME: &'static str = "weather";
+    const DESCRIPTION: &'static str = "获取城市的当前天气";
+
+    type Args = WeatherArgs;
+    type Output = WeatherOutput;
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output> {
+        // 你的实现在这里
+        Ok(WeatherOutput {
+            temperature: 22.0,
+            condition: "晴朗".into(),
+            city: args.city,
+        })
+    }
+
+    fn examples(&self) -> Option<Vec<String>> {
+        Some(vec![
+            "weather(city='东京')".into(),
+            "weather(city='伦敦', unit='celsius')".into(),
+        ])
+    }
+}
+```
+
+## 错误处理
+
+`AlephError` 是基于 `thiserror` 的枚举。每个变体都包含结构化上下文：
+
+```rust
+match result {
+    Err(AlephError::AuthenticationError { provider, message, suggestion }) => {
+        eprintln!("{} 的认证失败: {}", provider, message);
+        if let Some(hint) = suggestion {
+            eprintln!("提示: {}", hint);
+        }
+    }
+    Err(AlephError::RateLimitError { .. }) => {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        // 重试...
+    }
+    Err(e) => eprintln!("{}", e.user_friendly_message()),
+    Ok(val) => { /* 成功 */ }
+}
+```
+
+关键错误变体：`NetworkError`、`AuthenticationError`、`RateLimitError`、`ProviderError`、`Timeout`、`NoProviderAvailable`、`InvalidConfig`、`ConfigError`、`ToolNotFound`、`Cancelled`、`RuntimeError`、`ExecutionTimeout`、`SandboxUnavailable`。
+
+## 异步运行时
+
+Aleph 使用带 `rt-multi-thread` 功能的 Tokio。所有公共异步 API 返回与 Tokio 多线程运行时兼容的 `Send` Future。使用的关键 Tokio 功能：
+
+- `rt-multi-thread` -- 工作窃取线程池
+- `sync` -- 通道、互斥锁、RwLocks、信号量
+- `time` -- 超时、间隔、睡眠
+- `process` -- 子进程管理
+- `fs` -- 异步文件系统操作
+- `signal` -- Unix 信号处理
+- `net` -- TCP/UDP 网络
+
+## 另请参阅
+
+- [JSON-RPC API](/docs/zh/api/jsonrpc) — WebSocket RPC 方法参考
+- [架构](/docs/zh/architecture/overview) — 系统架构概览
+- [工具系统](/docs/zh/tools/overview) — 工具设计和内置工具
+- [Gateway](/docs/zh/gateway/overview) — Gateway 服务器文档

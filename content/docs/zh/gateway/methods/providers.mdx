@@ -1,25 +1,25 @@
 ---
 title: "providers.*"
-description: "AI 模型提供者配置 RPC 方法"
+description: "AI 模型提供商配置 RPC 方法"
 ---
 
-提供者方法管理 AI 模型提供者配置 —— LLM、嵌入和重排序服务端点、API 密钥和模型映射。
+提供商方法管理 AI 模型提供商配置——LLM、嵌入和重排序服务端点、API 密钥和模型映射。
 
 ## 命名空间
 
-提供者配置分为三个命名空间：
+提供商配置分为三个命名空间：
 
 | 命名空间 | 用途 |
 |-----------|---------|
 | `generation_providers.*` | LLM/文本生成模型（Claude、GPT 等） |
 | `embedding_providers.*` | 嵌入/向量化模型 |
-| `rerank_providers.*` | 搜索结果重排序模型 |
+| `rerank_providers.*` | 搜索结果的重排序模型 |
 
 ## generation_providers.*
 
 ### generation_providers.list
 
-列出所有已配置的生成提供者。
+列出所有配置的生成提供商。
 
 **请求：**
 ```json
@@ -52,7 +52,7 @@ description: "AI 模型提供者配置 RPC 方法"
 
 ### generation_providers.add
 
-添加新的生成提供者。
+添加新的生成提供商。
 
 **请求：**
 ```json
@@ -73,7 +73,7 @@ description: "AI 模型提供者配置 RPC 方法"
 
 ### generation_providers.update
 
-更新现有生成提供者。
+更新现有的生成提供商。
 
 **请求：**
 ```json
@@ -90,7 +90,7 @@ description: "AI 模型提供者配置 RPC 方法"
 
 ### generation_providers.delete
 
-删除生成提供者。
+删除生成提供商。
 
 **请求：**
 ```json
@@ -106,7 +106,7 @@ description: "AI 模型提供者配置 RPC 方法"
 
 ### generation_providers.status
 
-获取提供者状态和健康度。
+获取提供商状态和健康。
 
 **请求：**
 ```json
@@ -136,7 +136,7 @@ description: "AI 模型提供者配置 RPC 方法"
 
 ## embedding_providers.*
 
-嵌入提供者遵循与生成提供者相同的模式：
+嵌入提供商遵循与生成提供商相同的模式：
 
 - `embedding_providers.list`
 - `embedding_providers.add`
@@ -146,7 +146,7 @@ description: "AI 模型提供者配置 RPC 方法"
 
 ## rerank_providers.*
 
-重排序提供者遵循相同的模式：
+重排序提供商遵循相同的模式：
 
 - `rerank_providers.list`
 - `rerank_providers.add`
@@ -154,9 +154,9 @@ description: "AI 模型提供者配置 RPC 方法"
 - `rerank_providers.delete`
 - `rerank_providers.status`
 
-## 提供者配置文件
+## 提供商配置文件
 
-提供者在 `~/.aleph/config.toml` 中配置：
+提供商在 `~/.aleph/config.toml` 中配置：
 
 ```toml
 [generation_providers.anthropic]
@@ -168,7 +168,7 @@ api_key = "sk-..."
 model = "text-embedding-3-small"
 ```
 
-## 参见
+## 另请参阅
 
-- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
-- [快速开始：配置](/docs/zh/getting-started/configuration) -- 提供者设置
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [入门：配置](/docs/zh/getting-started/configuration)——提供商设置

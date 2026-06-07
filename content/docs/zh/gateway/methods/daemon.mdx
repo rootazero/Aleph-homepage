@@ -3,7 +3,7 @@ title: "daemon.*"
 description: "守护进程控制和生命周期 RPC 方法"
 ---
 
-守护进程方法控制 Aleph 后台守护进程 —— 启动、停止、重启和查询托管网关和管理所有子系统的守护进程。
+守护进程方法控制 Aleph 后台守护进程——启动、停止、重启和查询托管网关并管理所有子系统的守护进程。
 
 ## 方法
 
@@ -96,7 +96,7 @@ description: "守护进程控制和生命周期 RPC 方法"
 
 **参数：**
 
-| 参数 | 类型 | 必填 | 描述 |
+| 参数 | 类型 | 必填 | 说明 |
 |-----------|------|----------|-------------|
 | `force` | boolean | 否 | 强制停止而不优雅关闭 |
 
@@ -118,7 +118,7 @@ description: "守护进程控制和生命周期 RPC 方法"
 
 ### daemon.reload
 
-不重启守护进程而重新加载配置。
+不重启重新加载守护进程配置。
 
 **请求：**
 ```json
@@ -153,7 +153,7 @@ aleph-server restart  # 重启守护进程
 aleph-server status   # 检查状态
 ```
 
-## 参见
+## 另请参阅
 
-- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
-- [快速开始：快速开始](/docs/zh/getting-started/quick-start) -- 守护进程设置
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [入门：快速入门](/docs/zh/getting-started/quick-start)——守护进程设置

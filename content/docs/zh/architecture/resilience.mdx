@@ -1,6 +1,402 @@
 ---
 title: "弹性系统"
-description: "状态持久化、影子重放与优雅关闭"
+description: "多代理弹性、任务恢复和容错"
 ---
 
-此页面正在翻译中。请参阅[英文版](/en/docs/architecture/resilience)。
+弹性系统使 Aleph 具有容错性。它确保中断的任务可以被恢复，运行中的代理可以优雅地检查点，并且系统在故障下可预测地降级。该系统围绕基于 SQLite 的 `StateDatabase` 和三个核心机制构建：**影子重放**、**优雅关闭**和**风险感知恢复**。
+
+## 架构概览
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     弹性系统                                      │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  ┌──────────────┐  ┌────────────────┐  ┌──────────────────────┐ │
+│  │   恢复        │  │   优雅关闭     │  │   协作               │ │
+│  │   管理器      │  │               │  │   协调器             │ │
+│  │              │  │               │  │                      │ │
+│  │  扫描任务    │  │  SIGTERM 陷阱 │  │  会话即服务          │ │
+│  │  风险评估    │  │  检查点       │  │  上下文交换          │ │
+│  │  自动恢复    │  │  标记任务     │  │  句柄重用            │ │
+│  └──────┬───────┘  └───────┬───────┘  └──────────┬───────────┘ │
+│         │                   │                      │             │
+│         └───────────────────┼──────────────────────┘             │
+│                             │                                     │
+│                   ┌─────────┴─────────┐                          │
+│                   │   StateDatabase    │                          │
+│                   │     (SQLite)       │                          │
+│                   │                   │                          │
+│                   │  - events         │                          │
+│                   │  - tasks          │                          │
+│                   │  - traces         │                          │
+│                   │  - sessions       │                          │
+│                   └───────────────────┘                          │
+│                                                                   │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │                  影子重放引擎                                 │  │
+│  │  无需 LLM 从追踪重建对话状态                                │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## StateDatabase
+
+`StateDatabase` 是弹性系统的持久化支柱。它使用 SQLite（通过 rusqlite）存储四类数据：
+
+| 表 | 用途 | 关键字段 |
+|-------|---------|------------|
+| **events** | 分层事件持久化（骨架 + 脉冲） | `task_id`, `seq`, `event_type`, `is_structural` |
+| **tasks** | 任务状态和恢复元数据 | `id`, `status`, `risk_level`, `lane`, `checkpoint_snapshot_path` |
+| **traces** | 用于影子重放的执行追踪 | `task_id`, `step_index`, `role`, `content_json` |
+| **sessions** | 子代理会话生命周期 | `id`, `agent_type`, `status`, `context_path` |
+
+### 事件层级：骨架和脉冲
+
+事件遵循两层持久化模型：
+
+```rust
+impl AgentEvent {
+    // 结构化事件（骨架）—— 立即持久化
+    pub const TYPE_TASK_STARTED: &str = "task_started";
+    pub const TYPE_TOOL_CALL_STARTED: &str = "tool_call_started";
+    pub const TYPE_TOOL_CALL_COMPLETED: &str = "tool_call_completed";
+    pub const TYPE_ARTIFACT_CREATED: &str = "artifact_created";
+    pub const TYPE_TASK_COMPLETED: &str = "task_completed";
+    pub const TYPE_TASK_FAILED: &str = "task_failed";
+
+    // 流式事件（脉冲）—— 持久化前批量处理
+    pub const TYPE_AI_STREAMING: &str = "ai_streaming";
+}
+```
+
+**骨架事件**代表必须在崩溃后存活的状态转换。它们同步写入并用于恢复。**脉冲事件**是高频流式数据（逐 token 输出），可以批量处理，并且可以在不影响正确性的情况下丢弃。
+
+## 核心类型
+
+### AgentTask
+
+分派给子代理的每个任务都表示为 `AgentTask`：
+
+```rust
+pub struct AgentTask {
+    pub id: String,
+    pub parent_session_id: String,
+    pub agent_id: String,              // "explorer"、"coder" 等
+    pub task_prompt: String,
+    pub status: TaskStatus,
+    pub risk_level: RiskLevel,
+    pub lane: Lane,
+    pub checkpoint_snapshot_path: Option<String>,
+    pub last_tool_call_id: Option<String>,
+    pub recursion_depth: u32,
+    pub parent_task_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub metadata_json: Option<String>,
+}
+```
+
+### TaskStatus
+
+任务通过状态机移动：
+
+```
+                ┌──────────┐
+                │ Pending  │
+                └────┬─────┘
+                     │ start
+                ┌────▼─────┐
+         ┌──────│ Running  │──────┐
+         │      └────┬─────┘      │
+    SIGTERM     │         │    error
+         │      │ success  │      │
+     ┌────▼──────┐    ┌────▼─────┐ │
+     │Interrupted│    │Completed │ │
+     └───────────┘    └──────────┘ │
+                               ┌───▼────┐
+                               │ Failed │
+                               └────────┘
+```
+
+```rust
+pub enum TaskStatus {
+    Pending,      // 等待执行
+    Running,      // 当前正在执行
+    Completed,    // 成功完成
+    Failed,       // 以错误完成
+    Interrupted,  // 执行期间系统关闭
+    Idle,         // 暂停（会话即服务）
+    Swapped,      // 上下文交换到磁盘
+}
+
+impl TaskStatus {
+    pub fn is_recoverable(&self) -> bool {
+        matches!(self, TaskStatus::Running | TaskStatus::Interrupted)
+    }
+}
+```
+
+### RiskLevel
+
+风险等级驱动恢复决策：
+
+```rust
+pub enum RiskLevel {
+    Low,   // 只读操作 —— 安全自动恢复
+    High,  // 写操作 —— 需要用户确认
+}
+```
+
+### Lane
+
+通道系统在用户交互和后台工作之间提供资源隔离：
+
+```rust
+pub enum Lane {
+    Main,      // 用户交互、中止命令（高优先级）
+    Subagent,  // 后台工作（正常优先级）
+}
+```
+
+主通道永远不会被子代理工作饿死。面向用户的请求（对话、中止命令）始终获得优先调度。
+
+## 影子重放
+
+影子重放是一种确定性的任务恢复机制，无需消耗 LLM token。当任务中断时，其执行追踪（助手消息和工具结果的序列）存储在 StateDatabase 中。恢复时，重放这些追踪以重建确切的对话状态。
+
+### 工作原理
+
+```
+1. 执行期间：将每一步记录为 TaskTrace
+   ┌────────────┐     ┌────────────┐     ┌────────────┐
+   │ Assistant:  │────▶│ Tool:      │────▶│ Assistant:  │
+   │ "search..." │     │ result     │     │ "found..." │
+   │ step_index=0│     │ step_index=1│     │ step_index=2│
+   └────────────┘     └────────────┘     └────────────┘
+
+2. 崩溃时：任务标记为 Interrupted
+
+3. 恢复时：影子重放重建对话
+   ┌──────────────────────────────────────────┐
+   │  ShadowReplayEngine.replay_task(task_id)  │
+   │                                           │
+   │  从 DB 加载追踪                           │
+   │  将每个追踪转换为 Message                 │
+   │  返回 ReplayResult {                      │
+   │    messages: [msg1, msg2, msg3],          │
+   │    last_step: 2,                          │
+   │    last_tool_call_id: Some("call_xyz"),   │
+   │  }                                        │
+   └──────────────────────────────────────────┘
+
+4. 继续：代理循环从最后一步恢复
+   过去步骤无需 LLM 重新推理
+```
+
+### 追踪记录
+
+执行中的每一步都记录为 `TaskTrace`：
+
+```rust
+pub struct TaskTrace {
+    pub id: i64,
+    pub task_id: String,
+    pub step_index: u32,          // 从 0 开始的步骤计数器
+    pub role: TraceRole,          // Assistant | Tool
+    pub content_json: String,     // 序列化的消息内容
+    pub timestamp: i64,
+}
+
+pub enum TraceRole {
+    Assistant,  // LLM 输出（包括工具调用）
+    Tool,       // 工具执行结果
+}
+```
+
+### 发散检测
+
+重放后，系统执行"交接推理"检查。它询问 LLM 下一步会做什么，并将其与记录的下一步进行比较：
+
+```rust
+pub enum DivergenceStatus {
+    Aligned,    // LLM 同意记录的下一步
+    Diverged {  // LLM 想要不同的行动
+        expected_tool: String,
+        actual_tool: String,
+    },
+    ReachedEnd, // 没有更多记录的步骤 —— 开始实时执行
+}
+```
+
+如果 LLM 发散，系统可以遵循 LLM 的新方向（适应改变的状态）或继续记录的路径（保持确定性）。
+
+## 优雅关闭
+
+当 Aleph 收到 SIGTERM 或 SIGINT 时，`GracefulShutdown` 处理程序检查点所有正在运行的任务：
+
+```rust
+pub struct GracefulShutdown {
+    db: Arc<StateDatabase>,
+    shutdown_tx: broadcast::Sender<ShutdownSignal>,
+}
+
+pub enum ShutdownSignal {
+    Term,       // SIGTERM
+    Interrupt,  // SIGINT (Ctrl+C)
+    Requested,  // 程序化关闭
+}
+```
+
+检查点过程：
+
+1. 信号处理程序接收 SIGTERM/SIGINT
+2. 向所有子系统广播关闭信号
+3. 在 StateDatabase 中将所有 `Running` 任务标记为 `Interrupted`
+4. 每个任务的追踪历史已经持久化（追踪在执行期间写入）
+5. 进程干净退出
+
+```rust
+impl GracefulShutdown {
+    pub async fn checkpoint(&self) -> Result<u64> {
+        // 将所有运行中的任务标记为中断
+        let count = self.db.mark_running_as_interrupted().await?;
+        info!(interrupted_tasks = count,
+              "将运行中的任务标记为中断以进行恢复");
+        Ok(count)
+    }
+}
+```
+
+重新启动时，恢复管理器找到这些中断的任务并决定如何处理它们。
+
+## 恢复管理器
+
+`RecoveryManager` 在启动时扫描可恢复的任务并做出风险感知决策：
+
+```rust
+pub enum RecoveryDecision {
+    AutoResume {
+        task: AgentTask,
+        replay_engine: Arc<ShadowReplayEngine>,
+    },
+    PendingConfirmation {
+        task: AgentTask,
+    },
+    Skip {
+        task_id: String,
+        reason: String,
+    },
+}
+```
+
+### 决策逻辑
+
+```
+对于每个 status = Running | Interrupted 的任务：
+    │
+    ├── 没有可用的追踪？
+    │   └── Skip("没有可用的执行追踪")
+    │
+    ├── RiskLevel::Low？
+    │   └── AutoResume（影子重放 + 继续）
+    │
+    └── RiskLevel::High？
+        └── PendingConfirmation（等待用户审批）
+```
+
+原理很简单：只读操作（文件搜索、代码分析）可以安全地自动重试。写操作（文件修改、shell 命令）需要人工确认，因为自中断以来系统状态可能已经改变。
+
+### 恢复摘要
+
+```rust
+pub struct RecoverySummary {
+    pub auto_resume_count: usize,
+    pub pending_confirmation_count: usize,
+    pub skipped_count: usize,
+    pub total_count: usize,
+}
+```
+
+启动时，Aleph 记录恢复摘要，并开始自动恢复低风险任务，同时将高风险任务排队等待用户确认。
+
+## 子代理会话（会话即服务）
+
+子代理会话允许专门的代理（explorer、coder、researcher）在多次任务调用中持久化：
+
+```rust
+pub struct SubagentSession {
+    pub id: String,
+    pub agent_type: String,        // "explorer"、"coder" 等
+    pub status: SessionStatus,     // Active | Idle | Swapped
+    pub context_path: Option<String>, // 交换上下文的磁盘路径
+    pub parent_session_id: String,
+    pub created_at: i64,
+    pub last_active_at: i64,
+    pub total_tokens_used: u64,
+    pub total_tool_calls: u64,
+}
+
+pub enum SessionStatus {
+    Active,   // 当前正在执行
+    Idle,     // 在内存中，等待重用
+    Swapped,  // 上下文序列化到磁盘
+}
+```
+
+### 上下文交换
+
+当内存压力高时，空闲会话可以交换到磁盘：
+
+```
+Active ──(任务完成)──▶ Idle ──(内存压力)──▶ Swapped
+                              │                              │
+                              │◀──(代理的新任务)───────┘
+                              │   (从磁盘反序列化)
+```
+
+交换的会话存储为序列化的上下文文件。当交换的代理类型有新任务到达时，系统反序列化上下文，会话以其完整的对话历史恢复。
+
+### 句柄重用
+
+会话句柄支持高效重用：
+
+```
+任务 1："搜索认证代码" → 生成 explorer 会话 (sess-001)
+任务 2："查找测试文件"  → 重用 explorer 会话 (sess-001)
+                                   (会话保留任务 1 的上下文)
+```
+
+这避免了为相关任务从头构建上下文的冷启动成本。
+
+## 模块结构
+
+```
+src/resilience/
+├── types.rs                   # 核心类型：AgentTask、TaskTrace、AgentEvent 等
+├── database/
+│   ├── mod.rs                 # 数据库模块入口
+│   ├── state_database.rs      # StateDatabase：SQLite 连接 + 初始化
+│   ├── events.rs              # 事件 CRUD 操作
+│   ├── tasks.rs               # 任务 CRUD 操作
+│   ├── traces.rs              # 追踪 CRUD 操作
+│   ├── sessions.rs            # 会话 CRUD 操作
+│   └── migration.rs           # 模式迁移
+├── recovery/
+│   ├── mod.rs                 # 恢复模块入口
+│   ├── manager.rs             # RecoveryManager：启动任务恢复
+│   ├── shadow_replay.rs       # ShadowReplayEngine：基于追踪的恢复
+│   ├── graceful_shutdown.rs   # GracefulShutdown：SIGTERM 处理程序
+│   └── risk_adapter.rs        # 风险等级评估工具
+├── collaboration/
+│   ├── mod.rs                 # 协作模块入口
+│   ├── coordinator.rs         # 多代理协调
+│   ├── handle.rs              # 会话句柄管理
+│   └── swapping.rs            # 上下文交换到/从磁盘
+└── tests/
+    ├── recovery_tests.rs      # 恢复集成测试
+    └── governance_tests.rs    # 治理策略测试
+```

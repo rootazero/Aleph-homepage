@@ -1,6 +1,110 @@
 ---
-title: "多智能体韧性"
-description: "多智能体任务追踪、事件持久化和会话恢复的状态数据库和核心类型。"
+title: "多代理弹性"
+description: "用于多代理任务跟踪、事件持久化和会话恢复的状态数据库和核心类型。"
 ---
 
-This page is in progress. Please refer to the [English version](/docs/concepts/resilience).
+`resilience` 模块提供多代理弹性的数据库层和核心类型。它在 SQLite 中跟踪代理任务、事件、跟踪和子代理会话，以进行恢复和可观察性。
+
+## 设计理念
+
+1. **持久状态** — 所有代理状态通过 SQLite 在重启后生存
+2. **结构化跟踪** — 任务执行跟踪启用用于调试的影子重放
+3. **会话生命周期** — 子代理会话跟踪创建、空闲和交换状态
+4. **分层事件** — 骨架事件用于结构，Pulse 事件用于细节
+
+## 核心类型
+
+### TaskStatus
+
+任务通过状态机进行：
+
+```rust
+pub enum TaskStatus {
+    Pending,      // 等待执行
+    Running,      // 当前正在执行
+    Completed,    // 成功
+    Failed,       // 发生错误
+    Interrupted,  // 系统重启
+    Idle,         // 暂停 (会话即服务)
+    Swapped,      // 上下文交换到磁盘
+}
+```
+
+### AgentTask
+
+具有恢复检查点的任务：
+
+```rust
+pub struct AgentTask {
+    pub task_id: String,
+    pub status: TaskStatus,
+    pub lane: Lane,           // 执行车道 (Sequential/Parallel)
+    pub risk_level: RiskLevel,// Low/Medium/High/Critical
+    pub checkpoint_data: Option<String>,// 用于恢复的序列化状态
+}
+```
+
+### TaskTrace
+
+用于影子重放的结构化执行跟踪：
+
+```rust
+pub struct TaskTrace {
+    pub trace_id: String,
+    pub task_id: String,
+    pub events: Vec<TaskTraceInfo>,
+}
+```
+
+### SubagentSession
+
+长期子代理会话管理：
+
+```rust
+pub struct SubagentSession {
+    pub session_id: String,
+    pub status: SessionStatus,
+    pub idle_since: Option<DateTime<Utc>>,
+    pub swapped_at: Option<DateTime<Utc>>,
+}
+```
+
+## StateDatabase
+
+SQLite 数据库提供 CRUD 操作：
+
+| 表 | 目的 |
+|-------|---------|
+| `events` | 代理事件 (骨架 + Pulse 层级) |
+| `tasks` | 具有状态和检查点的代理任务 |
+| `traces` | 任务执行跟踪 |
+| `sessions` | 子代理会话 |
+| `memory_events` | 内存支持的事件索引 |
+
+### 模式
+
+模式在 `migration.rs` 中具有迁移工具进行版本控制。关键索引：
+
+- `tasks(task_id, status)` — 按状态的任务查找
+- `events(event_id, created_at)` — 事件时间范围查询
+- `traces(trace_id, task_id)` — 跟踪到任务映射
+
+## 安全
+
+- **整数溢出预防** — `usize` 到 `i64` 转换使用 `try_from` 并带有 `i64::MAX` 回退
+- **锁安全** — 所有 `lock()` 调用使用 `unwrap_or_else(|e| e.into_inner())`
+- **参数化查询** — 所有 SQL 使用 `params![]`，无字符串插值
+- **无 static mut** — `AtomicBool` 用于标志
+
+## 关键源文件
+
+- `src/resilience/mod.rs` — 模块概览
+- `src/resilience/types.rs` — 核心类型 (AgentTask, TaskTrace 等)
+- `src/resilience/database/state_database.rs` — SQLite CRUD 操作
+- `src/resilience/database/migration.rs` — 模式版本控制
+
+## 另请参阅
+
+- [代理运行时](/docs/zh/concepts/agent-runtime) — 代理执行循环
+- [任务调度](/docs/zh/concepts/task-scheduling) — 任务队列和调度
+- [事件系统](/docs/zh/concepts/event-system) — 事件总线架构

@@ -1,8 +1,201 @@
 ---
-title: "执行方法"
-description: "命令执行 RPC 方法"
+title: "exec.*"
+description: "执行 RPC 方法"
 ---
 
-> 此页面正在翻译中。
+具有三层安全性的命令执行审批系统。
 
-请参阅[英文版](/en/docs/gateway/methods/exec)。
+:::warning
+本页记录的是预期 API。`exec.*` 方法（`exec.approval.request`、`exec.approval.resolve`、`exec.approvals.get`、`exec.approvals.set`、`exec.approvals.pending`）在源处理程序（`src/gateway/handlers/exec_approvals.rs`）中定义，但**当前未在运行时处理程序注册中接线**。它们反映的是设计目标，但尚未通过 JSON-RPC 公开。请参阅[方法参考](/docs/zh/gateway/methods)获取准确的方法列表。
+:::
+
+## 安全级别
+
+| 级别 | 说明 |
+|-------|-------------|
+| `deny` | 阻止所有命令 |
+| `allowlist` | 仅批准的规则 |
+| `full` | 允许所有内容 |
+
+## 方法
+
+### exec.approval.request
+
+请求命令执行审批。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "exec.approval.request",
+  "params": {
+    "command": "rm -rf /tmp/cache",
+    "cwd": "/home/user",
+    "agent_id": "main",
+    "session_key": "agent:main:main",
+    "timeout_ms": 120000
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "id": "approval-uuid",
+    "approved": true,
+    "decision": "allow_once",
+    "timeout": false
+  }
+}
+```
+
+### exec.approval.resolve
+
+解决待处理的审批请求。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "exec.approval.resolve",
+  "params": {
+    "id": "approval-uuid",
+    "decision": "allow_once",
+    "resolved_by": "user@terminal"
+  }
+}
+```
+
+**决策类型：**
+
+| 决策 | 说明 |
+|----------|-------------|
+| `allow_once` | 仅允许此执行 |
+| `allow_session` | 允许当前会话 |
+| `allowlist` | 添加到永久允许列表 |
+| `deny` | 拒绝执行 |
+
+### exec.approvals.get
+
+获取当前审批配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "exec.approvals.get"
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "config": {
+      "version": 1,
+      "security": "allowlist",
+      "allowlist": [
+        "git *",
+        "npm install",
+        "cargo build"
+      ],
+      "denylist": [
+        "rm -rf /"
+      ]
+    },
+    "hash": "sha256:abc123..."
+  }
+}
+```
+
+### exec.approvals.set
+
+使用乐观锁定更新审批配置。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "exec.approvals.set",
+  "params": {
+    "config": {
+      "version": 1,
+      "security": "allowlist",
+      "allowlist": [
+        "git *",
+        "npm *",
+        "cargo *"
+      ]
+    },
+    "base_hash": "sha256:abc123..."
+  }
+}
+```
+
+### exec.approvals.pending
+
+列出待处理的审批请求。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "exec.approvals.pending"
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "pending": [
+      {
+        "id": "uuid-1",
+        "command": "sudo apt update",
+        "cwd": "/home/user",
+        "agent_id": "main",
+        "session_key": "agent:main:main",
+        "created_at": "2024-01-15T10:30:00Z"
+      }
+    ]
+  }
+}
+```
+
+## 允许列表模式
+
+模式支持 glob 风格匹配：
+
+| 模式 | 匹配项 |
+|---------|---------|
+| `git *` | 任何 git 命令 |
+| `npm install` | 精确匹配 |
+| `cargo build --*` | 带有任何参数的 cargo build |
+| `ls -la /tmp/*` | /tmp 子目录中的 ls |
+
+## IPC 集成
+
+对于 CLI 集成，Aleph 支持 Unix 套接字 IPC：
+
+```
+/tmp/aleph-exec-{user}.sock
+```
+
+IPC 协议使用 HMAC-SHA256 进行认证：
+
+1. 客户端发送质询请求
+2. 服务器响应 nonce
+3. 客户端使用共享密钥签名
+4. 服务器验证并继续

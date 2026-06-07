@@ -3,7 +3,7 @@ title: "plugins.*"
 description: "插件管理 RPC 方法"
 ---
 
-插件方法管理插件系统 —— 加载、卸载、列出和配置扩展 Aleph 能力的插件。插件可以添加工具、处理器、事件监听器和自定义行为。
+插件方法管理插件系统——加载、卸载、列出和配置扩展 Aleph 功能的插件。插件可以添加工具、处理程序、事件监听器和自定义行为。
 
 ## 方法
 
@@ -104,16 +104,16 @@ description: "插件管理 RPC 方法"
 
 **参数：**
 
-| 参数 | 类型 | 必填 | 描述 |
+| 参数 | 类型 | 必填 | 说明 |
 |-----------|------|----------|-------------|
 | `path` | string | 是* | 插件目录或文件的路径 |
-| `plugin_id` | string | 是* | 插件标识符（path 的替代） |
+| `plugin_id` | string | 是* | 插件标识符（path 的替代方案） |
 
-*需要 `path` 或 `plugin_id` 中的一个。
+*需要 `path` 或 `plugin_id` 之一。
 
 ### plugins.unload
 
-通过 ID 卸载插件。
+按 ID 卸载插件。
 
 **请求：**
 ```json
@@ -140,7 +140,7 @@ description: "插件管理 RPC 方法"
 
 ### plugins.reload
 
-重新加载插件（先卸载再加载）。
+重新加载插件（卸载然后加载）。
 
 **请求：**
 ```json
@@ -225,7 +225,7 @@ provides = ["my_tool"]
 listens = ["session.start"]
 ```
 
-## 参见
+## 另请参阅
 
-- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
-- [架构：插件](/docs/zh/architecture/plugins) -- 插件系统架构
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [架构：插件](/docs/zh/architecture/plugins)——插件系统架构

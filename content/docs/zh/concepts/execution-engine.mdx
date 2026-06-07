@@ -1,6 +1,206 @@
 ---
 title: "执行引擎"
-description: "沙箱命令执行，支持审批流程、风险分析、Seatbelt 配置文件和审计日志。"
+description: "具有审批工作流、风险分析、seatbelt 配置文件和审计日志的沙箱命令执行。"
 ---
 
-This page is in progress. Please refer to the [English version](/docs/concepts/execution-engine).
+`exec` 模块为 Aleph 提供沙箱命令执行。它处理 shell 命令解析、风险分析、审批工作流以及通过平台特定配置文件（macOS 上的 Seatbelt）的沙箱强制执行。
+
+## 设计理念
+
+1. **默认拒绝** —— 除非明确批准或列入允许列表，否则命令被阻止
+2. **渐进式信任** —— 一次性、会话或永久批准
+3. **沙箱执行** —— 平台特定的沙箱（macOS 上的 Seatbelt）
+
+---
+
+## 架构
+
+```
+命令 → 解析器 → 风险分析器 → 审批管理器 → 沙箱 → 执行
+                                           │
+                               ┌───────────┼───────────┐
+                               ▼           ▼           ▼
+                           允许列表     人工        自动
+                            检查      批准        批准
+                               │           │       │
+                               └───────────┼───────┘
+                                           │
+                                           ▼
+                                     审计日志
+```
+
+---
+
+## 核心组件
+
+### 命令解析器
+
+解析和规范化 shell 命令：
+
+```rust
+pub struct CommandParser;
+
+impl CommandParser {
+    pub fn parse(
+        &self,
+        cmd: &str,
+    ) -> Result<ParsedCommand> { /* ... */ }
+}
+```
+
+**规范化：**
+- 展开环境变量
+- 解析相对路径
+- 检测链式命令（`;`、`&&`、`||`）
+
+### 风险分析器
+
+按风险等级分类命令：
+
+```rust
+pub enum RiskLevel {
+    Safe,      // 只读操作（ls、cat、grep）
+    Caution,   // 破坏性但常见（rm、mv、cp）
+    Dangerous, // 系统级（sudo、chmod、kill）
+    Unknown,   // 无法识别的命令
+}
+
+pub struct RiskAnalyzer;
+
+impl RiskAnalyzer {
+    pub fn analyze(
+        &self,
+        cmd: &ParsedCommand,
+    ) -> RiskLevel { /* ... */ }
+}
+```
+
+**风险因素：**
+- 命令类型（读 vs 写 vs 执行）
+- 目标路径敏感性
+- 网络访问
+- 权限提升
+
+### 审批管理器
+
+管理审批工作流：
+
+```rust
+pub struct ApprovalManager {
+    allowlist: Allowlist,
+    escalation: EscalationPolicy,
+}
+
+impl ApprovalManager {
+    pub async fn request_approval(
+        &self,
+        request: ApprovalRequest,
+    ) -> Result<ApprovalDecision> { /* ... */ }
+}
+```
+
+**决策类型：**
+- `Allow` —— 立即执行
+- `Deny` —— 阻止执行
+- `Ask` —— 提示用户确认
+- `Escalate` —— 升级到更高权限
+
+**升级原因：**
+- `FirstExecution` —— 从未见过此命令
+- `HighRisk` —— 命令被分类为危险
+- `PathSensitive` —— 目标是敏感目录
+
+### 沙箱
+
+平台特定的沙箱强制执行：
+
+**macOS (Seatbelt)：**
+```rust
+pub struct SeatbeltProfile {
+    rules: Vec<SeatbeltRule>,
+}
+
+impl SeatbeltProfile {
+    pub fn generate(
+        &self,
+        request: &ExecutionRequest,
+    ) -> String { /* ... */ }
+}
+```
+
+**配置文件规则：**
+- 对工作区的只读访问
+- 没有网络访问（除非请求）
+- 没有访问敏感路径（`~/.ssh`、`~/.config` 等）
+- 临时目录访问以输出
+
+**安全：**
+- 域字符白名单（`[a-zA-Z0-9._-]`）防止配置文件注入
+- 路径引号转义以防止表达式注入
+
+### 执行器
+
+执行批准的命令：
+
+```rust
+pub struct SandboxExecutor;
+
+impl SandboxExecutor {
+    pub async fn execute(
+        &self,
+        request: ExecutionRequest,
+    ) -> Result<ExecutionResult> { /* ... */ }
+}
+```
+
+**特性：**
+- 超时强制执行（可配置，默认 30 秒）
+- 输出捕获（stdout + stderr）
+- 退出码跟踪
+- 完成时清理（临时文件、沙箱配置文件）
+
+**安全：** 清理错误通过 `tracing::warn` 记录，但不会覆盖执行结果。
+
+---
+
+## 审计日志
+
+所有执行都被记录：
+
+```rust
+pub struct ExecutionAudit {
+    pub command: String,
+    pub decision: ApprovalDecision,
+    pub executor: String,
+    pub timestamp: DateTime<Utc>,
+    pub exit_code: Option<i32>,
+}
+```
+
+---
+
+## 安全属性
+
+- **路径范围验证** —— 使用 `Path::starts_with`（组件级）不是 `str::starts_with`
+- **HMAC 时序安全** —— `hmac::verify_slice()` 用于恒定时间比较
+- **异步中无 panic** —— `compute_hmac` 返回 `Result`，不是 `expect`
+- **饱和算术** —— 超时计算使用 `saturating_mul`
+- **无清理覆盖** —— 清理失败不会掩盖执行结果
+
+---
+
+## 代码位置
+
+- `src/exec/mod.rs` —— 模块入口点
+- `src/exec/parser.rs` —— 命令解析
+- `src/exec/risk.rs` —— 风险分析
+- `src/exec/approval/` —— 审批工作流
+- `src/exec/sandbox/` —— 沙箱配置文件和执行
+- `src/exec/manager.rs` —— 审批管理器
+- `src/exec/audit.rs` —— 执行审计日志
+
+## 另请参阅
+
+- [安全原语](./security-primitives) —— 安全层
+- [内置工具](./builtin-tools) —— 代码执行工具
+- [审批](./approval) —— 桌面/浏览器审批系统

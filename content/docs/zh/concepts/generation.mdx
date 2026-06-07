@@ -1,6 +1,209 @@
 ---
-title: "Generation"
-description: "Media generation provider abstraction supporting images, video, audio, and speech."
+title: "生成"
+description: "媒体生成提供商抽象，通过统一的基于 trait 的接口支持图像、视频、音频和语音，具有多个后端提供商。"
 ---
 
-Generation documentation is available in English. Chinese translation is in progress.
+`generation` 模块为媒体生成后端定义统一接口。无论代理需要图像、视频片段、背景音乐还是文本转语音，所有提供商都实现相同的 `GenerationProvider` trait 以实现一致的交互。
+
+## 设计理念
+
+生成系统遵循三个原则：
+
+1. **基于 Trait 的抽象** — 所有后端（DALL-E、Stable Diffusion、ElevenLabs 等）实现相同的接口
+2. **类型安全请求** — `GenerationRequest` 在单个结构体中携带类型、提示词和参数
+3. **优雅降级** — 可选功能（进度检查、取消、图像编辑）具有默认的"不支持"实现
+
+---
+
+## 核心类型
+
+### GenerationRequest
+
+```rust
+pub struct GenerationRequest {
+    pub generation_type: GenerationType,
+    pub prompt: String,
+    pub params: GenerationParams,
+    pub request_id: Option<String>,
+    pub user_id: Option<String>,
+}
+```
+
+**构建器模式：**
+
+```rust
+let request = GenerationRequest::image("A sunset over mountains")
+    .with_params(
+        GenerationParams::builder()
+            .width(1024)
+            .height(1024)
+            .quality("hd")
+            .build()
+    )
+    .with_request_id("req-001");
+```
+
+### GenerationType
+
+```rust
+pub enum GenerationType {
+    Image,
+    Video,
+    Audio,
+    Speech,
+    Transcription,
+}
+```
+
+### GenerationOutput
+
+```rust
+pub struct GenerationOutput {
+    pub generation_type: GenerationType,
+    pub data: GenerationData,
+    pub metadata: GenerationMetadata,
+    pub request_id: Option<String>,
+}
+```
+
+**数据变体：**
+- `GenerationData::Url(String)` — 远程 URL
+- `GenerationData::Base64(String)` — 内联 base64 数据
+- `GenerationData::Bytes(Vec<u8>)` — 原始字节
+
+---
+
+## GenerationProvider Trait
+
+```rust
+pub trait GenerationProvider: Send + Sync {
+    fn generate(
+        &self,
+        request: GenerationRequest,
+    ) -> Pin<Box<dyn Future<Output = GenerationResult<GenerationOutput>> + Send + '_>>;
+
+    fn name(&self) -> &str;
+    fn supported_types(&self) -> Vec<GenerationType>;
+    fn supports(&self, gen_type: GenerationType) -> bool;
+    fn color(&self) -> &str;  // UI 的品牌颜色
+    fn default_model(&self) -> Option<&str>;
+
+    // 具有默认"不支持"实现的可选功能
+    fn check_progress(&self,
+        _job_id: &str,
+    ) -> Pin<Box<dyn Future<... >> { /* 默认: Err(UnsupportedFeature) */ }
+
+    fn cancel(&self,
+        _job_id: &str,
+    ) -> Pin<Box<dyn Future<... >> { /* 默认: Err(UnsupportedFeature) */ }
+
+    fn edit_image(&self,
+        _request: GenerationRequest,
+    ) -> Pin<Box<dyn Future<... >> { /* 默认: Err(UnsupportedFeature) */ }
+
+    fn list_voices(&self) -> Vec<VoiceInfo> { vec![] }
+}
+```
+
+**线程安全：** trait 扩展 `Send + Sync`，因此提供商可以存储在 `Arc<dyn GenerationProvider>` 中并在异步任务之间共享。
+
+---
+
+## 提供商注册表
+
+```rust
+pub struct GenerationProviderRegistry {
+    providers: HashMap<String, Arc<dyn GenerationProvider>>,
+}
+
+impl GenerationProviderRegistry {
+    pub fn register(
+        &mut self,
+        provider: Arc<dyn GenerationProvider>,
+    ) { /* ... */ }
+
+    pub fn get(
+        &self,
+        name: &str,
+    ) -> Option<Arc<dyn GenerationProvider>> { /* ... */ }
+
+    pub fn names_for_type(
+        &self,
+        gen_type: GenerationType,
+    ) -> Vec<String> { /* ... */ }
+}
+```
+
+**确定性：** `names()` 和 `names_for_type()` 返回排序的向量。
+
+---
+
+## 支持的提供商
+
+| 提供商 | 图像 | 视频 | 音频 | 语音 |
+|---|---|---|---|---|
+| DALL-E | ✅ | — | — | — |
+| Stable Diffusion | ✅ | — | — | — |
+| Midjourney | ✅ | — | — | — |
+| Runway | — | ✅ | — | — |
+| Pika | — | ✅ | — | — |
+| Sora | — | ✅ | — | — |
+| Suno | — | — | ✅ | — |
+| Udio | — | — | ✅ | — |
+| ElevenLabs | — | — | — | ✅ |
+| OpenAI TTS | — | — | — | ✅ |
+
+---
+
+## 响应解析
+
+该模块包括用于从代理响应中提取生成请求的解析器：
+
+```rust
+pub fn parse_generation_requests(
+    text: &str,
+) -> ParseResult<Vec<ParsedGenerationRequest>>
+```
+
+这允许代理用自然语言表达生成意图，然后将其解析为结构化的 `GenerationRequest` 对象。
+
+---
+
+## Mock 提供商
+
+用于测试：
+
+```rust
+let provider = MockGenerationProvider::new("mock")
+    .with_color("#10a37f")
+    .with_types(vec![GenerationType::Image]);
+
+let request = GenerationRequest::image("test");
+let output = provider.generate(request).await.unwrap();
+```
+
+---
+
+## 安全属性
+
+- **用户路径上无 `.expect()`** — `MidjourneyProvider::new()` 返回 `Result`，而非 panic
+- **防止除以零** — `determine_aspect_ratio()` 检查 `h == 0`
+- **无静默截断** — `u32::try_from(s).ok()` 用于种子转换（对于超出范围的返回 `None`）
+- **无锁问题** — 模块无共享可变状态
+- **无 `static mut`** — 使用 `LazyLock` 用于正则模式
+
+---
+
+## 代码位置
+
+- `src/generation/mod.rs` — `GenerationProvider` trait 和 mock 提供商
+- `src/generation/types.rs` — 请求/输出类型和构建器
+- `src/generation/error.rs` — `GenerationError` 类型错误
+- `src/generation/registry.rs` — 提供商注册表
+- `src/generation/response_parser.rs` — 自然语言请求解析
+- `src/generation/providers/` — 提供商实现
+
+## 另请参阅
+
+- [内置工具](/docs/zh/concepts/builtin-tools) — 生成工具如何暴露给代理
+- [媒体处理](/docs/zh/concepts/media-processing) — 生成的媒体如何处理

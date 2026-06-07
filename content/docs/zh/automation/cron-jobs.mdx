@@ -1,8 +1,300 @@
 ---
-title: "定时任务"
-description: "使用 cron 表达式调度周期性任务"
+title: "Cron 作业"
+description: "使用 cron 表达式、间隔和一次性触发器调度周期性任务"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/automation/cron-jobs)。
+Cron 作业让 Aleph 按计划执行代理提示 —— 每日摘要、定期健康检查、重复提醒，以及任何其他应该在没有人工干预的情况下自动发生的任务。作业在 SQLite 中持久化，在重启后生存，并支持标准 cron 表达式以及间隔和一次性调度。
+
+## 为什么使用计划任务？
+
+一个只在您与之交谈时才响应的个人 AI 助手错过了重点。一些最有价值的工作流是在后台发生的：
+
+- **每日摘要** —— 每天晚上总结电子邮件、日历事件和任务
+- **系统健康检查** —— 每 15 分钟监控磁盘使用、内存和服务正常运行时间
+- **定期清理** —— 每周归档旧会话、压缩记忆、修剪日志
+- **提醒和跟进** —— "提醒我 2 小时后检查部署情况"
+- **数据收集** —— 按计划从 API 拉取指标、聚合和存储
+- **备份验证** —— 每晚确认备份成功完成
+
+## 调度类型
+
+Aleph 支持三种调度：
+
+| 类型 | 说明 | 用例 |
+|------|-------------|----------|
+| `cron` | 标准 5 字段 cron 表达式 | 与挂钟时间绑定的重复调度 |
+| `every` | 以毫秒为单位的固定间隔 | 心跳、轮询、定期检查 |
+| `once` | 在特定时间戳一次性执行 | 提醒、延迟操作 |
+
+### Cron 表达式格式
+
+标准 5 字段格式，在配置的时区中评估（默认为 UTC）：
+
+```
++-------------- 分钟 (0 - 59)
+| +------------ 小时 (0 - 23)
+| | +---------- 日期 (1 - 31)
+| | | +-------- 月份 (1 - 12)
+| | | | +------ 星期 (0 - 6, 星期日 = 0)
+| | | | |
+* * * * *
+```
+
+**常见模式：**
+
+| 表达式 | 含义 |
+|------------|---------|
+| `0 9 * * *` | 每天早上 9:00 |
+| `*/15 * * * *` | 每 15 分钟 |
+| `0 0 * * 0` | 每周日午夜 |
+| `0 9 1 * *` | 每月第一天早上 9:00 |
+| `30 18 * * 1-5` | 工作日下午 6:30 |
+| `0 */6 * * *` | 每 6 小时 |
+| `0 8,12,18 * * *` | 在上午 8 点、中午和下午 6 点 |
+
+<Callout type="info">
+Cron 表达式由 `cron` Rust crate 解析，支持所有标准语法，包括范围 (`1-5`)、列表 (`1,3,5`) 和步长值 (`*/10`)。
+</Callout>
+
+## 创建 Cron 作业
+
+### 通过 CLI
+
+创建作业的最简单方法：
+
+```bash
+# 创建每日摘要作业
+aleph cron create \
+  --name "Daily Summary" \
+  --schedule "0 18 * * *" \
+  --prompt "Summarize today's activities and upcoming tasks" \
+  --timezone "America/New_York"
+
+# 创建每 15 分钟运行的健康检查
+aleph cron create \
+  --name "Health Check" \
+  --schedule "*/15 * * * *" \
+  --prompt "Check system health: disk, memory, CPU. Alert if anything is concerning."
+
+# 创建基于间隔的作业（每 5 分钟）
+aleph cron create \
+  --name "Heartbeat" \
+  --schedule-kind every \
+  --every-ms 300000 \
+  --prompt "Verify all services are responding"
+```
+
+### 通过 Gateway RPC
+
+对于编程控制，通过 WebSocket 网关使用 `cron.create` 方法：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "cron.create",
+  "params": {
+    "name": "Weekly Report",
+    "schedule": "0 9 * * 1",
+    "agent_id": "main",
+    "prompt": "Generate a weekly summary of completed tasks and key metrics",
+    "enabled": true,
+    "timezone": "UTC",
+    "tags": ["reports", "weekly"],
+    "max_retries": 3,
+    "priority": 7
+  }
+}
+```
+
+有关完整 API 规范，请参阅 [cron.* RPC 方法](/docs/zh/gateway/methods/cron)。
+
+### 通过配置
+
+作业也可以在 `aleph.toml` 中定义以进行声明式管理：
+
+```toml
+[[cron.jobs]]
+name = "Morning Briefing"
+schedule = "0 8 * * 1-5"
+agent_id = "main"
+prompt = "Good morning. Give me a briefing: weather, calendar, priority tasks."
+timezone = "America/New_York"
+tags = ["daily", "briefing"]
+
+[[cron.jobs]]
+name = "Backup Verification"
+schedule = "0 3 * * *"
+agent_id = "main"
+prompt = "Check that last night's backup completed. Report any failures."
+tags = ["maintenance"]
+```
+
+<Callout type="warn">
+`aleph.toml` 中定义的作业在启动时同步。如果数据库中已存在同名作业，则配置版本优先并覆盖它。
+</Callout>
+
+## 管理作业
+
+### 列出作业
+
+```bash
+# 列出所有作业
+aleph cron list
+
+# 以 JSON 输出
+aleph cron list --json
+```
+
+### 检查作业状态
+
+```bash
+# 查看所有作业的详细状态
+aleph cron status
+
+# 用于脚本的 JSON 输出
+aleph cron status --json
+```
+
+### 暂停和恢复
+
+作业可以暂停而不删除它们。暂停的作业保留其配置和历史记录，但在下一个计划时间不会执行。
+
+```json
+// 暂停
+{ "method": "cron.pause", "params": { "job_id": "job-uuid-123" } }
+
+// 恢复 — next_run_at 从现在重新计算
+{ "method": "cron.resume", "params": { "job_id": "job-uuid-123" } }
+```
+
+### 手动触发
+
+强制立即执行任何作业，无论其调度如何：
+
+```bash
+aleph cron run <job-id>
+```
+
+或通过 RPC：
+
+```json
+{ "method": "cron.trigger", "params": { "job_id": "job-uuid-123" } }
+```
+
+手动运行通过 `trigger_source: "manual"` 单独跟踪，因此您可以在历史记录中将其与计划运行区分开来。
+
+### 删除
+
+```json
+{ "method": "cron.delete", "params": { "job_id": "job-uuid-123" } }
+```
+
+删除作业会永久移除它及其所有运行历史记录。
+
+## 作业执行上下文
+
+当 cron 作业触发时，Aleph 使用作业的提示创建一个新的代理会话。执行环境包括：
+
+- **代理选择** —— `agent_id` 字段确定哪个代理配置文件处理提示。使用 `"main"` 表示默认代理，或指定专门的子代理。
+- **全新会话** —— 每次运行都从一个干净的会话开始。代理可以访问其长期记忆，但没有来自先前运行的剩余上下文。
+- **模板变量** —— 使用带有 `{{variable}}` 占位符的 `prompt_template` 来实现动态提示。变量在执行时从 `context_vars` 解析。
+- **交付目标** —— 可选地将代理的响应路由到特定通道（Telegram、Discord、电子邮件），而非仅仅记录它。
+
+### 提示模板
+
+对于根据上下文变化的动态提示：
+
+```json
+{
+  "name": "Project Status",
+  "schedule": "0 17 * * 1-5",
+  "prompt_template": "Give me a status update on the {{project}} project. Focus on {{focus_area}}.",
+  "context_vars": {
+    "project": "Aleph",
+    "focus_area": "open issues and blockers"
+  }
+}
+```
+
+## 作业链
+
+作业可以链接，以便一个作业完成后触发另一个作业。这启用了多阶段工作流：
+
+```json
+{
+  "name": "Backup Database",
+  "schedule": "0 2 * * *",
+  "prompt": "Run database backup to /backups/",
+  "next_job_id_on_success": "job-uuid-verify",
+  "next_job_id_on_failure": "job-uuid-alert"
+}
+```
+
+链遵循简单规则：
+- 成功时，触发 `next_job_id_on_success`（如果设置）
+- 所有重试失败后，触发 `next_job_id_on_failure`（如果设置）
+- 链接的作业作为手动触发立即运行
+
+## 错误处理和重试
+
+失败的作业根据其配置自动重试：
+
+| 参数 | 默认值 | 说明 |
+|-----------|---------|-------------|
+| `max_retries` | 3 | 标记为失败前的最大重试次数 |
+| `priority` | 5 | 执行优先级 (1-10)。当多个作业排队时，较高优先级的作业首先执行 |
+
+重试策略使用指数退避：每次重试等待的时间比前一次长，以避免对失败的服务进行重击。所有重试用完后，作业的 `consecutive_failures` 计数器递增。作业保持启用状态，并在下一个计划时间再次尝试。
+
+### 运行状态值
+
+| 状态 | 说明 |
+|--------|-------------|
+| `queued` | 作业已排队等待执行 |
+| `running` | 当前正在执行 |
+| `completed` | 成功完成 |
+| `failed` | 所有重试后执行失败 |
+| `retrying` | 失败，等待下一次重试 |
+
+## 监控
+
+### 事件
+
+Cron 作业执行发出事件，您可以通过网关订阅：
+
+```json
+{ "method": "events.subscribe", "params": { "patterns": ["cron.*"] } }
+```
+
+发出的事件：
+
+| 主题 | 何时 |
+|-------|------|
+| `cron.triggered` | 作业执行开始 |
+| `cron.completed` | 作业成功完成 |
+| `cron.failed` | 所有重试后作业失败 |
+
+有关订阅的详细信息，请参阅[事件](/docs/zh/automation/events)。
+
+### CLI 状态
+
+`aleph cron status` 命令显示所有作业的仪表板视图，包括上次运行时间、下次运行时间、连续失败和启用状态。使用 `--json` 获取适合外部监控系统的机器可读输出。
+
+## 最佳实践
+
+1. **使用描述性名称** —— 作业名称出现在日志、事件和 CLI 中。使它们自文档化。
+2. **设置适当的时区** —— Cron 表达式在作业的时区中评估。"下午 6 点"的每日摘要应使用您的本地时区，而非 UTC。
+3. **标记以进行组织** —— 使用 `"daily"`、`"maintenance"`、`"reports"` 等标签来过滤和管理大规模作业。
+4. **链式工作流** —— 不要将复杂的提示放在一个作业中，而是将多阶段过程分解为具有成功/失败分支的链式作业。
+5. **监控失败** —— 订阅 `cron.failed` 事件并设置警报。静默失败的 cron 作业比没有 cron 作业更糟糕。
+6. **使用模板以提高灵活性** —— 提示模板允许您更改参数而无需重新创建作业。
+
+## 另请参阅
+
+- [cron.* RPC 方法](/docs/zh/gateway/methods/cron) —— 完整 RPC API 规范
+- [事件](/docs/zh/automation/events) —— 订阅 cron 生命周期事件
+- [钩子](/docs/zh/automation/hooks) —— 在代理生命周期事件上触发操作
+- [CLI 参考](/docs/zh/cli/commands) —— `aleph cron` 命令详细信息

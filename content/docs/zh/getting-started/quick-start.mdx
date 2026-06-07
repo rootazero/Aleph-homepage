@@ -3,6 +3,95 @@ title: "快速上手"
 description: "五分钟内开始使用 Aleph"
 ---
 
-> 此页面正在翻译中。
+在 5 分钟内让 Aleph 运行起来。
 
-请参阅[英文版](/en/docs/getting-started/quick-start)。
+## 1. 构建并运行
+
+```bash
+# 克隆仓库
+git clone https://github.com/rootazero/Aleph.git
+cd Aleph
+
+# 以开发模式运行（自动重建 WASM）
+just dev
+
+# 或手动构建并运行
+cargo run --bin aleph-server
+```
+
+服务器默认在 `ws://127.0.0.1:18790` 启动。
+
+## 2. 配置
+
+在 `~/.aleph/config.toml` 创建你的配置文件：
+
+```bash
+mkdir -p ~/.aleph
+cat > ~/.aleph/config.toml << 'EOF'
+[agent]
+model = "anthropic/claude-sonnet-4"
+
+[provider.claude]
+protocol = "anthropic"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[gateway]
+port = 18790
+bind = "127.0.0.1"
+EOF
+```
+
+设置你的 API 密钥：
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+## 3. 通过 WebChat 连接
+
+在 `http://localhost:18790` 打开 WebChat 界面（或在 `gateway.port` 中配置的端口）。
+
+WebChat 是一个基于 WASM 的 UI，连接到 Gateway WebSocket。
+
+## 4. 连接消息频道（可选）
+
+### Telegram
+
+添加到 `~/.aleph/config.toml`：
+
+```toml
+[channel.telegram]
+enabled = true
+token = "YOUR_BOT_TOKEN"
+```
+
+重启服务器以加载新频道。
+
+### Discord
+
+```toml
+[channel.discord]
+enabled = true
+token = "YOUR_BOT_TOKEN"
+```
+
+## 5. 验证
+
+检查服务器是否正在运行：
+
+```bash
+# 服务器日志显示 "Gateway listening on ws://127.0.0.1:18790"
+tail -f ~/.aleph/logs/aleph.log
+```
+
+测试 WebSocket 连接：
+
+```bash
+curl http://localhost:18790/health
+```
+
+## 下一步
+
+- [配置](./configuration) - 完整配置参考
+- [Gateway 协议](../gateway/protocol) - WebSocket JSON-RPC API
+- [接口](../interfaces/overview) - 连接更多平台

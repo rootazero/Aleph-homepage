@@ -1,118 +1,35 @@
 ---
 title: "记忆演进"
-description: "Aleph 记忆系统从 Spec 1 到 Spec C 的设计规格历史。"
+description: "Aleph 记忆系统规范从 Spec 1 到 Spec C 的历史。"
 ---
 
-本文档追踪 Aleph 记忆系统的设计规格演进历程。
+本文档追踪 Aleph 记忆系统通过其设计规范的演进。
 
 ---
 
-## Spec 1: 记忆捕获钩子 + WorkingMemoryAssembler
+## Spec 1：记忆捕获钩子
 
 **状态：** 已发布  
-**重点：** 可移植的、LLM 自主的上下文注入方法。
+**重点：** 记忆生命周期事件的可观察性和扩展点。
 
-新系统不再按相似度排序检索到的事实并按 token 预算截断，而是赋予组装器显式的插槽语义，并让 LLM 判断当前查询实际需要哪些候选内容。
+引入了三个钩子：
+- `PreCompress` —— 在会话压缩之前触发；允许扩展检查/修改原始记忆
+- `Delegation` —— 当记忆操作委托给子代理时触发
+- `SessionEnd` —— 当会话关闭时触发；触发最终压缩
 
-### MemoryEnvelope v1.0
-
-`MemoryEnvelope` 是可移植的数据契约：
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MemoryEnvelope {
-    pub schema_version: String,          // "1.0"
-    pub generated_at: i64,               // unix seconds
-    pub query: String,                   // 触发查询（诊断用）
-    pub agent_id: String,
-    pub session_id: Option<String>,
-    pub slots: Vec<EnvelopeSlot>,        // 有序 = 注入顺序
-    pub meta: EnvelopeMeta,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct EnvelopeSlot {
-    pub kind: SlotKind,
-    pub items: Vec<EnvelopeItem>,        // 有序 = 插槽内优先级
-    pub tokens_used: u32,
-    pub tokens_budget: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SlotKind {
-    UserProfile,
-    SessionRecent,
-    RelevantNotes,
-    RawFragments,
-    Nudges,                              // v1: budget=0 占位符; Spec 2 填充
-}
-```
-
-### ID 约定（v1.x 中保持稳定）
-
-| Source | ID format |
-|---|---|
-| L1 Note | `note://{category}/{filename}` (无 `.md`) |
-| L0 Raw fragment | `aleph://session/{session_id}/raw/{raw_id}` |
-| Session summary | `aleph://session/{session_id}/{layer}` (layer = `d0`/`d1`/`d2`) |
-| User profile | `note://personal/profile` (约定 — profile 是特定笔记) |
-
-### WorkingMemoryAssembler
-
-```rust
-#[async_trait]
-pub trait WorkingMemoryAssembler: Send + Sync {
-    async fn assemble(
-        &self,
-        query: &str,
-        agent_id: &str,
-        session_id: Option<&str>,
-        budget: AssemblyBudget,
-    ) -> Result<MemoryEnvelope, AlephError>;
-}
-```
-
-**契约：** `assemble` 不会因 LLM 辅助失败而返回 `Err`。内部错误会被捕获并降级 —— 始终会生成 envelope，即使插槽为空。
-
-### 组装流程
-
-**阶段 1：候选收集** — 通过 `tokio::join!` 并发扇出：
-
-| Source | Call | Default limit |
-|---|---|---|
-| Relevant notes | `NoteFactRetrieval::retrieve(query, agent_id, 20)` | 20 |
-| Session snapshot | `SnapshotReader::load_latest(session_id)` | 1 |
-| Raw fragments | `get_raw_by_path_prefix(prefix, agent_id, 5)` | 5 |
-| User profile | `UserProfileLoader` | 1 |
-
-**阶段 2：LLM 重排序（B 策略）** — LLM 选择候选内容并分配 token 预算，800ms 超时兜底。
-
-**阶段 3：Hydration + Token 打包** — 从磁盘加载内容，UTF-8 安全截断，token 统计。
-
-### 兜底骨架（C 策略）
-
-触发条件：阶段 2 超时、无效 JSON、零有效插槽、候选池 < 3 项。
-
-| Slot | Default tokens |
-|---|---|
-| `UserProfile` | 200 |
-| `SessionRecent` | 1500 |
-| `RelevantNotes` | 5000 |
-| `RawFragments` | 1000 |
-| `Nudges` | 0 |
+这些钩子成为后续 `MemoryExtension` trait（Spec 4）的基础。
 
 ---
 
-## Spec 2: MemoryReflector
+## Spec 2：MemoryReflector
 
 **状态：** 已发布  
 **重点：** 原始检索之上的综合层。
 
-`MemoryReflector` 不再返回事实排序列表，而是：
+`MemoryReflector` 不返回事实的排名列表，而是：
 1. 通过 `HybridAssembler` 检索候选事实
-2. 请求 LLM 综合出连贯的答案
-3. 返回答案及引用来源
+2. 要求 LLM 综合一个连贯的答案
+3. 返回带有引用来源的答案
 
 ```rust
 pub struct MemoryReflector {
@@ -123,50 +40,52 @@ pub struct MemoryReflector {
 
 通过 `memory_reflect` 内置工具暴露。
 
-**关键洞见：** 检索提供候选；综合产出答案。
+**关键洞察：** 检索提供候选；综合产生答案。
 
 ---
 
-## Spec 3: 上下文围栏 + 记忆模式
+## Spec 3：上下文围栏 + 记忆模式
 
 **状态：** 已发布  
-**重点：** 控制记忆如何被注入提示词。
+**重点：** 控制记忆如何注入提示词。
 
 三种记忆模式：
-- `Context` — 记忆直接注入系统提示词
-- `Tools` — 通过 `memory_search` / `memory_reflect` 按需检索
-- `Hybrid` — 两者兼顾：关键事实在上下文中，详细查询通过工具
+- `Context` —— 记忆直接注入系统提示词
+- `Tools` —— 通过 `memory_search` / `memory_reflect` 按需检索记忆
+- `Hybrid` —— 两者兼有：关键事实在上下文中，详细查询通过工具
 
-上下文围栏通过 `AssemblyBudget` 限制确保记忆不超过 token 预算。
+上下文围栏通过使用 `AssemblyBudget` 限制确保记忆永远不会超过 token 预算。
 
 ---
 
-## Spec 4: 可插拔记忆扩展
+## Spec 4：可插拔记忆扩展
 
 **状态：** 已发布  
-**重点：** 第三方扩展自定义记忆行为。
+**重点：** 第三方自定义记忆行为的扩展。
 
 ```rust
 #[async_trait]
 pub trait MemoryExtension: Send + Sync {
     fn name(&self) -> &str;
-    async fn on_memory_created(&self, event: &MemoryEvent, backend: &MemoryBackend)
-        -> Result<(), AlephError>;
-    async fn on_memory_retrieved(&self, query: &str, facts: &[MemoryFact], backend: &MemoryBackend)
-        -> Result<Vec<MemoryFact>, AlephError>;
-    async fn on_session_end(&self, session_id: &str, backend: &MemoryBackend)
-        -> Result<(), AlephError>;
+    async fn on_memory_created(&self, event: &MemoryEvent, backend: &MemoryBackend
+    ) -> Result<(), AlephError>;
+    async fn on_memory_retrieved(
+        &self, query: &str, facts: &[MemoryFact], backend: &MemoryBackend
+    ) -> Result<Vec<MemoryFact>, AlephError>;
+    async fn on_session_end(
+        &self, session_id: &str, backend: &MemoryBackend
+    ) -> Result<(), AlephError>;
 }
 ```
 
-扩展在启动时注册，接收所有记忆事件的回调。
+扩展在启动时注册，并接收所有记忆事件的回调。
 
 ---
 
-## Spec A: 精选热记忆
+## Spec A：策划的热记忆
 
 **状态：** 已发布  
-**重点：** 人工策划的关键事实冻结快照。
+**重点：** 人类策划的、冻结的关键事实快照。
 
 问题：自动检索有时会遗漏对人类来说显而易见的事实。
 
@@ -179,43 +98,43 @@ pub trait MemoryExtension: Send + Sync {
 ```
 
 - 存储在 `~/.aleph/memory/curated/{agent_id}.json`
-- 冻结快照 — 变更需要显式重新策划
+- 冻结快照 —— 更改需要显式重新策划
 - 无条件注入每个提示词（在 token 预算内）
 - 完全绕过正常检索和评分
 
 ---
 
-## Spec B: session_search 总结
+## Spec B：session_search 摘要
 
 **状态：** 已发布  
-**重点：** 总结匹配查询的多个会话。
+**重点：** 摘要匹配查询的多个会话。
 
 `session_search` 工具现在返回：
-1. 带相关性分数的匹配会话
+1. 带有相关性评分的匹配会话
 2. 跨会话综合发现的 AI 生成摘要
-3. 对话中的关键引用
+3. 来自转录的关键引用
 
 ```
 <builtin_tool>session_search</builtin_tool>
-<parameter name="query">我们关于数据库方案的决定是什么？</parameter>
+<parameter name="query">我们关于数据库架构的决定是什么？</parameter>
 <parameter name="limit">5</parameter>
 ```
 
 ---
 
-## Spec C: 跨进程安全
+## Spec C：跨进程安全
 
 **状态：** 已发布  
-**重点：** 多进程对 SQLite 的安全并发访问。
+**重点：** 从多个进程安全并发访问 SQLite。
 
 问题：Aleph 可以运行多个进程（CLI + GUI，或多个代理）。
 
 解决方案：
-- SQLite 的 **WAL 模式**（预写式日志）
-- **忙等待超时**（5 秒）配合指数退避
+- SQLite 的 **WAL 模式**（预写日志）
+- **忙超时**（5 秒）带指数退避
 - **锁恢复**：`unwrap_or_else(|e| e.into_inner())`
-- 精选记忆写入的**文件锁**
-- 笔记索引更新的**原子操作**
+- **文件锁定**用于策划记忆写入
+- **原子操作**用于笔记索引更新
 
 ---
 
@@ -223,28 +142,28 @@ pub trait MemoryExtension: Send + Sync {
 
 | 日期 | 里程碑 |
 |---|---|
-| 2025-03 | Spec 1: WorkingMemoryAssembler + MemoryEnvelope |
-| 2025-04 | Spec 2: MemoryReflector |
-| 2025-05 | Spec 3: 上下文围栏 |
-| 2025-06 | Spec 4: 记忆扩展 |
-| 2025-08 | Spec A: 精选热记忆 |
-| 2025-09 | Spec B: 会话搜索总结 |
-| 2025-10 | Spec C: 跨进程安全 |
+| 2025-03 | Spec 1：捕获钩子 |
+| 2025-04 | Spec 2：MemoryReflector |
+| 2025-05 | Spec 3：上下文围栏 |
+| 2025-06 | Spec 4：记忆扩展 |
+| 2025-08 | Spec A：策划的热记忆 |
+| 2025-09 | Spec B：会话搜索摘要 |
+| 2025-10 | Spec C：跨进程安全 |
 | 2026-04 | 记忆主权清理（删除 ValueEstimator、MemoryTier 等） |
 
 ---
 
 ## 未来方向
 
-当前在设计中的规格（尚未发布）：
+当前在设计中的规范（尚未发布）：
 
-- **Spec 5:** 多模态记忆（图像、音频嵌入）
-- **Spec D:** 记忆联邦（跨设备同步）
+- **Spec 5：** 多模态记忆（图像、音频嵌入）
+- **Spec D：** 记忆联邦（跨设备同步）
 
 ---
 
-## 相关页面
+## 另请参阅
 
-- [记忆系统](../concepts/memory) — 当前系统概览
-- [记忆架构](memory) — 实现细节
-- [Gateway: 记忆方法](../gateway/methods/memory) — API 参考
+- [记忆系统](../concepts/memory) —— 当前系统概览
+- [记忆架构](memory) —— 实现细节
+- [网关：记忆方法](../gateway/methods/memory) —— API 参考

@@ -1,6 +1,178 @@
 ---
-title: "Security Primitives"
-description: "跨领域安全层，包括SSRF防护、内容清理、安全头、运行时守卫和审计日志。"
+title: "安全基元"
+description: "跨领域安全层，包括 SSRF 保护、内容清理、安全头、运行时守卫和持久审计日志。"
 ---
 
-Security Primitives文档目前提供英文版本。中文翻译正在进行中。
+`security` 模块提供跨领域安全基元，保护 Aleph 免受常见攻击向量。它通过 SSRF 保护、内容清理、安全头、运行时守卫和审计日志补充网关的认证/身份系统。
+
+## 设计理念
+
+1. **纵深防御** — 不同层上的多个独立检查
+2. **非阻塞审计** — 安全事件通过异步通道记录，不阻塞热路径
+3. **可配置严格性** — 策略可以为开发放宽，为生产收紧
+
+---
+
+## SSRF 保护
+
+SSRF（服务器端请求伪造）引擎在 HTTP 请求之前验证所有出站 URL：
+
+```rust
+pub async fn validate_url_async(
+    url_str: &str,
+    policy: &SsrfPolicy,
+) -> Result<Url, SsrfError>
+```
+
+**阻止：**
+- 私有网络 (10.x, 172.16-31.x, 192.168.x)
+- 环回 (127.x, ::1)
+- 链路本地 (169.254.x)
+- CGNAT (100.64-127.x)
+- 云元数据端点 (169.254.169.254)
+- 传统 IP 字面量 (0x7f000001)
+- 带有嵌入式凭据的 URL
+- 阻止列表中的主机名
+
+**DNS 重新绑定防御：** 解析主机名并验证所有返回的 IP。
+
+**允许列表支持：** 精确主机或通配符子域 (`*.example.com`) 可以绕过检查。
+
+```rust
+let policy = SsrfPolicy {
+    allowed_hosts: vec!["*.internal.corp".to_string()],
+    allow_private_network: false,
+    ..Default::default()
+};
+```
+
+---
+
+## 内容清理
+
+在 LLM 注入之前用边界标记包装不受信任的外部内容：
+
+```rust
+pub fn wrap_external_content(
+    content: &str,
+    source: ContentSource,
+) -> String
+```
+
+**来源：**
+- Web 获取
+- MCP 工具输出
+- Webhook 负载
+- 电子邮件
+- 浏览器内容
+- 用户上传
+
+**检测：**
+- 注入模式（指令覆盖尝试）
+- Tokenizer 标记操纵
+- 模型格式标记欺骗
+- 同形攻击（Unicode 规范化）
+
+**方法：** 标记可疑模式但让 LLM 决定信任（R8 — LLM 主权）。
+
+---
+
+## 安全头
+
+Tower 层在所有 HTTP 响应上注入安全头：
+
+| 头 | 值 |
+|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; ...` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `X-XSS-Protection` | `0` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` |
+| `Cache-Control` | `no-store` (静态资源除外) |
+
+静态资源 (`.js`, `.css`, `.wasm`, `.png` 等) 免于 `Cache-Control: no-store`。
+
+---
+
+## 运行时安全守卫
+
+在代理执行期间编排多个安全检查：
+
+```rust
+pub struct RuntimeSecurityGuard {
+    pii_engine: Option<PiiEngine>,
+    leak_detector: Option<SecretLeakDetector>,
+    audit_log: Option<SecurityAuditLog>,
+}
+```
+
+**检查：**
+- 出站消息上的 PII 过滤
+- 工具输出上的秘密泄漏检测
+- 外部输入上的内容清理
+- 安全事件的审计日志
+
+**配置：**
+
+```rust
+SecurityGuardConfig {
+    pii_filtering: true,
+    content_sanitization: true,
+    leak_detection: true,
+    secret_injection: true,
+    default_action_on_leak: LeakAction::Block,
+    audit_enabled: true,
+}
+```
+
+---
+
+## 审计日志
+
+用于安全事件的持久 SQLite 支持审计日志：
+
+```rust
+pub enum AuditEventType {
+    AuthFailure,
+    RateLimited,
+    SsrfBlocked,
+    ExecBlocked,
+    ExecApprovalDenied,
+    InvisibleCharsDetected,
+    InjectionPatternDetected,
+    PathTraversalBlocked,
+    PermissionDenied,
+    PiiDetected,
+    LeakWarning,
+    // ... 等
+}
+```
+
+**非阻塞：** 使用 `tokio::sync::mpsc` 和 `try_send`。如果通道已满，事件会被丢弃并发出警告，而非阻塞执行。
+
+---
+
+## 安全属性
+
+- **无 DRY 违规** — 共享的 `is_ip_blocked_by_policy()` 辅助函数用于所有 SSRF 检查
+- **热路径中无 unwrap** — 所有锁恢复使用 `unwrap_or_else(|e| e.into_inner())`
+- **参数化 SQL** — 审计日志使用 `?1` 绑定
+- **无 `static mut`** — 未找到
+
+---
+
+## 代码位置
+
+- `src/security/mod.rs` — 模块入口点
+- `src/security/ssrf/` — SSRF 保护引擎
+- `src/security/content_sanitizer.rs` — 注入检测
+- `src/security/headers.rs` — HTTP 安全头
+- `src/security/runtime_guard.rs` — 运行时编排
+- `src/security/audit.rs` — 持久审计日志
+
+## 另请参阅
+
+- [PII 保护](/docs/zh/concepts/pii-protection) — PII 检测和过滤
+- [秘密管理](/docs/zh/concepts/secret-management) — 加密凭据存储

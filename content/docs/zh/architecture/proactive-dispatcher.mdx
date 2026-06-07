@@ -1,8 +1,183 @@
 ---
-title: "主动调度器"
-description: "主动 AI 调度器架构"
+title: "主动分派器"
+description: "守护进程中的后台任务执行、行动规划和风险评估的主动分派器。"
 ---
 
-> 此页面正在翻译中。
+`daemon::dispatcher` 模块为 Aleph 守护进程提供主动行动分派，支持具有风险评估和策略执行的自主后台任务执行。
 
-请参阅[英文版](/en/docs/architecture/proactive-dispatcher)。
+## 概览
+
+主动分派器支持：
+- **自主行动** —— 无需直接用户提示即可执行任务
+- **风险评估** —— 在执行前评估行动风险
+- **策略执行** —— 将可配置策略应用于行动
+- **通知管理** —— 优先处理和批量通知
+- **资源感知调度** —— 尊重系统资源限制
+
+## 架构
+
+```
+ProactiveDispatcher
+  ├── 策略引擎 —— 风险评估和策略检查
+  ├── 行动执行器 —— 任务执行
+  ├── 风险评估 —— 风险评分
+  └── 通知队列 —— 基于优先级的通知
+```
+
+## 核心组件
+
+### ProactiveDispatcher
+
+中央分派协调器：
+
+```rust
+// src/daemon/dispatcher/mod.rs
+pub struct Dispatcher {
+    config: DispatcherConfig,
+    policy_engine: PolicyEngine,
+    executor: ActionExecutor,
+}
+
+impl Dispatcher {
+    pub async fn dispatch(
+        &self,
+        action: ProposedAction,
+    ) -> Result<ActionResult>;
+    
+    pub async fn evaluate_risk(
+        &self,
+        action: &ProposedAction,
+    ) -> RiskLevel;
+    
+    pub async fn queue_notification(
+        &self,
+        notification: Notification,
+    ) -> Result<()>;
+}
+```
+
+### PolicyEngine
+
+根据策略评估行动：
+
+```rust
+// src/daemon/dispatcher/policy.rs
+pub struct PolicyEngine {
+    policies: Vec<Policy>,
+}
+
+impl PolicyEngine {
+    pub fn check(
+        &self,
+        action: &ProposedAction,
+    ) -> PolicyResult;
+}
+
+pub enum PolicyResult {
+    Allow,
+    Deny { reason: String },
+    RequireApproval { approver: Role },
+}
+```
+
+### ProposedAction
+
+提交分派的行动：
+
+```rust
+// src/daemon/dispatcher/mod.rs
+pub struct ProposedAction {
+    pub id: ActionId,
+    pub action_type: ActionType,
+    pub payload: serde_json::Value,
+    pub proposed_by: AgentId,
+    pub urgency: Urgency,
+}
+
+pub enum ActionType {
+    NotifyUser,
+    ExecuteTool,
+    ScheduleTask,
+    DelegateToAgent,
+}
+```
+
+### 风险等级
+
+```rust
+pub enum RiskLevel {
+    Safe,      // 无风险，立即执行
+    Low,       // 轻微风险，记录并执行
+    Medium,    // 中等风险，通知用户
+    High,      // 重大风险，需要审批
+    Critical,  // 严重风险，除非紧急情况否则拒绝
+}
+```
+
+### 通知优先级
+
+```rust
+pub enum NotificationPriority {
+    Background,  // 无立即通知
+    Normal,      // 标准通知
+    Urgent,      // 立即通知
+    Emergency,   // 中断用户
+}
+```
+
+## 行动流程
+
+```
+ProposedAction
+     │
+     ▼
+PolicyEngine.check()
+     │
+     ├──▶ 拒绝 → 记录 + 通知（如果需要）
+     │
+     ├──▶ 需要审批 → 排队等待审批
+     │
+     └──▶ 允许 → 风险评估
+                          │
+                          ├──▶ 安全 → 立即执行
+                          │
+                          └──▶ 有风险 → 通知用户 + 执行
+```
+
+## 分派器模式
+
+```rust
+pub enum DispatcherMode {
+    Passive,    // 仅对显式请求做出反应
+    Assistive,  // 建议行动，等待审批
+    Proactive,  // 自主执行低风险行动
+    Autonomous, // 执行所有允许的行动
+}
+```
+
+## 配置
+
+```toml
+[daemon.dispatcher]
+mode = "assistive"
+max_concurrent_actions = 5
+notification_batch_interval = 300  # 秒
+
+[daemon.dispatcher.risk]
+default_level = "medium"
+auto_execute_below = "low"
+require_approval_above = "high"
+```
+
+## 代码位置
+
+- `src/daemon/dispatcher/mod.rs` —— 分派器和类型
+- `src/daemon/dispatcher/policy.rs` —— 策略引擎
+- `src/daemon/mod.rs` —— 守护进程模块入口
+
+## 另请参阅
+
+- [世界模型](./worldmodel) —— 上下文推断和行动预测
+- [任务分派器](./dispatcher) —— 任务调度 DAG（不同组件）
+- [守护进程](../concepts/daemon) —— 后台服务管理
+- [安全](../security/overview) —— 策略和权限系统

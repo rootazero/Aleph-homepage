@@ -3,13 +3,13 @@ title: "identity.*"
 description: "身份和灵魂管理 RPC 方法"
 ---
 
-身份方法管理 AI 的身份（灵魂）。获取有效身份、设置会话级覆盖和列出可用身份源。
+身份方法管理会话期间 AI 的身份（灵魂）。获取有效身份、设置会话级覆盖和列出可用身份源。
 
 ## 方法
 
 ### identity.get
 
-返回当前会话的有效 SoulManifest，包括会话覆盖是否激活。
+返回当前会话的有效 SoulManifest，包括会话覆盖是否处于活动状态。
 
 **请求：**
 ```json
@@ -37,7 +37,7 @@ description: "身份和灵魂管理 RPC 方法"
 
 ### identity.set
 
-设置会话级身份覆盖。这会临时改变当前会话的 AI 行为，而不修改全局身份文件。
+设置会话级身份覆盖。这会临时更改当前会话的 AI 行为，而无需修改全局身份文件。
 
 **请求：**
 ```json
@@ -67,7 +67,7 @@ description: "身份和灵魂管理 RPC 方法"
 
 **参数：**
 
-| 参数 | 类型 | 必填 | 描述 |
+| 参数 | 类型 | 必填 | 说明 |
 |-----------|------|----------|-------------|
 | `soul` | object | 是 | 要应用的 SoulManifest |
 | `soul.identity` | string | 是 | 身份声明 |
@@ -75,7 +75,7 @@ description: "身份和灵魂管理 RPC 方法"
 
 ### identity.clear
 
-清除会话级身份覆盖，恢复为全局身份。
+清除会话级身份覆盖，恢复到全局身份。
 
 **请求：**
 ```json
@@ -135,14 +135,14 @@ description: "身份和灵魂管理 RPC 方法"
 
 **源类型：**
 
-| 类型 | 描述 |
+| 类型 | 说明 |
 |------|-------------|
 | `global` | 从 `~/.aleph/soul.md` 加载 |
 | `session` | 会话级覆盖（通过 `identity.set` 设置） |
 
 ## 身份文件
 
-全局身份从 `~/.aleph/soul.md` 加载。这是一个 Markdown 文件，包含：
+全局身份从 `~/.aleph/soul.md` 加载。这是一个包含以下内容的 markdown 文件：
 
 ```markdown
 # Soul
@@ -156,6 +156,6 @@ I am Aleph, a polymorphic AI assistant.
 - Respect user privacy
 ```
 
-## 参见
+## 另请参阅
 
-- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间

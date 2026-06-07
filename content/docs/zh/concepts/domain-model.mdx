@@ -1,8 +1,178 @@
 ---
 title: "领域模型"
-description: "DDD 领域驱动设计层，包含 Entity、AggregateRoot 和 ValueObject 特性。纯领域逻辑，无平台依赖。"
+description: "具有 Entity、AggregateRoot 和 ValueObject trait 的领域驱动设计层。纯领域逻辑，无平台依赖。"
 ---
 
-> **TODO: 从英文版本翻译**
->
-> 原文：`content/docs/en/concepts/domain-model.mdx`
+`domain` 模块使用领域驱动设计 (DDD) 原则实现 Aleph 的领域模型。它定义系统的核心词汇 —— 什么是会话、任务的含义、意图的结构 —— 独立于任何基础设施或框架问题。
+
+## 设计理念
+
+领域层遵循三个 DDD 原则：
+
+1. **纯领域逻辑** — 无数据库查询、无 HTTP 调用、无文件 I/O
+2. **类型安全边界** — 无效状态通过类型系统无法表示
+3. **显式不变量** — 领域规则在构造时强制执行，而非稍后检查
+
+此模块不依赖于 `tokio`、`axum` 或任何异步运行时。它可以使用普通的 `#[test]` 函数进行测试，无需运行时。
+
+---
+
+## 核心 Traits
+
+### Entity
+
+具有唯一、不可变标识的对象，该标识在状态更改期间保持不变。
+
+```rust
+pub trait Entity {
+    type Id: Eq + Hash + Clone;
+    fn id(&self) -> &Self::Id;
+}
+```
+
+实体按身份而非属性进行比较。两个具有相同 `session_id` 的 Session 对象是相同的实体，即使它们的其他字段不同。
+
+**示例：** `Session`, `Task`, `Agent`
+
+### AggregateRoot
+
+聚合的入口点 —— 一个一致性边界，在多个实体之间强制执行领域不变量。
+
+```rust
+pub trait AggregateRoot: Entity {
+    fn version(&self) -> u64;
+}
+```
+
+AggregateRoot 是外部代码可以直接引用的唯一对象。聚合中的所有其他对象都通过它访问。
+
+**示例：** `TaskGraph`（包含 Tasks 和 Dependencies）、`MemoryFact`（包含 ContextAnchors）
+
+### ValueObject
+
+完全由其属性定义的不可变对象。具有相同属性的两个 ValueObject 相等且可互换。
+
+```rust
+pub trait ValueObject: Eq + Clone {
+    fn validate(&self) -> Result<(), ValidationError>;
+}
+```
+
+ValueObject 没有身份 —— 它们是纯数据。更改任何属性都会创建一个新的 ValueObject。
+
+**示例：** `TaskStatus`, `FactType`, `GuestScope`, `FileContent`
+
+---
+
+## 领域类型
+
+### Credentials
+
+代表具有自动秘密修订的认证凭据。
+
+```rust
+pub struct Credentials {
+    pub username: String,
+    pub secret: String, // 在 Debug 输出中修订
+}
+```
+
+`Debug` 实现打印 `"[REDACTED]"` 而非实际秘密，防止日志中的意外暴露。
+
+### TrustLevel
+
+基于连接源推断的信任级别。
+
+```rust
+pub enum TrustLevel {
+    Local,      // localhost / 环回
+    Private,    // 私有 IP 范围 (RFC 1918)
+    Public,     // 公共互联网
+    Untrusted,  // 已知的恶意行为者 / 阻止列表
+}
+```
+
+自动从 IPv4/IPv6 地址或主机名推断。由 Gateway 的安全层用于确定默认权限范围。
+
+### FileContent
+
+根据 A2A 规范不变量验证文件内容。
+
+```rust
+pub struct FileContent {
+    pub mime_type: String,
+    pub data: Vec<u8>,
+    pub name: String,
+}
+```
+
+`validate()` 方法强制执行：
+- MIME 类型非空且可解析
+- 数据非空
+- 文件名有效（无路径遍历，无空字节）
+
+---
+
+## 限界上下文
+
+Aleph 的领域被组织成限界上下文，每个上下文都有自己的通用语言：
+
+| 上下文 | 关键类型 | 位置 |
+|---|---|---|
+| **Dispatcher** | `TaskGraph`, `Task`, `TaskStatus` | `src/dispatcher/` |
+| **Memory** | `MemoryFact`, `ContextAnchor`, `FactType` | `src/memory/` |
+| **Intent** | `AggregatedIntent`, `IntentSignal` | `src/intent/` |
+| **Identity** | `IdentityContext`, `GuestScope`, `TrustLevel` | `src/gateway/security/` |
+
+每个上下文拥有自己的类型和不变量。跨上下文引用使用显式映射层，而非直接类型共享。
+
+---
+
+## 实践中的设计模式
+
+### Newtype 类型安全
+
+```rust
+pub struct SessionId(String);
+pub struct TaskId(String);
+
+// 不能意外地在期望 SessionId 的地方传递 TaskId
+fn load_session(id: SessionId) -> Option<Session> { ... }
+```
+
+### 枚举状态机
+
+```rust
+pub enum TaskStatus {
+    Pending,
+    Running { started_at: i64 },
+    Completed { result: TaskResult },
+    Failed { reason: String },
+}
+```
+
+非法状态无法表示 —— 任务不能同时处于 Pending 和 Completed 状态。
+
+### 解析，而非验证
+
+```rust
+impl Email {
+    pub fn parse(input: &str) -> Result<Self, ValidationError> {
+        // 在边界拒绝无效输入
+        // 返回保证有效的类型化 Email
+    }
+}
+```
+
+---
+
+## 代码位置
+
+- `src/domain/` — 领域类型和 traits
+- `docs/reference/DOMAIN_MODELING.md` — 扩展领域建模指南
+
+## 另请参阅
+
+- [架构概览](/docs/zh/architecture/overview) — 领域在 5 层模型中的位置
+- [设计模式](/docs/zh/development/design-patterns) — Context、Newtype、Builder 模式
+- [会话管理](/docs/zh/architecture/session-service) — 身份和会话领域概念

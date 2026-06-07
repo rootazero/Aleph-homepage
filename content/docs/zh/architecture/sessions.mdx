@@ -1,8 +1,315 @@
 ---
-title: "会话管理"
-description: "会话生命周期和状态管理"
+title: "会话架构"
+description: "Session、Message 和 Participant 数据结构，以及会话生命周期、序列化、CRDT 状态和索引。"
 ---
 
-> 此页面正在翻译中。
+会话是 Aleph 中用户与代理交互的基本单元。它封装了对话历史、参与者列表、配置和运行时状态。本页涵盖会话核心数据结构、消息模型、参与者角色、会话生命周期、CRDT 状态表示，以及会话如何被索引和查询。
 
-请参阅[英文版](/en/docs/architecture/sessions)。
+---
+
+## 核心数据结构
+
+### Session
+
+```rust
+pub struct Session {
+    pub id: String,                    // UUID v4
+    pub owner_id: String,              // 创建者用户 ID
+    pub model_id: String,              // 使用的模型
+    pub title: Option<String>,        // 用户设置的标题
+    pub config: SessionConfig,         // 会话配置
+    pub state: SessionState,           // 运行时状态
+    pub created_at: DateTime<Utc>,    // 创建时间
+    pub updated_at: DateTime<Utc>,    // 最后更新时间
+    pub archived_at: Option<DateTime<Utc>>, // 归档时间
+}
+
+pub struct SessionConfig {
+    pub temperature: f32,              // 采样温度 (0.0-2.0)
+    pub max_tokens: Option<u32>,      // 最大生成 token 数
+    pub system_prompt: Option<String>, // 系统提示词
+    pub tools_enabled: Vec<String>,   // 启用的工具列表
+    pub context_window: u32,           // 上下文窗口大小
+    pub streaming: bool,               // 是否启用流式响应
+}
+```
+
+**位置**: `src/sessions/types.rs`
+
+### Message
+
+```rust
+pub struct Message {
+    pub id: String,                    // 消息 UUID
+    pub session_id: String,            // 所属会话
+    pub role: MessageRole,             // 角色
+    pub content: MessageContent,       // 内容
+    pub metadata: MessageMetadata,     // 元数据
+    pub created_at: DateTime<Utc>,    // 创建时间
+}
+
+pub enum MessageRole {
+    System,    // 系统提示词
+    User,      // 用户输入
+    Assistant, // 代理回复
+    Tool,      // 工具输出
+}
+
+pub enum MessageContent {
+    Text(String),                     // 纯文本
+    Multipart(Vec<ContentPart>),    // 多模态内容
+}
+
+pub struct ContentPart {
+    pub part_type: ContentType,      // text / image / audio / file
+    pub content: Vec<u8>,            // 二进制内容
+    pub mime_type: String,           // MIME 类型
+}
+```
+
+### Participant
+
+```rust
+pub struct Participant {
+    pub id: String,                    // 参与者 ID
+    pub user_id: String,               // 关联用户 ID
+    pub session_id: String,            // 所属会话
+    pub role: ParticipantRole,         // 角色
+    pub joined_at: DateTime<Utc>,     // 加入时间
+    pub last_seen: DateTime<Utc>,     // 最后活跃
+}
+
+pub enum ParticipantRole {
+    Owner,      // 所有者：完全控制
+    Admin,      // 管理员：管理参与者
+    Member,     // 成员：发送消息
+    Viewer,     // 观察者：只读
+}
+```
+
+---
+
+## 会话生命周期
+
+```
+创建
+  │
+  ▼
+┌─────────┐    首个参与者加入    ┌─────────┐
+│ Created │ ─────────────────→ │ Active  │
+└─────────┘                    └────┬────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    │               │               │
+                    ▼               ▼               ▼
+              ┌─────────┐    ┌─────────┐    ┌─────────┐
+              │ Paused  │    │ Error   │    │Archived │
+              │(手动)   │    │(异常)   │    │(超时)   │
+              └────┬────┘    └────┬────┘    └─────────┘
+                   │              │
+                   │ resume()     │ retry()
+                   └──────────────┘
+                                  │
+                                  ▼
+                            ┌─────────┐
+                            │ Active  │
+                            └─────────┘
+```
+
+### 状态转换
+
+| 转换 | 触发条件 | 说明 |
+|------|----------|------|
+| Created → Active | 首个参与者加入 | 会话开始接收消息 |
+| Active → Paused | 所有者调用 pause() | 暂停处理新消息 |
+| Paused → Active | 所有者调用 resume() | 恢复正常处理 |
+| Active → Error | 处理异常 | 进入错误状态，可重试 |
+| Error → Active | 调用 retry() | 从错误恢复 |
+| Active → Archived | 空闲超时或手动归档 | 软删除，可恢复 |
+| Any → Deleted | 调用 delete() | 硬删除，不可恢复 |
+
+---
+
+## 序列化
+
+会话数据使用 JSON 序列化存储，消息内容根据类型选择序列化方式：
+
+```rust
+impl Serialize for Message {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Message", 6)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("session_id", &self.session_id)?;
+        state.serialize_field("role", &self.role)?;
+
+        // 根据内容类型选择序列化格式
+        match &self.content {
+            MessageContent::Text(text) => {
+                state.serialize_field("content", text)?;
+                state.serialize_field("content_type", &"text")?;
+            }
+            MessageContent::Multipart(parts) => {
+                // 文本部分直接序列化
+                // 二进制部分存储引用（文件路径或 URL）
+                let serialized_parts: Vec<SerializedPart> = parts
+                    .iter()
+                    .map(|p| match p.part_type {
+                        ContentType::Text => SerializedPart::Text(
+                            String::from_utf8_lossy(&p.content).to_string()
+                        ),
+                        _ => SerializedPart::Ref(self.store_blob(&p.content, &p.mime_type)),
+                    })
+                    .collect();
+                state.serialize_field("content", &serialized_parts)?;
+                state.serialize_field("content_type", &"multipart")?;
+            }
+        }
+
+        state.serialize_field("metadata", &self.metadata)?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.end()
+    }
+}
+```
+
+### 存储格式
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "owner_id": "user-123",
+  "model_id": "anthropic/claude-3-5-sonnet-20241022",
+  "title": "Rust 项目讨论",
+  "config": {
+    "temperature": 0.7,
+    "max_tokens": 4096,
+    "system_prompt": "你是一个 Rust 专家...",
+    "tools_enabled": ["file_read", "bash_exec", "web_search"],
+    "context_window": 200000,
+    "streaming": true
+  },
+  "state": "Active",
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T14:45:00Z",
+  "archived_at": null
+}
+```
+
+---
+
+## CRDT 状态表示
+
+会话的 CRDT 状态是多个 CRDT 类型的组合：
+
+```rust
+pub struct SessionCRDT {
+    // 消息列表：使用 LWW 元素集保证顺序
+    messages: ListCRDT<Message>,
+
+    // 元数据：使用 LWW 寄存器
+    metadata: MapCRDT<String, LWWRegister<Value>>,
+
+    // 参与者：使用 OR-Set（观察移除集合）
+    participants: ORSet<Participant>,
+
+    // 已读标记：使用 PN-Counter（正负计数器）
+    read_receipts: MapCRDT<String, PNCounter>,
+}
+```
+
+### CRDT 操作
+
+```rust
+impl SessionCRDT {
+    /// 添加消息
+    pub fn add_message(&mut self, message: Message) -> CRDTDelta {
+        let op = self.messages.append(message);
+        CRDTDelta::MessageAppend(op)
+    }
+
+    /// 更新元数据
+    pub fn update_metadata(
+        &mut self,
+        key: String,
+        value: Value,
+    ) -> CRDTDelta {
+        let op = self.metadata.update(key, value);
+        CRDTDelta::MetadataUpdate(op)
+    }
+
+    /// 添加参与者
+    pub fn add_participant(
+        &mut self,
+        participant: Participant,
+    ) -> CRDTDelta {
+        let op = self.participants.add(participant);
+        CRDTDelta::ParticipantAdd(op)
+    }
+
+    /// 合并远程 delta
+    pub fn merge(&mut self, delta: &CRDTDelta) {
+        match delta {
+            CRDTDelta::MessageAppend(op) => self.messages.merge_op(op),
+            CRDTDelta::MetadataUpdate(op) => self.metadata.merge_op(op),
+            CRDTDelta::ParticipantAdd(op) => self.participants.merge_op(op),
+            // ...
+        }
+    }
+}
+```
+
+**位置**: `src/sessions/crdt.rs`
+
+---
+
+## 索引
+
+会话通过多个索引支持高效查询：
+
+```rust
+pub struct SessionIndex {
+    // 按用户索引：user_id → Vec<session_id>
+    by_user: DashMap<String, Vec<String>>,
+
+    // 按状态索引：state → Vec<session_id>
+    by_state: DashMap<SessionState, Vec<String>>,
+
+    // 按模型索引：model_id → Vec<session_id>
+    by_model: DashMap<String, Vec<String>>,
+
+    // 按时间索引：创建时间范围查询
+    by_time: BTreeMap<DateTime<Utc>, String>,
+
+    // 全文索引：标题和消息内容
+    full_text: TantivyIndex,
+}
+```
+
+### 查询示例
+
+```rust
+// 列出用户的活跃会话
+let active = index.by_user.get("user-123")
+    .map(|ids| ids.iter()
+        .filter(|id| index.by_state
+            .get(&SessionState::Active)
+            .map(|s| s.contains(id))
+            .unwrap_or(false))
+        .cloned()
+        .collect())
+    .unwrap_or_default();
+
+// 搜索会话内容
+let results = index.full_text.search("Rust 错误处理", 10);
+```
+
+---
+
+## 相关页面
+
+- [会话服务](./session-service) — Actor 模型和 CRDT 持久化
+- [架构概览](./overview) — 会话在整体架构中的位置
+- [CRDT 数据结构](../concepts/crdt) — CRDT 的数学保证

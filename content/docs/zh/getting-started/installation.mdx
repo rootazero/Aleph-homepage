@@ -1,15 +1,33 @@
 ---
 title: "安装"
-description: "在您的系统上安装 Aleph。"
+description: "在你的系统上安装 Aleph"
 ---
 
-本指南涵盖在您的系统上安装 Aleph。
+本指南涵盖了在你的系统上安装 Aleph。
 
-## 前提条件
+## 前置条件
 
-- **Rust 1.75+** - 从源代码构建所需
-- **macOS 14+** 或 **Linux** - 主要支持的平台
-- **SQLite 3.35+** - 用于会话存储
+- **Rust 1.92+** - 从源代码构建需要（参见 `Cargo.toml` 中的 `rust-version`）
+- **just** - 命令运行器（`cargo install just`）
+- **npm** - 用于构建 WASM 面板 UI
+- **wasm-bindgen** - WASM JS 绑定（`cargo install wasm-bindgen-cli`）
+- **macOS 14+**、**Linux** 或 **Windows** - 主要支持的平台
+- **SQLite** - 通过 `rusqlite` 捆绑（无需单独安装）
+
+### 平台特定要求
+
+**macOS：**
+- Xcode 命令行工具
+- Swift 工具链（用于桌面桥接）
+
+**Linux：**
+- `build-essential` 或等效工具
+- `pkg-config`
+- `libssl-dev`
+
+**Windows：**
+- Visual Studio 生成工具
+- `windows-sys` 功能由 Cargo 自动处理
 
 ## 安装方法
 
@@ -18,68 +36,64 @@ description: "在您的系统上安装 Aleph。"
 Aleph 包含一个带有常见开发任务的 `justfile`：
 
 ```bash
-# 构建项目
+# 验证所有构建依赖已安装
+just deps
+
+# 以开发模式运行服务器（重建 WASM）
+just dev
+
+# 构建发布二进制文件
 just build
 
 # 运行测试
 just test
-
-# 在开发模式下运行
-just dev
 ```
 
 ### 从源代码
 
 ```bash
 # 克隆仓库
-git clone https://github.com/anthropics/aleph.git
-cd aleph
+git clone https://github.com/rootazero/Aleph.git
+cd Aleph
 
-# 构建项目
-cargo build --release
+# 验证依赖
+just deps
 
-# 安装服务器二进制文件
-cargo install --path . --bin aleph-server
+# 以开发模式运行
+just dev
+
+# 或构建发布二进制文件
+just build
 ```
 
-### 使用 Cargo
+发布二进制文件将位于 `target/release/aleph-server`。
+
+### 验证构建
 
 ```bash
-cargo install aleph-cli
-```
+# 快速编译检查
+just check
 
-### Homebrew (macOS)
+# 运行核心测试
+just test
 
-```bash
-# 即将推出
-brew install aleph
-```
-
-## 验证安装
-
-```bash
-# 检查版本
-aleph --version
-
-# 运行健康检查
-aleph health
+# 检查所有 crate，包括桌面端
+just check-desktop
 ```
 
 ## 目录结构
 
-Aleph 创建以下目录：
+Aleph 在 `~/.aleph/` 创建以下目录：
 
 | 路径 | 用途 |
 |------|---------|
 | `~/.aleph/` | 主配置目录 |
-| `~/.aleph/config.toml` | 主配置文件 |
-| `~/.aleph/sessions/` | SQLite 会话数据库 |
-| `~/.aleph/memory/` | 内存笔记和 SQLite DB |
-| `~/.aleph/workspaces/` | 沙箱工作空间 |
-| `~/.aleph/logs/` | 应用程序日志 |
-| `~/.aleph/plugins/` | 已安装的插件 |
+| `~/.aleph/aleph.toml` | 主配置文件 |
+| `~/.aleph/logs/` | 服务器日志 |
+| `~/.aleph/skills/` | 用户安装的 skill |
+| `~/.aleph/plugins/` | 扩展 |
 
 ## 下一步
 
-- [快速开始](/docs/zh/getting-started/quick-start) - 启动并运行
-- [配置](/docs/zh/getting-started/configuration) - 配置您的设置
+- [快速上手](./quick-start) - 立即开始运行
+- [配置](./configuration) - 配置你的设置

@@ -1,8 +1,318 @@
 ---
 title: "Telegram"
-description: "Telegram 机器人集成指南"
+description: "Telegram Bot 接口——设置、配置和媒体处理"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
 
-请参阅[英文版](/en/docs/interfaces/telegram)。
+Telegram 接口使用 [teloxide](https://github.com/teloxide/teloxide) 框架将 Aleph 连接到 Telegram Bot API。它支持直接消息、群聊、文件附件、内联键盘和 Markdown 格式。
+
+## 能力
+
+| 功能 | 状态 |
+|---------|--------|
+| 文本消息 | 支持 |
+| Markdown (MarkdownV2) | 支持 |
+| 照片 | 支持（发送和接收） |
+| 文档 | 支持（发送和接收） |
+| 音频 | 支持（发送和接收） |
+| 视频 | 支持（发送和接收） |
+| 语音消息 | 支持（接收） |
+| 内联键盘 | 支持 |
+| 回复线程 | 支持 |
+| 消息编辑 | 支持（带聊天上下文） |
+| 消息删除 | 支持（带聊天上下文） |
+| 输入中指示器 | 支持 |
+| 最大消息长度 | 4,096 字符 |
+| 最大附件大小 | 50 MB |
+| 反应 | 有限（仅限 Telegram Premium） |
+
+## 前置条件
+
+<Steps>
+<Step>
+
+### 使用 BotFather 创建机器人
+
+1. 打开 Telegram 并搜索 [@BotFather](https://t.me/BotFather)
+2. 发送 `/newbot` 并按照提示命名你的机器人
+3. BotFather 会回复你的 **机器人令牌**（格式：`123456789:ABCdefGHIjklMNOpqrsTUVwxyz`）
+4. 安全保存此令牌——它是你机器人的认证凭据
+
+</Step>
+<Step>
+
+### 配置机器人设置（可选）
+
+在 BotFather 中，你可以自定义你的机器人：
+
+- `/setdescription` — 设置个人资料中显示的机器人描述
+- `/setabouttext` — 设置 "关于" 文本
+- `/setuserpic` — 上传个人资料图片
+- `/setcommands` — 定义命令菜单（例如 `/start`、`/help`）
+- `/setprivacy` — 如果你想让机器人看到所有群组消息（不仅仅是命令和提及），禁用 "隐私模式"
+
+</Step>
+<Step>
+
+### 启用 Telegram 功能
+
+使用 `telegram` 功能标志构建 Aleph：
+
+```bash
+cargo build --release --features telegram
+# 或用于所有接口：
+cargo build --release --features all-interfaces
+```
+
+</Step>
+</Steps>
+
+## 配置
+
+### 最小配置
+
+```toml
+[[channels]]
+id = "telegram"
+channel_type = "telegram"
+enabled = true
+
+[channels.config]
+bot_token = "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+```
+
+### 完整配置参考
+
+```toml
+[[channels]]
+id = "telegram"
+channel_type = "telegram"
+enabled = true
+
+[channels.config]
+# 来自 @BotFather 的机器人令牌（必需）
+# 支持 ${ENV_VAR} 扩展
+bot_token = "${TELEGRAM_BOT_TOKEN}"
+
+# 不带 @ 的机器人用户名（连接时自动检测）
+bot_username = "my_aleph_bot"
+
+# 用户白名单——空表示允许所有用户
+# 使用 Telegram 用户 ID（不是用户名）
+allowed_users = [123456789, 987654321]
+
+# 群组/聊天白名单——空表示允许所有群组
+allowed_groups = [-1001234567890]
+
+# 允许直接消息（默认：true）
+dm_allowed = true
+
+# 允许群组消息（默认：true）
+groups_allowed = true
+
+# 长轮询模式的轮询间隔（秒）（默认：1）
+polling_interval_secs = 1
+
+# 处理时发送输入中指示器（默认：true）
+send_typing = true
+
+# 失败消息的最大重试次数（默认：3）
+max_retries = 3
+
+# Webhook 配置（可选——默认为长轮询）
+# [channels.config.webhook]
+# url = "https://your-domain.com/telegram/webhook"
+# port = 8443
+# path = "/telegram/webhook"
+# certificate = "/path/to/cert.pem"    # 用于自签名证书
+# secret_token = "your-webhook-secret"  # 验证令牌
+```
+
+<Callout type="warn">
+切勿将机器人令牌提交到版本控制。使用环境变量（`${TELEGRAM_BOT_TOKEN}`）或密钥管理器。
+</Callout>
+
+### 环境变量模式
+
+最简单的设置使用单个环境变量：
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+```
+
+Aleph 会通过 `TelegramConfig::from_env()` 自动获取它。
+
+## 长轮询 vs Webhook
+
+Aleph 支持两种从 Telegram 接收更新的模式：
+
+### 长轮询（默认）
+
+机器人定期向 Telegram 的服务器请求新更新。这是默认设置，开箱即用，无需额外基础设施。
+
+**优点：**
+- 无需公共 URL 或 SSL 证书
+- 在 NAT 和防火墙后工作
+- 设置简单
+
+**缺点：**
+- 稍高的延迟（可通过 `polling_interval_secs` 配置）
+- 保持与 Telegram 服务器的持久连接
+
+### Webhook 模式
+
+Telegram 通过 HTTPS POST 请求将更新推送到你的服务器。通过添加 `webhook` 部分启用：
+
+```toml
+[channels.config.webhook]
+url = "https://aleph.example.com/telegram/webhook"
+port = 8443
+secret_token = "a-random-secret-string"
+```
+
+**优点：**
+- 更低的延迟（即时交付）
+- 对高流量机器人更高效
+
+**缺点：**
+- 需要公共 HTTPS 端点
+- 需要有效的 SSL 证书（或带 `certificate` 字段的自签名证书）
+
+## 用户和群组白名单
+
+### 查找用户 ID
+
+Telegram 用户 ID 是数字。要查找用户的 ID：
+
+1. 让用户向 [@userinfobot](https://t.me/userinfobot) 发送消息
+2. 或使用 `getUpdates` API 查看原始消息数据
+
+### 白名单行为
+
+```toml
+# 空列表 = 允许所有人
+allowed_users = []
+
+# 仅允许特定用户
+allowed_users = [123456789, 987654321]
+```
+
+当 `allowed_users` 非空时，来自未列出用户的消息会被静默丢弃。同样的逻辑适用于 `allowed_groups` 的群聊。
+
+### 群聊行为
+
+当 Aleph 在群组中收到消息时：
+
+1. 检查组 ID 是否在 `allowed_groups` 中（或列表为空）
+2. 检查发送者是否在 `allowed_users` 中（或列表为空）
+3. 如果两者都通过，将消息路由到 Agent
+
+<Callout type="info">
+默认情况下，Telegram 机器人在 "隐私模式" 下只能看到提及机器人的消息或以 `/` 开头的消息。如果你想让 Aleph 看到群组中的所有消息，请通过 BotFather 禁用隐私模式（`/setprivacy`）。
+</Callout>
+
+## 媒体处理
+
+### 接收媒体
+
+Aleph 从所有支持的 Telegram 媒体类型中提取附件：
+
+| 媒体类型 | MIME 类型 | 说明 |
+|-----------|-----------|-------|
+| 照片 | `image/jpeg` | 选择最大可用分辨率 |
+| 文档 | 来自元数据 | 最大 50 MB 的通用文件 |
+| 音频 | 来自元数据或 `audio/mpeg` | 带元数据的音乐文件 |
+| 视频 | 来自元数据或 `video/mp4` | 带缩略图的视频文件 |
+| 语音 | 来自元数据或 `audio/ogg` | Opus 编码的语音消息 |
+
+媒体消息的标题被提取为消息文本。如果消息同时有标题和媒体，标题成为 `text` 字段。
+
+### 发送媒体
+
+出站附件根据 MIME 类型分发：
+
+- `image/*` — 作为照片发送（`sendPhoto`）
+- `audio/*` — 作为音频发送（`sendAudio`）
+- `video/*` — 作为视频发送（`sendVideo`）
+- 其他所有 — 作为文档发送（`sendDocument`）
+
+附件可以提供为：
+- **内存字节**（`data` 字段）
+- **本地文件路径**（`path` 字段）
+- **远程 URL**（`url` 字段）
+
+## 内联键盘
+
+Telegram 接口支持用于交互式提示的内联键盘按钮。这主要由工具审批系统使用，让用户直接从聊天中批准或拒绝工具执行：
+
+```
+Aleph wants to execute: shell_exec("ls -la")
+
+[Allow Once] [Allow Always] [Deny]
+```
+
+当用户点击按钮时，回调查询通过 Gateway 路由回并由审批桥处理。按钮上的加载指示器通过 `answerCallbackQuery` 自动关闭。
+
+键盘也可以用于 Agent 自己构建的自定义多选响应。
+
+## 会话路由
+
+每个 Telegram 对话获得唯一的会话密钥：
+
+| 上下文 | 会话密钥 |
+|---------|------------|
+| 与用户 12345 的 DM | `agent:main:dm:12345` 或 `agent:main:telegram:dm:12345` |
+| 群组 -100123 | `agent:main:telegram:group:-100123` |
+
+确切的格式取决于你的 `dm_scope` 设置（参见 [接口概览](/docs/interfaces/overview)）。
+
+## 消息格式
+
+Aleph 使用 Telegram 的 **MarkdownV2** 解析模式发送消息。支持以下格式：
+
+| 语法 | 结果 |
+|--------|--------|
+| `*bold*` | **bold** |
+| `_italic_` | *italic* |
+| `` `code` `` | `code` |
+| ```` ```language\ncode``` ```` | 带语法高亮的代码块 |
+| `[text](url)` | 超链接 |
+
+<Callout type="warn">
+MarkdownV2 需要转义特殊字符（`_`、`*`、`[`、`]`、`(`、`)`、`~`、`` ` ``、`>`、`#`、`+`、`-`、`=`、`|`、`{`、`}`、`.`、`!`）。Aleph 在格式化出站消息时自动处理此转义。
+</Callout>
+
+## 错误处理
+
+Telegram 接口处理常见的失败场景：
+
+| 错误 | 行为 |
+|-------|----------|
+| **无效的机器人令牌** | 启动时通过 `getMe` API 调用检测；频道进入 `Error` 状态 |
+| **速率限制** | 遵守 Telegram 速率限制；最多重试 `max_retries` 次 |
+| **网络故障** | 长轮询自动重新连接；Webhook 模式依赖 Telegram 的重试 |
+| **用户不在白名单中** | 消息被静默丢弃并记录调试级别日志 |
+| **空消息** | 跳过（无文本且无附件） |
+| **服务消息** | 忽略（加入/离开通知、置顶消息等） |
+
+## 验证
+
+机器人令牌在两个阶段进行验证：
+
+1. **格式检查**（配置加载）—— 令牌必须非空并包含冒号（格式：`<bot_id>:<hash>`）
+2. **API 检查**（频道启动）—— 调用 `getMe` 验证令牌并检索机器人的用户名和 ID
+
+如果任一检查失败，频道报告 `ConfigError` 或 `AuthFailed` 错误并且不开始轮询。
+
+## 故障排除
+
+| 问题 | 解决方案 |
+|---------|----------|
+| 机器人不响应 | 检查构建中是否启用了 `telegram` 功能标志 |
+| 机器人忽略群组消息 | 通过 BotFather 禁用隐私模式（`/setprivacy`）或确保机器人被提及 |
+| 日志中 "User not in allowlist" | 将用户的数字 Telegram ID 添加到 `allowed_users` |
+| "Failed to verify bot token" | 使用 `curl https://api.telegram.org/bot<TOKEN>/getMe` 验证你的令牌 |
+| 消息延迟 | 减少 `polling_interval_secs` 或切换到 Webhook 模式 |
+| 格式显示损坏 | Aleph 使用 MarkdownV2；检查特殊字符是否被双转义 |

@@ -1,8 +1,154 @@
 ---
 title: "团队"
-description: "多代理团队编排架构"
+description: "多代理协作的团队管理，具有生命周期、计划和审批工作流。"
 ---
 
-> 此页面正在翻译中。
+`teams` 模块为多代理协作提供团队管理，支持具有生命周期管理、计划审批和任务跟踪的结构化团队协作。
 
-请参阅[英文版](/en/docs/architecture/teams)。
+## 概览
+
+团队支持：
+- **团队创建** —— 定义具有特定角色的代理团队
+- **生命周期管理** —— 跟踪团队从组建到完成的状态
+- **计划审批** —— 团队计划的多阶段审批
+- **任务跟踪** —— 每个团队的任务分配和进度
+- **SQLite 持久化** —— 团队数据的持久存储
+
+## 架构
+
+```
+TeamStore (SQLite)
+  ├── Team —— 团队定义和元数据
+  ├── TeamMember —— 成员资格和角色
+  ├── Plans —— 团队计划和审批状态
+  ├── Sessions —— 活动团队会话
+  └── Artifacts —— 可交付成果和输出
+```
+
+## 核心组件
+
+### TeamStore
+
+团队数据的 SQLite 支持存储：
+
+```rust
+// src/teams/store.rs
+pub trait TeamStore: Send + Sync {
+    fn create_team(&self, team: NewTeam) -> Result<TeamId>;
+    fn get_team(&self, id: TeamId) -> Result<Option<Team>>;
+    fn list_teams(&self) -> Result<Vec<TeamSummary>>;
+    fn add_member(
+        &self, 
+        team_id: TeamId, 
+        member: NewTeamMember
+    ) -> Result<()>;
+    fn update_status(
+        &self, 
+        id: TeamId, 
+        status: TeamStatus
+    ) -> Result<()>;
+}
+
+pub struct SqliteTeamStore {
+    conn: rusqlite::Connection,
+}
+```
+
+### 团队类型
+
+```rust
+// src/teams/types.rs
+pub struct Team {
+    pub id: TeamId,
+    pub name: String,
+    pub description: String,
+    pub status: TeamStatus,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct TeamMember {
+    pub id: MemberId,
+    pub team_id: TeamId,
+    pub agent_id: AgentId,
+    pub role: TeamRole,
+    pub permissions: Permissions,
+}
+
+pub enum TeamStatus {
+    Forming,
+    Active,
+    Paused,
+    Completed,
+    Disbanded,
+}
+```
+
+### 生命周期
+
+团队生命周期管理：
+
+```rust
+// src/teams/lifecycle.rs
+pub struct TeamLifecycle;
+
+impl TeamLifecycle {
+    pub fn can_transition(
+        from: TeamStatus,
+        to: TeamStatus,
+    ) -> bool;
+    
+    pub fn on_forming(team: &mut Team);
+    pub fn on_active(team: &mut Team);
+    pub fn on_completed(team: &mut Team);
+}
+```
+
+### 计划
+
+计划审批工作流：
+
+```rust
+// src/teams/plans.rs
+pub struct TeamPlan {
+    pub id: PlanId,
+    pub team_id: TeamId,
+    pub title: String,
+    pub steps: Vec<PlanStep>,
+    pub approval_state: ApprovalState,
+}
+
+pub enum ApprovalState {
+    Draft,
+    PendingReview,
+    Approved,
+    Rejected,
+}
+```
+
+## 配置
+
+```toml
+[teams]
+enabled = true
+max_team_size = 10
+require_plan_approval = true
+```
+
+## 代码位置
+
+- `src/teams/mod.rs` —— 模块入口点
+- `src/teams/store.rs` —— SQLite 存储
+- `src/teams/types.rs` —— 核心类型
+- `src/teams/lifecycle.rs` —— 生命周期管理
+- `src/teams/plans.rs` —— 计划审批
+- `src/teams/sessions.rs` —— 活动会话
+- `src/teams/artifacts.rs` —— 可交付成果
+- `src/teams/messages.rs` —— 团队消息传递
+- `src/teams/context.rs` —— 共享上下文
+- `src/teams/events.rs` —— 团队事件
+
+## 另请参阅
+
+- [群聊](./groupchat) —— 多角色对话
+- [A2A](./a2a) —— 代理到代理协议
+- [编排器](./orchestrator) —— 代理编排

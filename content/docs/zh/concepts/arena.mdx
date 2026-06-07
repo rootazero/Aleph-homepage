@@ -1,6 +1,133 @@
 ---
-title: "Arena"
-description: "多代理协作工作区。"
+title: "竞技场"
+description: "SharedArena —— 多个代理在共享目标上协作的结构化工作空间。"
 ---
 
-Arena文档目前提供英文版本。中文翻译正在进行中。
+`arena` 模块实现 SharedArena，一个多个代理在共享目标上协作的结构化工作空间。它为协作代理会话提供生命周期管理、状态聚合、事件跟踪和持久化存储。
+
+## 设计理念
+
+SharedArena 遵循三个原则：
+
+1. **显式生命周期** —— 竞技场通过具有验证转换的定义良好的状态转换
+2. **确定性排序** —— 所有集合都排序以确保可重现的行为
+3. **权限隔离** —— Handle 模式限制每个参与者可以访问的内容
+
+---
+
+## 核心组件
+
+### 竞技场状态机
+
+竞技场遵循严格的生命周期：
+
+```
+Created ──▶ Active ──▶ Settling ──▶ Archived
+```
+
+每次转换在继续之前验证当前状态。无效转换被拒绝。
+
+### ArenaManager
+
+所有竞技场的中央协调器：
+
+```rust
+pub struct ArenaManager {
+    arenas: RwLock<HashMap<ArenaId, Arena>>,
+}
+
+impl ArenaManager {
+    pub async fn create(
+        &self,
+        config: ArenaConfig,
+    ) -> Result<ArenaId> { /* ... */ }
+    
+    pub async fn active_arenas_for(
+        &self,
+        agent_id: &AgentId,
+    ) -> Vec<ArenaId> { /* ... */ }
+}
+```
+
+**确定性：** `active_arenas_for` 返回排序的 `ArenaId` 向量（在 `ArenaId` 上派生 `Ord`）。
+
+### ArenaHandle
+
+参与者的竞技场受限视图：
+
+```rust
+pub struct ArenaHandle {
+    arena_id: ArenaId,
+    permissions: HandlePermissions,
+}
+```
+
+Handle 模式通过隔离权限来强制执行 P1（低耦合）—— 参与者只能访问句柄允许的内容。
+
+### Aggregate
+
+用于协作进度跟踪的状态聚合：
+
+```rust
+pub struct ArenaAggregate {
+    completed_steps: u32,
+    total_steps: u32,
+    participants: Vec<AgentId>,
+}
+```
+
+步骤计数使用 `saturating_add` 以防止整数溢出。
+
+---
+
+## 事件
+
+竞技场事件跟踪协作活动：
+
+```rust
+pub enum ArenaEvent {
+    AgentJoined { agent_id: AgentId, timestamp: DateTime<Utc> },
+    AgentLeft { agent_id: AgentId, timestamp: DateTime<Utc> },
+    StepCompleted { step: u32, agent_id: AgentId },
+    GoalUpdated { new_goal: String },
+}
+```
+
+事件被持久化到存储以进行审计和重放。
+
+---
+
+## 存储
+
+竞技场通过 `ArenaStorage` 持久化：
+
+- 使用参数化 SQL 查询（无注入风险）
+- 使用 `unwrap_or_else(|e| e.into_inner())` 模式的锁安全
+- 所有查询使用 `params![]` 进行绑定
+
+---
+
+## 安全属性
+
+- **状态机验证** —— 非法转换在编译/运行时拒绝
+- **无锁中毒** —— 所有锁使用恢复模式
+- **无 SQL 注入** —— 整个使用参数化查询
+- **无 UTF-8 切片** —— 没有字节级字符串操作
+- **溢出保护** —— 所有累积使用 `saturating_add`
+
+---
+
+## 代码位置
+
+- `src/arena/mod.rs` —— 模块入口点
+- `src/arena/manager.rs` —— 竞技场生命周期和协调
+- `src/arena/handle.rs` —— 权限受限的竞技场访问
+- `src/arena/aggregate.rs` —— 状态聚合
+- `src/arena/types.rs` —— 核心类型和状态机
+- `src/arena/events.rs` —— 事件定义
+- `src/arena/storage.rs` —— 持久化层
+
+## 另请参阅
+
+- [代理运行时](./agent-runtime) —— 代理如何生成和管理任务
+- [事件系统](./event-system) —— 事件分发模式

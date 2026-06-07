@@ -1,15 +1,15 @@
 ---
 title: "group_chat.*"
-description: "群聊和多参与方对话 RPC 方法"
+description: "群聊和多方对话 RPC 方法"
 ---
 
-群聊方法管理多参与方对话 —— 涉及多个 AI 代理和/或人类参与者在共享聊天上下文中的对话。
+群聊方法管理多方对话——在共享聊天上下文中涉及多个 AI 代理和/或人类参与者的对话。
 
 ## 方法
 
 ### group_chat.list
 
-列出所有活跃的群聊。
+列出所有活动的群聊。
 
 **请求：**
 ```json
@@ -42,7 +42,7 @@ description: "群聊和多参与方对话 RPC 方法"
 
 ### group_chat.create
 
-创建新群聊。
+创建新的群聊。
 
 **请求：**
 ```json
@@ -75,7 +75,7 @@ description: "群聊和多参与方对话 RPC 方法"
 
 **参数：**
 
-| 参数 | 类型 | 必填 | 描述 |
+| 参数 | 类型 | 必填 | 说明 |
 |-----------|------|----------|-------------|
 | `name` | string | 是 | 聊天名称 |
 | `participants` | string[] | 是 | 要包含的代理角色（用户始终包含） |
@@ -155,7 +155,7 @@ description: "群聊和多参与方对话 RPC 方法"
 
 ### group_chat.remove_participant
 
-从群聊移除参与者。
+从群聊中移除参与者。
 
 **请求：**
 ```json
@@ -186,7 +186,7 @@ description: "群聊和多参与方对话 RPC 方法"
 }
 ```
 
-## 参见
+## 另请参阅
 
-- [方法参考](/docs/zh/gateway/methods) -- 所有方法命名空间
-- [架构：群聊](/docs/zh/architecture/groupchat) -- 群聊架构
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [架构：群聊](/docs/zh/architecture/groupchat)——群聊架构

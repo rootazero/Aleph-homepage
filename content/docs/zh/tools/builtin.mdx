@@ -1,8 +1,475 @@
 ---
 title: "内置工具"
-description: "Aleph 自带的内置工具列表"
+description: "Aleph 附带的完整工具目录，按类别组织"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/tools/builtin)。
+## 概述
+
+Aleph 附带了一套全面的内置工具，涵盖文件操作、代码执行、网页交互、内存管理、浏览器自动化等。所有内置工具都实现 `AlephTool` trait，并使用静态分发以获得最大性能。
+
+内置工具使用 builder 方法在 `AlephToolServer` 上注册：
+
+```rust
+let server = AlephToolServer::new()
+    .with_bash()
+    .with_file_ops()
+    .with_search()
+    .with_web_fetch()
+    .with_youtube()
+    .with_code_exec()
+    .with_browser()
+    .with_desktop()
+    .with_memory_search(database)
+    .with_atomic_ops(workspace_root);
+```
+
+---
+
+## 代码执行
+
+### bash
+
+执行 bash/shell 命令。一个便捷的包装器，将命令路由到代码执行引擎，设置 `language=shell`。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `cmd` | string | 是 | 要执行的 bash 命令 |
+| `working_dir` | string | 否 | 工作目录（默认为临时目录） |
+| `timeout` | integer | 否 | 超时（秒）（默认：60） |
+
+```json
+{ "cmd": "find . -name '*.rs' | wc -l", "working_dir": "/project", "timeout": 30 }
+```
+
+<Callout type="warn">
+危险命令如 `sudo`、`rm -rf /` 和类似的破坏性操作会被安全过滤器阻止。
+</Callout>
+
+### code_exec
+
+在沙盒环境中执行多语言代码片段。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `language` | string | 是 | 语言：`shell`, `python`, `javascript` |
+| `code` | string | 是 | 要执行的代码 |
+| `working_dir` | string | 否 | 工作目录 |
+| `timeout` | integer | 否 | 超时（秒）（默认：60） |
+
+```json
+{ "language": "python", "code": "import math\nprint(math.pi)" }
+```
+
+---
+
+## 文件操作
+
+### file_ops
+
+一个统一的文件系统工具，通过 `action` 参数支持多种操作。
+
+#### 支持的操作
+
+| 操作 | 描述 | 必需参数 |
+|------|------|----------|
+| `list` | 列出目录内容 | `path` |
+| `read` | 读取文件内容 | `path`, 可选 `encoding` |
+| `write` | 将内容写入文件 | `path`, `content` |
+| `edit` | 对文件应用有针对性的编辑 | `path`, `edits` |
+| `move` | 移动/重命名文件 | `source`, `destination` |
+| `copy` | 复制文件 | `source`, `destination` |
+| `delete` | 删除文件或目录 | `path` |
+| `mkdir` | 创建目录 | `path` |
+| `search` | 按模式搜索文件 | `path`, `pattern` |
+
+#### 参数
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `action` | string | 是 | 要执行的操作（见上文） |
+| `path` | string | 因操作而异 | 文件或目录路径 |
+| `content` | string | 因操作而异 | 写入操作的内容 |
+| `source` | string | 因操作而异 | 移动/复制的源路径 |
+| `destination` | string | 因操作而异 | 移动/复制的目标路径 |
+| `encoding` | string | 否 | 文件编码（默认：`utf-8`） |
+| `pattern` | string | 因操作而异 | 搜索模式（glob 或 regex） |
+| `recursive` | boolean | 否 | 递归列出/搜索 |
+
+```json
+{ "action": "read", "path": "/etc/hostname" }
+```
+
+```json
+{ "action": "write", "path": "/tmp/output.txt", "content": "Hello, Aleph!" }
+```
+
+```json
+{ "action": "search", "path": "/project/src", "pattern": "*.rs", "recursive": true }
+```
+
+### atomic_ops
+
+由 Atomic Engine 提供支持的原子搜索、替换和移动操作。设计用于跨工作空间的精确代码修改。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `action` | string | 是 | `search`, `replace`, 或 `move` |
+| `path` | string | 是 | 文件或目录路径 |
+| `pattern` | string | 因操作而异 | 搜索模式 |
+| `replacement` | string | 因操作而异 | 替换文本 |
+| `source` | string | 因操作而异 | 移动的源路径 |
+| `destination` | string | 因操作而异 | 移动的目标路径 |
+
+---
+
+## 网页和搜索
+
+### web_fetch
+
+从网页 URL 获取和提取内容，并自动进行 HTML 到文本的转换。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `url` | string | 是 | 要获取的 URL |
+| `method` | string | 否 | HTTP 方法（默认：`GET`） |
+| `headers` | object | 否 | 自定义 HTTP 头 |
+
+```json
+{ "url": "https://api.github.com/repos/rust-lang/rust", "headers": { "Accept": "application/json" } }
+```
+
+### search
+
+使用 SearXNG 或其他配置的搜索引擎搜索网页。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `query` | string | 是 | 搜索查询 |
+| `engine` | string | 否 | 要使用的搜索引擎 |
+
+```json
+{ "query": "Rust async trait patterns 2025" }
+```
+
+### youtube
+
+从 YouTube URL 提取视频信息和字幕。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `url` | string | 是 | YouTube 视频 URL |
+
+```json
+{ "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }
+```
+
+---
+
+## 浏览器自动化
+
+### browser
+
+通过 Chrome DevTools Protocol (CDP) 控制 Chromium 浏览器。支持启动浏览器、导航页面、与元素交互、捕获屏幕截图和获取无障碍快照。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `action` | string | 是 | 浏览器操作（见下文） |
+| `tab_id` | string | 因操作而异 | 目标标签页标识符 |
+| `url` | string | 因操作而异 | 导航 URL |
+| `ref_id` | string | 因操作而异 | ARIA 元素 ref ID |
+| `selector` | string | 因操作而异 | CSS 选择器（后备） |
+| `text` | string | 因操作而异 | type/fill 操作的文本 |
+| `js` | string | 因操作而异 | 要评估的 JavaScript 代码 |
+| `direction` | string | 因操作而异 | 滚动方向 |
+| `headless` | boolean | 否 | 以无头模式启动 |
+| `full_page` | boolean | 否 | 整页屏幕截图 |
+
+#### 操作
+
+| 操作 | 描述 | 必需 |
+|------|------|------|
+| `start` | 启动浏览器实例 | 可选：`headless` |
+| `stop` | 关闭浏览器 | - |
+| `open_tab` | 打开新标签页 | `url` |
+| `close_tab` | 关闭标签页 | `tab_id` |
+| `list_tabs` | 列出所有打开的标签页 | - |
+| `navigate` | 导航到 URL | `tab_id`, `url` |
+| `click` | 点击元素 | `tab_id`, `ref_id` 或 `selector` |
+| `type` | 在元素中输入文本 | `tab_id`, `ref_id` 或 `selector`, `text` |
+| `fill` | 替换元素值 | `tab_id`, `ref_id` 或 `selector`, `text` |
+| `scroll` | 滚动页面/元素 | `tab_id`, `direction` |
+| `hover` | 悬停在元素上 | `tab_id`, `ref_id` 或 `selector` |
+| `screenshot` | 捕获屏幕截图 | `tab_id`, 可选 `full_page` |
+| `snapshot` | ARIA 无障碍树 | `tab_id` |
+| `evaluate` | 运行 JavaScript | `tab_id`, `js` |
+
+详细用法请参阅 [浏览器自动化](/docs/zh/tools/browser)。
+
+---
+
+## 桌面集成
+
+### desktop
+
+桥接到 Aleph macOS 桌面应用程序。通过桌面配套应用提供对原生 macOS 功能的访问。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `action` | string | 是 | 要执行的桌面操作 |
+
+<Callout type="info">
+桌面工具需要运行 Aleph macOS 配套应用。当应用未运行时，所有调用返回友好消息而不是错误，允许 agent 优雅降级。
+</Callout>
+
+---
+
+## 感知
+
+### vision
+
+由可配置视觉管道提供支持的图像理解和 OCR。支持多个提供商（例如 Claude Vision、平台原生 OCR）。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `action` | string | 是 | 视觉操作 |
+| `image` | string | 因操作而异 | 图像数据或路径 |
+
+### snapshot_capture
+
+捕获系统无障碍树和可选的 OCR/屏幕截图数据。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `target` | string | 是 | 捕获目标 |
+| `region` | object | 否 | 要捕获的区域 |
+| `include_ax` | boolean | 否 | 包含无障碍树 |
+| `include_vision` | boolean | 否 | 包含视觉分析 |
+| `include_image` | boolean | 否 | 包含原始图像数据 |
+
+---
+
+## 生成
+
+### image_generate
+
+使用配置的图像生成提供商从文本提示生成图像。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `prompt` | string | 是 | 图像生成提示 |
+| `provider` | string | 否 | 要使用的提供商 |
+| `size` | string | 否 | 图像尺寸 |
+
+### speech_generate
+
+文本转语音生成。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `text` | string | 是 | 要转换为语音的文本 |
+
+### pdf_generate
+
+从文本或 Markdown 内容生成 PDF 文档。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `content` | string | 是 | 要渲染为 PDF 的内容 |
+| `template` | string | 否 | PDF 模板名称 |
+
+---
+
+## 内存
+
+### memory_search
+
+使用混合检索和智能冗余消除搜索个人记忆。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `query` | string | 是 | 自然语言搜索查询 |
+| `max_results` | integer | 否 | 最大结果数（默认：10） |
+
+该工具在压缩事实和原始对话记录之间执行混合检索，使用 `ContextComptroller` 对结果进行去重：
+
+```
+memory_search(query)
+  -> FactRetrieval.retrieve(query)
+    -> 混合搜索（事实 + 原始记忆后备）
+  -> ContextComptroller.arbitrate(results, budget)
+    -> 通过余弦相似度检测冗余（阈值：0.95）
+    -> 当事实存在时删除冗余记录
+    -> 按相似度分数排序（降序）
+    -> 修剪以适应 token 预算
+  -> 返回去重结果
+```
+
+```json
+{ "query": "What are my coding preferences?", "max_results": 10 }
+```
+
+### memory_store
+
+将事实或信息片段存储到长期记忆中。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `content` | string | 是 | 要存储的内容 |
+| `tags` | array | 否 | 分类标签 |
+
+### memory_forget
+
+从内存中删除特定事实。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `fact_id` | string | 是 | 要删除的事实 ID |
+
+### memory_browse
+
+浏览和探索存储的记忆条目。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `action` | string | 是 | 浏览操作 |
+
+---
+
+## 会话管理
+
+### sessions_spawn
+
+生成子 agent 会话以进行并行任务执行。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `prompt` | string | 是 | 子 agent 的初始提示 |
+| `model` | string | 否 | 要使用的 LLM 模型 |
+| `thinking` | boolean | 否 | 启用扩展思考 |
+
+### sessions_send
+
+向现有子 agent 会话发送消息。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `session_key` | string | 是 | 目标会话标识符 |
+| `message` | string | 是 | 要发送的消息 |
+
+### sessions_list
+
+列出所有活动的子 agent 会话。不需要参数。
+
+---
+
+## 跨频道消息
+
+### message
+
+在所有连接的频道（Telegram、Discord 等）中发送、回复、编辑、删除和反应消息。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `action` | string | 是 | `send`, `reply`, `edit`, `delete`, `react` |
+| `channel` | string | 因操作而异 | 目标频道 |
+| `content` | string | 因操作而异 | 消息内容 |
+| `message_id` | string | 因操作而异 | 目标消息 ID |
+
+---
+
+## 元工具
+
+### list_tools
+
+按类别列出可用工具。支持 agent 的智能工具发现。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `category` | string | 否 | 按类别筛选 |
+
+### get_tool_schema
+
+获取特定工具的完整 JSON Schema。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `tool_name` | string | 是 | 工具名称 |
+
+### skill_read
+
+读取 Markdown 技能定义。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `skill_name` | string | 是 | 技能名称 |
+
+### list_skills
+
+列出所有可用的 Markdown 技能。不需要参数。
+
+### ask_user
+
+向用户提问并等待响应。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `question` | string | 是 | 要问的问题 |
+| `options` | array | 否 | 预定义的答案选项 |
+
+### canvas_show
+
+在 UI 画布区域显示内容。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `content` | string | 是 | 要显示的内容 |
+| `type` | string | 是 | 内容类型 |
+
+---
+
+## MCP 桥接工具
+
+### mcp_read_resource
+
+从连接的 MCP 服务器读取资源。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `uri` | string | 是 | 资源 URI（例如 `server:file:///path`） |
+
+### mcp_get_prompt
+
+从连接的 MCP 服务器检索提示。
+
+| 参数 | 类型 | 必需 | 描述 |
+|------|------|------|------|
+| `name` | string | 是 | 提示名称（例如 `server:prompt_name`） |
+| `arguments` | object | 否 | 提示参数 |
+
+### invalid
+
+无法识别的工具名称的后备处理程序。提供有用的错误消息，建议可用工具。此工具会自动注册，不打算直接使用。
+
+---
+
+## 工具注册摘要
+
+| 方法 | 注册的工具 |
+|------|-----------|
+| `.with_bash()` | `bash` |
+| `.with_file_ops()` | `file_ops` |
+| `.with_search()` | `search` |
+| `.with_web_fetch()` | `web_fetch` |
+| `.with_youtube()` | `youtube` |
+| `.with_code_exec()` | `code_exec` |
+| `.with_pdf_generate()` | `pdf_generate` |
+| `.with_browser()` | `browser` |
+| `.with_desktop()` | `desktop` |
+| `.with_vision(pipeline)` | `vision` |
+| `.with_atomic_ops(root)` | `atomic_ops` |
+| `.with_memory_search(db)` | `memory_search` |
+| `.with_mcp_read_resource(handle)` | `mcp_read_resource` |
+| `.with_mcp_get_prompt(handle)` | `mcp_get_prompt` |
+| `.with_invalid(tools)` | `invalid` |

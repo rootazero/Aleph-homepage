@@ -1,8 +1,355 @@
 ---
 title: "钩子"
-description: "事件驱动的自动化钩子"
+description: "使用 shell 命令、提示和代理调用对代理生命周期事件做出反应"
 ---
 
-> 此页面正在翻译中。
+import { Callout } from "fumadocs-ui/components/callout";
 
-请参阅[英文版](/en/docs/automation/hooks)。
+钩子是响应代理生命周期事件执行的回调函数 —— 在工具运行之前、会话启动时、命令执行之后等。它们允许您将自定义逻辑注入代理管道而无需修改核心代码：审计日志、安全门、通知分发、分析和动态提示注入。
+
+## 钩子如何工作
+
+Aleph 的钩子系统位于代理循环和工具执行之间，形成事件驱动的中间件管道。当生命周期事件触发时，`HookExecutor` 找到该事件的所有已注册钩子，检查它们的匹配器模式，并根据其种类（拦截器、观察者或解析器）执行它们的动作。
+
+```
+用户输入 ──▶ 代理循环 ──▶ [PreToolUse 钩子] ──▶ 工具执行
+                                                          │
+                                           [PostToolUse 钩子] ◀──┘
+                                                 │
+                                           响应 ──▶ [SessionEnd 钩子]
+```
+
+## 钩子事件
+
+每个钩子都绑定到特定事件。Aleph 支持以下钩子事件：
+
+### 工具生命周期
+
+| 事件 | 何时触发 | 可以阻止？ |
+|-------|---------------|------------|
+| `PreToolUse` | 在工具执行之前 | 是 |
+| `PostToolUse` | 工具成功完成后 | 否 |
+| `PostToolUseFailure` | 工具失败后 | 否 |
+
+### 会话生命周期
+
+| 事件 | 何时触发 | 可以阻止？ |
+|-------|---------------|------------|
+| `SessionStart` | 当新会话开始时 | 否 |
+| `SessionEnd` | 当会话结束时 | 否 |
+| `PreCompact` | 会话压缩之前 | 是 |
+
+### 用户交互
+
+| 事件 | 何时触发 | 可以阻止？ |
+|-------|---------------|------------|
+| `UserPromptSubmit` | 当用户提交提示时 | 是 |
+| `PermissionRequest` | 当工具请求提升权限时 | 是 |
+
+### 代理生命周期
+
+| 事件 | 何时触发 | 可以阻止？ |
+|-------|---------------|------------|
+| `SubagentStart` | 当子代理启动时 | 否 |
+| `SubagentStop` | 当子代理完成时 | 否 |
+| `Stop` | 当处理停止时 | 否 |
+| `Notification` | 当发送通知时 | 否 |
+| `Setup` | 在初始设置期间 | 否 |
+
+### 聊天和命令（插件事件）
+
+| 事件 | 何时触发 | 可以阻止？ |
+|-------|---------------|------------|
+| `ChatMessage` | 当收到聊天消息时 | 是 |
+| `ChatParams` | 当配置聊天参数时 | 是 |
+| `ChatResponse` | 当生成聊天响应时 | 否 |
+| `CommandExecuteBefore` | 在命令执行之前 | 是 |
+| `CommandExecuteAfter` | 在命令执行之后 | 否 |
+
+## 钩子种类
+
+并非所有钩子的行为都相同。Aleph 将钩子分为三种，每种具有不同的执行语义：
+
+### 拦截器
+
+**管道执行。** 拦截器按优先级顺序运行，可以修改请求上下文或完全阻止执行。它们在第一个阻止时短路。
+
+将拦截器用于：
+- 安全门（阻止危险的工具调用）
+- 输入验证（拒绝格式错误的参数）
+- 请求修改（重写工具参数）
+
+```toml
+# 阻止所有包含 'rm -rf' 的 shell 命令
+[[hooks]]
+event = "PreToolUse"
+kind = "interceptor"
+priority = "system"
+matcher = "shell:exec"
+actions = [{ type = "command", command = "echo $ARGUMENTS | grep -q 'rm -rf' && echo 'block: Dangerous command blocked' || echo 'pass'" }]
+```
+
+当拦截器命令输出行以 `block:` 开头时，执行停止，行的其余部分成为向用户显示的阻止原因。
+
+### 观察者
+
+**即发即弃。** 观察者并行运行，接收只读上下文，不能阻止或修改任何内容。错误被记录但永远不会传播。
+
+将观察者用于：
+- 审计日志
+- 分析和指标
+- 外部通知
+- 遥测
+
+```toml
+[[hooks]]
+event = "PostToolUse"
+kind = "observer"
+actions = [{ type = "command", command = "echo \"$(date): Tool $TOOL_NAME completed\" >> /var/log/aleph/tool_audit.log" }]
+```
+
+### 解析器
+
+**先到先赢竞争。** 解析器按优先级顺序运行，一旦一个返回值就停止。用于多个来源可能提供答案的动态解析。
+
+将解析器用于：
+- 动态配置查找
+- 凭据解析
+- 路由选择
+
+## 钩子优先级
+
+钩子在其种类内按优先级顺序执行。较低的数字值先运行：
+
+| 优先级 | 值 | 用例 |
+|----------|-------|----------|
+| `system` | -1000 | 安全、审计 —— 始终先运行 |
+| `high` | -100 | 重要的业务逻辑 |
+| `normal` | 0 | 默认优先级 |
+| `low` | 100 | 非关键扩展 |
+
+对于拦截器，优先级决定谁先阻止。对于解析器，它决定谁先解析。对于观察者，优先级没有实际效果，因为它们并行运行。
+
+## 钩子动作
+
+每个钩子在触发时可以执行一个或多个动作。三种动作类型可用：
+
+### 命令
+
+执行 shell 命令。该命令在子进程中运行，环境变量从钩子上下文填充：
+
+```toml
+actions = [{ type = "command", command = "${PLUGIN_ROOT}/scripts/validate.sh" }]
+```
+
+**可用的环境变量：**
+
+| 变量 | 说明 |
+|----------|-------------|
+| `$TOOL_NAME` | 正在调用的工具名称 |
+| `$ARGUMENTS` | 工具参数为 JSON 字符串 |
+| `$TOOL_INPUT` | 工具输入内容 |
+| `$FILE` | 文件路径（如果适用） |
+| `$SESSION_ID` | 当前会话 ID |
+| `$PLUGIN_ROOT` | 插件的根目录 |
+
+支持 `$VAR` 和 `${VAR}` 语法。命令具有默认的 300 秒超时。
+
+### 提示
+
+将提示字符串注入对话上下文。提示传递给 LLM 进行评估，允许钩子影响代理的推理：
+
+```toml
+actions = [{ type = "prompt", prompt = "Before executing ${TOOL_NAME}, verify the arguments are safe: ${ARGUMENTS}" }]
+```
+
+### 代理
+
+调用命名代理来处理事件。代理作为具有自己会话的子代理运行：
+
+```toml
+actions = [{ type = "agent", agent = "review-agent" }]
+```
+
+## 匹配器模式
+
+与工具相关的钩子可以使用 `matcher` 来限制它们适用于哪些工具。匹配器是针对工具名称测试的正则模式：
+
+```toml
+# 仅匹配 Write 工具
+matcher = "Write"
+
+# 匹配 Write 或 Edit
+matcher = "Write|Edit"
+
+# 匹配任何 shell 工具
+matcher = "shell:.*"
+
+# 匹配所有工具（未指定匹配器时的默认值）
+# matcher not set — hook fires for every tool
+```
+
+如果未设置 `matcher`，钩子将为该事件类型的所有工具调用触发。
+
+## 注册钩子
+
+### 在插件配置中
+
+插件在其 `aleph-plugin.json` 清单中定义钩子：
+
+```json
+{
+  "name": "security-gate",
+  "hooks": [
+    {
+      "event": "PreToolUse",
+      "kind": "interceptor",
+      "priority": "system",
+      "matcher": "shell:exec|Write|Edit",
+      "actions": [
+        {
+          "type": "command",
+          "command": "${PLUGIN_ROOT}/check-safety.sh"
+        }
+      ]
+    },
+    {
+      "event": "PostToolUse",
+      "kind": "observer",
+      "actions": [
+        {
+          "type": "command",
+          "command": "${PLUGIN_ROOT}/log-action.sh"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### 在 TOML 配置中
+
+钩子也可以直接在 `aleph.toml` 中定义：
+
+```toml
+[[hooks]]
+event = "SessionStart"
+kind = "observer"
+plugin_name = "session-logger"
+actions = [
+  { type = "command", command = "echo 'Session started: $SESSION_ID' >> ~/aleph-sessions.log" }
+]
+
+[[hooks]]
+event = "PreToolUse"
+kind = "interceptor"
+priority = "high"
+matcher = "shell:exec"
+plugin_name = "command-guard"
+actions = [
+  { type = "command", command = "~/scripts/check-command.sh" }
+]
+```
+
+## 钩子执行上下文
+
+每个钩子都会收到一个 `HookContext`，其中包含有关触发事件的信息：
+
+| 字段 | 类型 | 说明 |
+|-------|------|-------------|
+| `session_id` | string | 活动会话 ID |
+| `tool_name` | string? | 工具名称（用于工具事件） |
+| `arguments` | string? | 工具参数为 JSON |
+| `tool_input` | string? | 工具输入内容 |
+| `file_path` | string? | 相关文件路径 |
+| `working_dir` | string? | 命令的工作目录 |
+| `env` | map | 附加环境变量 |
+
+对于命令动作，所有上下文字段都作为环境变量注入。对于提示动作，它们可作为 `${VAR}` 模板替换使用。
+
+## 拦截器结果
+
+拦截器钩子返回控制管道的结构化结果：
+
+| 结果 | 发生什么 |
+|---------|-------------|
+| **通过** | 执行继续到下一个拦截器或工具本身 |
+| **阻止** | 执行停止。阻止原因报告给用户。 |
+| **阻止（静默）** | 执行停止而不向用户显示消息 |
+| **已修改** | 执行继续使用修改后的上下文（重写的参数等） |
+
+<Callout type="warn">
+当拦截器钩子动作失败（命令退出非零、超时等）时，默认行为是**阻止**执行以确保安全。一个损坏的安全钩子应该失败关闭，而不是打开。
+</Callout>
+
+## 实用示例
+
+### 审计跟踪
+
+将每个工具调用记录到文件中以进行合规：
+
+```json
+{
+  "event": "PostToolUse",
+  "kind": "observer",
+  "actions": [{
+    "type": "command",
+    "command": "jq -n --arg tool \"$TOOL_NAME\" --arg args \"$ARGUMENTS\" --arg session \"$SESSION_ID\" --arg ts \"$(date -u +%FT%TZ)\" '{timestamp: $ts, tool: $tool, arguments: $args, session: $session}' >> /var/log/aleph/audit.jsonl"
+  }]
+}
+```
+
+### 会话结束时的 Slack 通知
+
+当长时间运行的会话完成时通知 Slack 频道：
+
+```json
+{
+  "event": "SessionEnd",
+  "kind": "observer",
+  "actions": [{
+    "type": "command",
+    "command": "curl -s -X POST \"$SLACK_WEBHOOK\" -H 'Content-Type: application/json' -d '{\"text\": \"Aleph session '$SESSION_ID' completed.\"}'"
+  }]
+}
+```
+
+### 文件写入保护
+
+防止代理写入敏感目录：
+
+```json
+{
+  "event": "PreToolUse",
+  "kind": "interceptor",
+  "priority": "system",
+  "matcher": "Write|Edit",
+  "actions": [{
+    "type": "command",
+    "command": "echo $ARGUMENTS | jq -r '.file_path // .path // \"\"' | grep -qE '^/(etc|usr|System)' && echo 'block: Writing to system directories is not allowed' || echo 'pass'"
+  }]
+}
+```
+
+### 动态提示注入
+
+在工具执行之前添加上下文感知指令：
+
+```json
+{
+  "event": "PreToolUse",
+  "kind": "observer",
+  "matcher": "shell:exec",
+  "actions": [{
+    "type": "prompt",
+    "prompt": "Safety reminder: You are about to execute a shell command. Verify that the command does not modify or delete files outside the project directory."
+  }]
+}
+```
+
+## 另请参阅
+
+- [事件](/docs/zh/automation/events) —— 以编程方式订阅系统事件
+- [Cron 作业](/docs/zh/automation/cron-jobs) —— 调度重复任务
+- [扩展](/docs/zh/architecture/extensions) —— 注册钩子的插件系统
+- [安全](/docs/zh/security/overview) —— 安全模型和权限系统

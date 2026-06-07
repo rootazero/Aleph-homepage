@@ -1,8 +1,154 @@
 ---
 title: "术语表"
-description: "Aleph 项目规范术语参考"
+description: "Aleph 概念的标准化术语和翻译"
 ---
 
-> 此页面正在翻译中。
+# 术语表
 
-请参阅[英文版](/en/docs/terminology)。
+本页为 Aleph 概念建立规范名称，以确保文档、代码和 UI 之间的一致性。
+
+## 核心概念
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **Agent** | 智能体 | 具有特定配置（模型、工具、提示词）的 AI 实例 |
+| **Harness** | 执行驱动 | 驱动 Agent 执行的 Think→Act 循环 |
+| **Thinker** | 思考器 | LLM 交互层——提示词构建、模型路由、流式传输 |
+| **Orchestrator** | 编排器 | 解析 AgentDef + FlowSpec，组装依赖，调度到 Harness |
+| **Gateway** | 网关 | WebSocket 控制平面——路由、会话、事件、认证 |
+| **Session** | 会话 | 由会话密钥标识的持久对话上下文 |
+| **Turn** | 轮次 | 会话内的一个完整 Think→Act 循环 |
+| **Flow** | 流程 | 从入口到完成的单个执行请求 |
+| **FlowSpec** | 流程规范 | 定义单个流程的执行参数 |
+| **AgentDef** | 智能体定义 | 定义 Agent 行为的静态配置 |
+
+## 记忆系统
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **Memory** | 记忆系统 | 持久知识存储（SQLite + sqlite-vec + markdown 笔记） |
+| **Raw Memory (L0)** | 原始记忆 | 压缩前的短暂会话数据 |
+| **Note (L1)** | 笔记 | 持久的 markdown 知识文件 |
+| **Wikilink** | 维基链接 | Obsidian 兼容的 `[[note-name]]` 交叉引用 |
+| **Compression** | 压缩 | 将原始记忆转换为结构化笔记 |
+| **Dream Daemon** | 梦境守护进程 | 后台记忆整合过程 |
+| **Scratchpad** | 草稿板 | 每会话工作记忆（会话结束时丢弃） |
+| **User Profile** | 用户画像 | 辩证用户模型 (`USER.md`) |
+
+## 工具系统
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **Tool** | 工具 | 向 LLM 暴露的可调用能力 |
+| **ToolService** | 工具服务 | 所有工具来源的统一外观 |
+| **Builtin Tool** | 内置工具 | 原生 Rust 工具实现 |
+| **MCP Tool** | MCP 工具 | 通过 Model Context Protocol 的外部工具 |
+| **Extension Tool** | 扩展工具 | 插件提供的工具（WASM / Node.js） |
+| **Skill** | 技能 | 添加工具的学习或安装能力 |
+| **Skill System** | 技能系统 | 技能发现、注册和生命周期的框架 |
+| **Dispatcher** | 调度器 | 工具注册表、风险评估和语义检索 |
+| **Hydration** |  hydrated tools | 基于查询上下文的语义工具检索 |
+
+## 安全
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **Sandbox** | 沙箱 | 带有能力强制执行的每会话执行隔离 |
+| **Capability** |  capability | 权限声明（文件系统、网络、进程） |
+| **Approval Gate** | 审批门 | 提升权限的人机回环审批 |
+| **IdentityContext** | 身份上下文 | 流经执行的不可变身份快照 |
+| **PolicyEngine** | 策略引擎 | 无状态权限检查器 |
+| **GuestScope** | 访客范围 | 访客会话的工具级限制 |
+| **Pairing** | 配对 | 通过 PIN/代码进行设备信任建立 |
+
+## 通信
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **Interface** | 接口 | 客户端连接类型（CLI、Telegram、Discord 等） |
+| **Channel** | 频道 | 接口内的特定对话端点 |
+| **Session Key** | 会话密钥 | 会话的唯一标识符（例如 `agent:main:main`） |
+| **Event Bus** | 事件总线 | 用于实时事件分发的发布/订阅系统 |
+| **JSON-RPC** | JSON-RPC | 基于 WebSocket 的请求/响应协议 |
+| **Trace** | 追踪 | 用于可观察性的执行事件流 |
+
+## AI/LLM
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **Provider** | 提供商 | LLM API 供应商（OpenAI、Anthropic、Gemini 等） |
+| **Protocol** | 协议 | 特定 LLM API 格式的适配器 |
+| **Model** | 模型 | 特定的 LLM 实例（例如 `gpt-4o`、`claude-sonnet`） |
+| **Prompt** | 提示词 | 发送给 LLM 的输入文本 |
+| **PromptLayer** | 提示层 | 组装系统提示词的一个部分 |
+| **Streaming** | 流式传输 | 实时逐令牌响应交付 |
+| **Thinking** | 思考 | 扩展推理模式（Claude 的扩展思考） |
+
+## 高级特性
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **A2A** | A2A | Agent-to-Agent 协议，用于 Agent 间通信 |
+| **ACP** | ACP | Agent Client Protocol，用于 Agent 发现和委托 |
+| **ClawHub** | ClawHub | Agent 注册和服务发现的中心枢纽 |
+| **GroupChat** | 群聊 | 多 Agent 群聊协调 |
+| **Team** | 团队 | Agent 团队管理和角色分配 |
+| **WorldModel** | 世界模型 | 用于主动行为的环境状态跟踪 |
+| **Proactive Dispatcher** | 主动调度器 | 基于世界状态调度主动任务的守护进程 |
+| **Desktop Bridge** | 桌面桥 | 用于桌面自动化的 UDS JSON-RPC 协议 |
+
+## 命名约定
+
+### 代码 → 文档映射
+
+| 代码符号 | 文档名称 |
+|-------------|---------------|
+| `AgentHarness` | Harness / 执行驱动 |
+| `HarnessDeps` | Harness Dependencies |
+| `HarnessRunner` | Harness Runner |
+| `FlowRequest` | Flow Request |
+| `FlowOutcome` | Flow Outcome |
+| `SessionService` | Session Service |
+| `ToolService` | Tool Service |
+| `AiProvider` | AI Provider |
+| `StopHookHandler` | Stop Hook |
+| `ContextBudget` | Context Budget |
+| `SkillPrefetcher` | Skill Prefetcher |
+| `TraceSink` | Trace Sink |
+| `InProcessActorSessionService` | In-Process Session Service |
+| `WorkspaceSandbox` | Workspace Sandbox |
+| `OsSandboxDriver` | OS Sandbox Driver |
+| `ApprovalGate` | Approval Gate |
+| `PolicyEngine` | Policy Engine |
+| `IdentityContext` | Identity Context |
+| `GuestScope` | Guest Scope |
+| `MultiProviderRegistry` | Multi-Provider Registry |
+| `ProtocolRegistry` | Protocol Registry |
+| `PromptPipeline` | Prompt Pipeline |
+| `MemoryEnvelope` | Memory Envelope |
+| `WorkingMemoryAssembler` | Working Memory Assembler |
+| `HybridAssembler` | Hybrid Assembler |
+| `NoteFactRetrieval` | Note Fact Retrieval |
+| `CompressionService` | Compression Service |
+| `DreamDaemon` | Dream Daemon |
+| `DesktopBridgeClient` | Desktop Bridge Client |
+
+## 已弃用术语（请勿使用）
+
+| 旧术语 | 替代 | 原因 |
+|----------|-------------|--------|
+| OTAF | Think→Act | 架构从 OTAF 改为 Harness |
+| Agent Loop | Harness | 统一在 Harness 术语下 |
+| LanceDB | SQLite + sqlite-vec | 存储后端更改 |
+| JSON5 config | TOML config | 配置格式更改 |
+| `aleph` 二进制文件 | `aleph-server` | 二进制文件重命名 |
+| Skill System v1 | Skill System v2 | 完全重写 |
+| EvolutionTracker | Registry | 旧技能系统的一部分 |
+| SolidificationDetector | EligibilityService | 旧技能系统的一部分 |
+| SubagentTool | FlowRunTool | 架构更改 |
+| LoopToolRegistry | ToolService | 统一工具外观 |
+
+## 另请参阅
+
+- [架构概览](/docs/zh/architecture/overview) — 这些组件在系统中的位置
+- [概念](/docs/zh/concepts) — 核心思想的高级解释

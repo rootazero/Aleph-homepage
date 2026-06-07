@@ -1,237 +1,178 @@
 ---
 title: "配置"
-description: "配置您的 Aleph 设置。"
+description: "配置你的 Aleph 设置"
 ---
 
 Aleph 使用位于 `~/.aleph/config.toml` 的 TOML 配置文件。
 
 ## 基本结构
 
-```json5
-{
-  // Agent 配置
-  agents: {
-    defaults: {
-      workspace: "~/aleph-workspace",
-      model: "anthropic/claude-sonnet-4",
-      thinking: "medium",
-    },
-    list: [{
-      id: "main",
-      identity: "You are Aleph, a helpful personal AI assistant.",
-    }],
-  },
+```toml
+# Agent 配置
+[agent]
+default_model = "anthropic/claude-sonnet-4"
+thinking = "medium"
 
-  // Gateway 配置
-  gateway: {
-    port: 18790,
-    bind: "loopback",  // 或 "all"
-    require_auth: false,
-  },
+# Gateway 配置
+[gateway]
+port = 18790
+bind = "127.0.0.1"
+require_auth = false
 
-  // 通道配置
-  channels: {
-    telegram: {
-      enabled: false,
-      token: "BOT_TOKEN",
-    },
-    discord: {
-      enabled: false,
-      token: "BOT_TOKEN",
-    },
-  },
+# 频道配置
+[channel.telegram]
+enabled = false
+token = "BOT_TOKEN"
 
-  // 会话配置
-  session: {
-    dmScope: "per-peer",
-    autoResetHour: 4,
-    expiryDays: 30,
-  },
-}
+[channel.discord]
+enabled = false
+token = "BOT_TOKEN"
+
+# 会话配置
+[session]
+auto_reset_hour = 4
+expiry_days = 30
 ```
 
 ## Agent 配置
 
 ### 模型选择
 
-```json5
-agents: {
-  defaults: {
-    // 提供商/模型格式
-    model: "anthropic/claude-opus-4-20250514",
+```toml
+[agent]
+# 主模型
+model = "anthropic/claude-opus-4-20250514"
 
-    // 故障转移链
-    models: [
-      "anthropic/claude-opus-4-20250514",
-      "openai/gpt-4o",
-      "google/gemini-pro"
-    ],
-  }
-}
+# 备用模型（故障转移链）
+models = [
+  "anthropic/claude-opus-4-20250514",
+  "openai/gpt-4o",
+  "google/gemini-pro"
+]
 ```
 
 ### 思考级别
 
 | 级别 | 描述 |
 |-------|-------------|
-| `off` | 无扩展思考 |
+| `off` | 不进行扩展思考 |
 | `minimal` | 简短推理 |
 | `low` | 快速分析 |
 | `medium` | 平衡（默认） |
-| `high` | 深入分析 |
+| `high` | 深度分析 |
 | `xhigh` | 最大深度 |
 
-### Identity
+### 身份
 
-```json5
-agents: {
-  list: [{
-    id: "main",
-    identity: "You are Aleph, a personal AI assistant. Be helpful, concise, and accurate.",
+```toml
+[agent]
+identity = "You are Aleph, a personal AI assistant. Be helpful, concise, and accurate."
 
-    // 群聊行为
-    groupChat: {
-      requireMention: true,
-      prefix: "@aleph"
-    }
-  }]
-}
+# 群聊行为
+[agent.group_chat]
+require_mention = true
+prefix = "@aleph"
 ```
 
 ## Gateway 配置
 
-```json5
-  gateway: {
-  // 监听端口
-  port: 18790,
+```toml
+[gateway]
+# 监听端口
+port = 18790
 
-  // 绑定地址
-  bind: "loopback",  // 仅 localhost
-  // bind: "all",    // 所有接口
+# 绑定地址
+bind = "127.0.0.1"    # 仅限本地
+# bind = "0.0.0.0"    # 所有接口
 
-  // 认证
-  require_auth: true,
+# 认证
+require_auth = true
 
-  // TLS（可选）
-  tls: {
-    cert: "/path/to/cert.pem",
-    key: "/path/to/key.pem"
-  }
-}
+# TLS（可选）
+[gateway.tls]
+cert = "/path/to/cert.pem"
+key = "/path/to/key.pem"
 ```
 
-## 通道配置
+## 频道配置
 
 ### Telegram
 
-```json5
-channels: {
-  telegram: {
-    enabled: true,
-    token: "123456:ABC...",
+```toml
+[channel.telegram]
+enabled = true
+token = "123456:ABC..."
 
-    // 允许列表（可选）
-    allowFrom: ["+1234567890"],
+# 白名单（可选）
+allow_from = ["+1234567890"]
 
-    // 群组行为
-    groups: {
-      "*": { requireMention: true }
-    }
-  }
-}
+# 群组行为
+[channel.telegram.groups]
+"*" = { require_mention = true }
 ```
 
 ### Discord
 
-```json5
-channels: {
-  discord: {
-    enabled: true,
-    token: "YOUR_BOT_TOKEN",
+```toml
+[channel.discord]
+enabled = true
+token = "YOUR_BOT_TOKEN"
 
-    // 公会/服务器限制
-    allowGuilds: ["guild-id-1", "guild-id-2"],
-  }
-}
+# 公会/服务器限制
+allow_guilds = ["guild-id-1", "guild-id-2"]
 ```
 
-## 协议适配器
+## 提供商配置
 
-Aleph 通过协议适配器支持多个 LLM 提供商。每个提供商在 `[providers]` 表下配置：
+Aleph 支持多个 LLM 提供商。每个提供商配置在 `[provider]` 表下：
 
 ```toml
-[providers.claude]
+[provider.claude]
 protocol = "anthropic"
 model = "claude-opus-4-20250514"
 api_key = "sk-ant-..."
 
-[providers.openai]
+[provider.openai]
 protocol = "openai"
 model = "gpt-4o"
 api_key = "sk-..."
 ```
 
-请参阅[提供商](/docs/zh/architecture/providers)获取支持的提供商完整列表。
+参见 [提供商](/docs/zh/architecture/providers) 获取支持的提供商完整列表。
 
 ## 会话配置
 
-```json5
-session: {
-  // DM 范围策略
-  dmScope: "per-peer",  // 或 "main", "per-channel-peer"
+```toml
+[session]
+# 自动重置时间（0-23，本地时间）
+auto_reset_hour = 4
 
-  // 自动重置小时（0-23，本地时间）
-  autoResetHour: 4,
+# 会话过期
+expiry_days = 30
 
-  // 会话到期
-  expiryDays: 30,
-
-  // 压缩
-  compaction: {
-    enabled: true,
-    threshold: 50000,  // tokens
-  }
-}
+# 压缩
+[session.compaction]
+enabled = true
+threshold = 50000  # tokens
 ```
 
 ## 环境变量
 
 配置值可以使用环境变量：
 
-```json5
-{
-  channels: {
-    telegram: {
-      token: "${TELEGRAM_BOT_TOKEN}"
-    }
-  }
-}
+```toml
+[channel.telegram]
+token = "${TELEGRAM_BOT_TOKEN}"
 ```
 
 ## 热重载
 
-配置更改被自动检测和应用：
+配置更改会被自动检测并应用。网关会监视 `config.toml` 的更改并无需重启即可重载。
 
-```bash
-# 手动重载
-aleph config reload
+## 配置位置
 
-# 监视更改
-aleph gateway run --watch-config
-```
-
-## CLI 配置
-
-```bash
-# 获取值
-aleph config get gateway.port
-
-# 设置值
-aleph config set gateway.port 18790
-
-# 在编辑器中打开
-aleph config edit
-
-# 验证配置
-aleph config validate
-```
+| 文件 | 用途 |
+|------|---------|
+| `~/.aleph/config.toml` | 主配置文件 |
+| `~/.aleph/defaults.toml` | 默认值覆盖 |
+| `~/.aleph/config.toml.bak` | 迁移前的自动备份 |

@@ -3,4 +3,133 @@ title: "工具基础设施"
 description: "工具系统基础设施，包括模式生成、执行、修复、注册表和中间件管道。"
 ---
 
-This page is in progress. Please refer to the [English version](/docs/concepts/tool-infrastructure).
+`tools` 模块为 Aleph 的工具系统提供基础设施。它处理工具注册、模式生成、执行、修复和包装工具调用的中间件管道。
+
+## 设计理念
+
+1. **模式驱动** — 所有工具通过 JSON 模式声明其输入模式
+2. **修复友好** — 失败的工具调用可以自动修复并重试
+3. **中间件管道** — 权限检查、日志记录和指标发生在分层中间件中
+4. **类型安全执行** — 带有动态调度支持的强类型工具 trait
+
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      工具基础设施                            │
+├──────────────────────────────────────────────────────────────┤
+│  注册表                                                      │
+│  ├─ register() — 向注册表添加工具                            │
+│  ├─ get() — 按名称查找                                       │
+│  └─ list() — 所有已注册工具                                  │
+├──────────────────────────────────────────────────────────────┤
+│  模式                                                        │
+│  ├─ 从 Rust 类型生成 JSON 模式                               │
+│  ├─ 严格化 (移除 LLM 不友好的字段)                           │
+│  └─ 带有注入保护的 YAML 序列化                               │
+├──────────────────────────────────────────────────────────────┤
+│  执行                                                        │
+│  ├─ ToolExecutor — 带有超时的异步执行                        │
+│  ├─ ExecutionContext — 工作区、环境、权限                      │
+│  └─ Repair — 自动修复常见失败 (大小写, snake_case)            │
+├──────────────────────────────────────────────────────────────┤
+│  中间件管道                                                  │
+│  ├─ 权限层 — 能力检查                                        │
+│  ├─ 审计层 — 日志记录和指标                                  │
+│  └─ 速率限制层 — 限流                                        │
+├──────────────────────────────────────────────────────────────┤
+│  运行时                                                      │
+│  ├─ Docker 沙箱 — 容器化执行                                 │
+│  ├─ VirtualFs — 环境级隔离                                   │
+│  └─ 作用域执行 — 临时权限提升                                │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## 工具 Traits
+
+```rust
+/// 核心工具 trait
+pub trait AlephTool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn schema(&self) -> Value; // JSON 模式
+    async fn execute(&self, input: Value, ctx: &ExecutionContext) -> ToolResult;
+}
+```
+
+## 模式生成
+
+工具模式使用反射从 Rust 类型生成：
+
+```rust
+// 派生宏生成 JSON 模式
+#[derive(ToolSchema)]
+pub struct SearchInput {
+    pub query: String,
+    pub limit: Option<u32>,
+}
+```
+
+`schema_strictify` 模块移除 LLM 不友好的字段（如复杂类型上的 `format`、`pattern`）以减少 token 使用。
+
+## 修复系统
+
+当工具调用失败时，修复系统尝试常见修复：
+
+1. **大小写纠正** — `getMP3File` → `get_mp3_file`
+2. **Unicode 处理** — 非 ASCII 的适当 `to_lowercase()`
+3. **模式验证** — 执行前根据模式检查输入
+
+## 中间件管道
+
+工具调用流经中间件层：
+
+```
+用户请求
+    │
+    ▼
+┌─────────────┐
+│  权限       │ ← 能力检查
+│   层        │
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   审计      │ ← 日志记录, 指标
+│   层        │
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   工具      │ ← 实际执行
+│  执行       │
+└─────────────┘
+    │
+    ▼
+  结果
+```
+
+## Docker 沙箱
+
+对于不受信任的工具，Docker 提供容器化执行：
+
+- **允许列表** — 仅允许显式允许的 Docker 标志
+- **卷挂载** — 工作区目录以读写方式挂载
+- **网络** — 可配置的网络访问（启用/禁用）
+
+## 关键源文件
+
+- `src/tools/mod.rs` — 模块概览
+- `src/tools/traits.rs` — 核心工具 traits
+- `src/tools/registry.rs` — 工具注册表
+- `src/tools/schema_strictify.rs` — 模式优化
+- `src/tools/repair.rs` — 失败修复
+- `src/tools/execution_context.rs` — 执行上下文
+- `src/tools/middleware/permission/` — 权限中间件
+- `src/tools/runtime.rs` — Docker 沙箱
+
+## 另请参阅
+
+- [内置工具](/docs/zh/concepts/builtin-tools) — 特定工具实现
+- [能力系统](/docs/zh/concepts/capability-system) — 权限框架
+- [执行引擎](/docs/zh/concepts/execution-engine) — 命令沙箱

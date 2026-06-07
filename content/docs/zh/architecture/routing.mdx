@@ -1,6 +1,431 @@
 ---
 title: "路由系统"
-description: "SessionKey 路由与会话范围策略"
+description: "请求路由、负载均衡、服务发现、网关路由表，以及 WebSocket 和 HTTP 路由策略。"
 ---
 
-此页面正在翻译中。请参阅[英文版](/en/docs/architecture/routing)。
+路由系统是 Aleph 的入口层，负责将传入请求分发到正确的服务实例。它处理 HTTP 请求、WebSocket 连接、内部服务调用，以及跨节点的负载均衡。本页涵盖路由架构、网关路由表、服务发现、负载均衡策略、WebSocket 路由，以及故障转移和重试机制。
+
+---
+
+## 路由架构
+
+```
+                    ┌─────────────┐
+                    │   客户端     │
+                    └──────┬──────┘
+                           │
+           ┌───────────────┼───────────────┐
+           │               │               │
+           ▼               ▼               ▼
+    ┌────────────┐  ┌────────────┐  ┌────────────┐
+    │   HTTP     │  │  WebSocket │  │   gRPC     │
+    │   请求     │  │   连接     │  │   调用     │
+    └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
+          │               │               │
+          └───────────────┼───────────────┘
+                          │
+                          ▼
+                  ┌───────────────┐
+                  │  Gateway      │
+                  │  路由层       │
+                  └───────┬───────┘
+                          │
+          ┌───────────────┼───────────────┐
+          │               │               │
+          ▼               ▼               ▼
+   ┌──────────┐    ┌──────────┐    ┌──────────┐
+   │ Session  │    │  Tool    │    │  MCP     │
+   │ Service  │    │ Service  │    │ Server   │
+   └──────────┘    └──────────┘    └──────────┘
+```
+
+**位置**: `src/gateway/routing/`
+
+---
+
+## 网关路由表
+
+网关维护一个路由表，将 URL 路径映射到内部服务：
+
+```rust
+pub struct RouteTable {
+    routes: Vec<Route>,
+    fallback: Option<Box<dyn Handler>>,
+}
+
+pub struct Route {
+    pub path: String,              // URL 路径模式
+    pub method: Method,            // HTTP 方法
+    pub service: String,           // 目标服务名称
+    pub handler: String,           // 处理函数名称
+    pub middleware: Vec<String>,   // 中间件链
+    pub rate_limit: Option<RateLimit>, // 速率限制
+}
+```
+
+### 路由配置
+
+```yaml
+routes:
+  # 会话 API
+  - path: "/api/v1/sessions"
+    method: POST
+    service: session
+    handler: create_session
+    middleware: [auth, rate_limit]
+
+  - path: "/api/v1/sessions/{id}"
+    method: GET
+    service: session
+    handler: get_session
+    middleware: [auth]
+
+  - path: "/api/v1/sessions/{id}/messages"
+    method: POST
+    service: session
+    handler: send_message
+    middleware: [auth, rate_limit]
+
+  # 工具 API
+  - path: "/api/v1/tools"
+    method: GET
+    service: tool
+    handler: list_tools
+    middleware: [auth]
+
+  - path: "/api/v1/tools/{name}"
+    method: POST
+    service: tool
+    handler: execute_tool
+    middleware: [auth, rate_limit, audit]
+
+  # WebSocket
+  - path: "/ws/sessions/{id}"
+    method: GET
+    service: websocket
+    handler: connect_session
+    middleware: [auth]
+
+  # MCP
+  - path: "/mcp/v1/{server}"
+    method: POST
+    service: mcp
+    handler: rpc_call
+    middleware: [auth, rate_limit]
+
+  # 健康检查
+  - path: "/health"
+    method: GET
+    service: health
+    handler: check
+    middleware: []
+```
+
+---
+
+## 服务发现
+
+Aleph 使用多种服务发现机制：
+
+### 静态配置
+
+```rust
+pub struct StaticDiscovery {
+    services: HashMap<String, Vec<ServiceInstance>>,
+}
+
+impl ServiceDiscovery for StaticDiscovery {
+    async fn discover(&self, service_name: &str) -> Result<Vec<ServiceInstance>> {
+        Ok(self.services.get(service_name).cloned().unwrap_or_default())
+    }
+}
+```
+
+### DNS 发现
+
+```rust
+pub struct DnsDiscovery {
+    resolver: AsyncResolver,
+}
+
+impl ServiceDiscovery for DnsDiscovery {
+    async fn discover(&self, service_name: &str) -> Result<Vec<ServiceInstance>> {
+        let records = self.resolver.srv_lookup(service_name).await?;
+        Ok(records.iter().map(|record| ServiceInstance {
+            id: format!("{}-{}", service_name, record.port()),
+            host: record.target().to_string(),
+            port: record.port(),
+            weight: record.weight(),
+            healthy: true,
+        }).collect())
+    }
+}
+```
+
+### 一致性哈希
+
+对于需要会话亲和性的服务，使用一致性哈希：
+
+```rust
+pub struct ConsistentHash {
+    ring: BTreeMap<u64, String>,  // hash → 节点 ID
+    nodes: HashSet<String>,
+    replicas: u32,                  // 每个节点的虚拟副本数
+}
+
+impl ConsistentHash {
+    pub fn add_node(&mut self, node_id: String) {
+        for i in 0..self.replicas {
+            let hash = hash(&format!("{}-{}", node_id, i));
+            self.ring.insert(hash, node_id.clone());
+        }
+        self.nodes.insert(node_id);
+    }
+
+    pub fn get_node(&self, key: &str) -> Option<String> {
+        let hash = hash(key);
+        self.ring.range(hash..)
+            .chain(self.ring.iter())
+            .next()
+            .map(|(_, node_id)| node_id.clone())
+    }
+}
+```
+
+---
+
+## 负载均衡
+
+### 策略
+
+```rust
+pub enum LoadBalanceStrategy {
+    RoundRobin,          // 轮询
+    LeastConnections,    // 最少连接
+    LeastLatency,        // 最低延迟
+    Weighted,            // 权重
+    ConsistentHash,      // 一致性哈希
+}
+```
+
+### 实现
+
+```rust
+pub struct LoadBalancer {
+    strategy: LoadBalanceStrategy,
+    health_checker: Arc<dyn HealthChecker>,
+}
+
+impl LoadBalancer {
+    async fn select_instance(
+        &self,
+        service_name: &str,
+        instances: &[ServiceInstance],
+        context: &RequestContext,
+    ) -> Option<ServiceInstance> {
+        // 过滤不健康实例
+        let healthy: Vec<_> = instances.iter()
+            .filter(|i| self.health_checker.is_healthy(&i.id).await)
+            .cloned()
+            .collect();
+
+        if healthy.is_empty() {
+            return None;
+        }
+
+        match self.strategy {
+            LoadBalanceStrategy::RoundRobin => {
+                let idx = context.request_id.parse::<u64>()
+                    .unwrap_or(0) % healthy.len() as u64;
+                Some(healthy[idx as usize].clone())
+            }
+            LoadBalanceStrategy::LeastConnections => {
+                healthy.into_iter()
+                    .min_by_key(|i| i.active_connections)
+            }
+            LoadBalanceStrategy::LeastLatency => {
+                healthy.into_iter()
+                    .min_by(|a, b| a.latency_ms.partial_cmp(&b.latency_ms).unwrap())
+            }
+            LoadBalanceStrategy::Weighted => {
+                let total_weight: u32 = healthy.iter().map(|i| i.weight).sum();
+                let mut rng = rand::thread_rng();
+                let mut target = rng.gen_range(0..total_weight);
+                healthy.into_iter().find(|i| {
+                    target = target.saturating_sub(i.weight);
+                    target == 0
+                })
+            }
+            LoadBalanceStrategy::ConsistentHash => {
+                let hash_ring = ConsistentHash::new(&healthy);
+                hash_ring.get_node(&context.session_id)
+                    .and_then(|id| healthy.into_iter().find(|i| i.id == id))
+            }
+        }
+    }
+}
+```
+
+---
+
+## WebSocket 路由
+
+WebSocket 连接需要特殊处理以维持有状态会话：
+
+```rust
+pub struct WebSocketRouter {
+    connections: DashMap<String, WebSocketConnection>,
+    session_router: Arc<SessionRouter>,
+}
+
+impl WebSocketRouter {
+    pub async fn handle_connection(
+        &self,
+        ws: WebSocket,
+        path: &str,
+        auth: IdentityContext,
+    ) -> Result<(), WebSocketError> {
+        // 从路径提取会话 ID
+        let session_id = extract_session_id(path)?;
+
+        // 验证会话访问权限
+        self.session_router.verify_access(&session_id, &auth).await?;
+
+        // 创建连接
+        let conn = WebSocketConnection::new(ws, session_id.clone(), auth);
+        self.connections.insert(conn.id.clone(), conn);
+
+        // 加入会话
+        self.session_router.join_session(&session_id, &conn.id).await?;
+
+        // 启动消息循环
+        self.message_loop(&conn.id).await;
+
+        // 清理
+        self.connections.remove(&conn.id);
+        self.session_router.leave_session(&session_id, &conn.id).await?;
+
+        Ok(())
+    }
+}
+```
+
+### WebSocket 消息类型
+
+```rust
+pub enum WebSocketMessage {
+    // 客户端 → 服务器
+    SendMessage { content: String, attachments: Vec<Attachment> },
+    Subscribe { event_types: Vec<String> },
+    Ping,
+
+    // 服务器 → 客户端
+    MessageReceived { message_id: String, content: String },
+    ToolCall { tool_name: String, input: Value },
+    ToolResult { tool_name: String, output: Value },
+    Error { code: String, message: String },
+    Pong,
+}
+```
+
+---
+
+## 故障转移和重试
+
+### 故障检测
+
+```rust
+pub struct CircuitBreaker {
+    failure_threshold: u32,      // 触发断路的失败次数
+    recovery_timeout: Duration,  // 尝试恢复前的等待时间
+    half_open_max: u32,          // 半开状态允许的试探请求数
+}
+
+impl CircuitBreaker {
+    pub async fn call<F, Fut, T>(
+        &self,
+        f: F,
+    ) -> Result<T, CircuitBreakerError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        match self.state {
+            State::Closed => {
+                match f().await {
+                    Ok(result) => {
+                        self.record_success();
+                        Ok(result)
+                    }
+                    Err(e) => {
+                        self.record_failure();
+                        if self.failure_count >= self.failure_threshold {
+                            self.state = State::Open;
+                        }
+                        Err(e.into())
+                    }
+                }
+            }
+            State::Open => {
+                if self.last_failure.elapsed() > self.recovery_timeout {
+                    self.state = State::HalfOpen;
+                    self.half_open_count = 0;
+                } else {
+                    return Err(CircuitBreakerError::Open);
+                }
+            }
+            State::HalfOpen => {
+                if self.half_open_count >= self.half_open_max {
+                    return Err(CircuitBreakerError::Open);
+                }
+                self.half_open_count += 1;
+                match f().await {
+                    Ok(result) => {
+                        self.state = State::Closed;
+                        self.failure_count = 0;
+                        Ok(result)
+                    }
+                    Err(e) => {
+                        self.state = State::Open;
+                        Err(e.into())
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+### 重试策略
+
+```rust
+pub enum RetryStrategy {
+    Fixed { delay: Duration, max_retries: u32 },
+    Exponential { base: Duration, max: Duration, max_retries: u32 },
+    Linear { base: Duration, increment: Duration, max_retries: u32 },
+}
+
+impl RetryStrategy {
+    pub fn delay(&self, attempt: u32) -> Duration {
+        match self {
+            RetryStrategy::Fixed { delay, .. } => *delay,
+            RetryStrategy::Exponential { base, max, .. } => {
+                let delay = base * 2u32.pow(attempt);
+                delay.min(*max)
+            }
+            RetryStrategy::Linear { base, increment, .. } => {
+                *base + *increment * attempt
+            }
+        }
+    }
+}
+```
+
+---
+
+## 相关页面
+
+- [网关架构](./gateway) — 网关整体设计和 RPC 方法
+- [架构概览](./overview) — 路由在整体架构中的位置
+- [会话服务](./session-service) — 有状态会话的路由
+- [工具链](./harness) — 工具执行的路由

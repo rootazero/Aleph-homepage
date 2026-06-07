@@ -1,8 +1,261 @@
 ---
-title: "代理方法"
-description: "代理相关的 RPC 方法"
+title: "agent.*"
+description: "代理执行和控制 RPC 方法"
 ---
 
-> 此页面正在翻译中。
+代理方法控制核心 AI 执行循环。使用这些方法启动代理运行、流式传输响应、检查执行状态、检索对话历史和清除会话。
 
-请参阅[英文版](/en/docs/gateway/methods/agent)。
+## 方法
+
+### agent.run
+
+使用用户消息启动代理运行。代理将通过 Think→Act 循环（编排器 → 工具链 → 思考器）处理消息，并通过事件流回响应。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "agent.run",
+  "params": {
+    "message": "Summarize today's news",
+    "session_key": "agent:main:main",
+    "thinking": "medium",
+    "model": null
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "run_id": "run-uuid-123",
+    "status": "running",
+    "session_key": "agent:main:main"
+  }
+}
+```
+
+运行启动时立即返回响应。实际输出以流式事件的形式传递——订阅 `stream.*` 和 `agent.*` 主题以接收它们。
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----------|------|----------|-------------|
+| `message` | string | 是 | 要处理的用户消息 |
+| `session_key` | string | 否 | 上下文的会话键。默认：`"agent:main:main"` |
+| `thinking` | string | 否 | 思考级别：`"off"`、`"minimal"`、`"low"`、`"medium"`、`"high"`、`"xhigh"`。默认：`"medium"` |
+| `model` | string | 否 | 为此运行覆盖模型（如 `"claude-sonnet-4-20250514"`） |
+
+**流式事件：**
+
+调用 `agent.run` 后，将发出以下事件（如果已订阅）：
+
+| 主题 | 说明 |
+|-------|-------------|
+| `agent.started` | 运行已排队并启动 |
+| `stream.start` | 流式输出开始 |
+| `stream.chunk` | 代理响应的文本块 |
+| `stream.tool_start` | 代理正在调用工具 |
+| `stream.tool_end` | 工具执行完成 |
+| `stream.end` | 流式输出完成 |
+| `agent.completed` | 运行成功完成 |
+| `agent.error` | 运行遇到错误 |
+
+### agent.cancel
+
+取消正在运行的代理。代理将在下一个安全检查点停止并返回部分响应。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "agent.cancel",
+  "params": {
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "cancelled": true,
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----------|------|----------|-------------|
+| `run_id` | string | 是 | `agent.run` 返回的运行 ID |
+
+### agent.status
+
+获取代理运行的当前状态。适用于不使用事件订阅的基于轮询的客户端。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "agent.status",
+  "params": {
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "run_id": "run-uuid-123",
+    "status": "completed",
+    "started_at": 1706400000000,
+    "completed_at": 1706400005000,
+    "iterations": 3,
+    "tokens_used": 1247,
+    "tools_called": ["shell:exec", "file:read"]
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----------|------|----------|-------------|
+| `run_id` | string | 是 | 要查询的运行 ID |
+
+**状态值：**
+
+| 状态 | 说明 |
+|--------|-------------|
+| `pending` | 已排队，尚未启动 |
+| `running` | 正在执行 |
+| `completed` | 成功完成 |
+| `cancelled` | 被用户取消 |
+| `failed` | 遇到错误 |
+
+### agent.respondToInput
+
+向等待人工输入的代理发送响应（人工参与循环）。当代理暂停执行等待用户批准或附加信息时使用。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "agent.respondToInput",
+  "params": {
+    "run_id": "run-uuid-123",
+    "response": "Yes, proceed with the deletion"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "accepted": true,
+    "run_id": "run-uuid-123"
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|-----------|------|----------|-------------|
+| `run_id` | string | 是 | 等待输入的运行 ID |
+| `response` | string | 是 | 用户的响应文本 |
+
+### agent.list
+
+列出系统中配置的所有可用代理。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "agent.list",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "agents": [
+      {
+        "id": "main",
+        "name": "Main Agent",
+        "description": "General-purpose assistant",
+        "model": "claude-sonnet-4-20250514",
+        "enabled": true
+      },
+      {
+        "id": "coder",
+        "name": "Code Assistant",
+        "description": "Specialized for programming tasks",
+        "model": "gpt-4o",
+        "enabled": true
+      }
+    ],
+    "total": 2
+  }
+}
+```
+
+**参数：**
+
+无。
+
+## 会话键格式
+
+代理方法接受一个 `session_key` 参数，该参数决定上下文隔离。有关 WebSocket 传输详细信息，请参阅[协议](/docs/zh/gateway/protocol)页面。
+
+| 格式 | 示例 | 说明 |
+|--------|---------|-------------|
+| Main | `agent:main:main` | 共享跨频道会话 |
+| DM | `agent:main:telegram:dm:user123` | 每个用户直接消息 |
+| Group | `agent:main:discord:group:guild-id` | 群组/频道聊天 |
+| Task | `agent:main:cron:daily-summary` | 定时任务或 webhook 任务 |
+| Ephemeral | `agent:main:ephemeral:uuid` | 临时的，不持久化 |
+
+## 思考级别
+
+`thinking` 参数控制代理在响应前执行多少推理。
+
+| 级别 | 令牌预算 | 用例 |
+|-------|-------------|----------|
+| `off` | 0 | 快速、直接的回答 |
+| `minimal` | 1,024 | 简单查询 |
+| `low` | 2,048 | 标准对话 |
+| `medium` | 4,096 | 复杂任务（默认） |
+| `high` | 8,192 | 多步推理 |
+| `xhigh` | 16,384 | 深度分析 |
+
+## 另请参阅
+
+- [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [events.*](/docs/zh/gateway/methods/events)——订阅代理事件
+- [session.*](/docs/zh/gateway/methods/session)——会话管理

@@ -1,112 +1,112 @@
 ---
 title: "工具架构"
-description: "ToolService 门面、AlephTool 特征、自动模式生成、中间件栈与 MCP 集成。"
+description: "ToolService 外观、中间件栈、AlephTool trait、自动模式生成、工具注册管道、执行流程和 MCP 集成。"
 ---
 
-工具是 Aleph 与世界交互的方式。当 Agent Loop 的 Thinker 决定采取行动时，它会调用一个工具 —— 读取文件、运行 shell 命令、搜索网页或调用外部服务。本页涵盖 `ToolService` 门面、中间件栈、`AlephTool` 特征、工具模式如何从 Rust 类型生成、注册管道、从验证到响应的执行流程，以及三类工具（内置、MCP、扩展）。
+工具是 Aleph 与世界交互的方式。当代理循环的思考器决定采取行动时，它会调用一个工具——读取文件、运行 shell 命令、搜索网页或调用外部服务。本页涵盖 `ToolService` 外观、中间件栈、`AlephTool` trait、如何从 Rust 类型生成工具模式、注册管道、从验证到响应的执行流程，以及三类工具（内置、MCP、扩展）。
 
-关于工具如何被 agent 调用，请参阅[Agent Harness](./harness)。关于记忆特定的工具，请参阅[记忆系统](./memory)。
+有关代理如何调用工具，请参阅[代理工具链](./harness)。有关记忆特定工具，请参阅[记忆系统](./memory)。
 
 ---
 
-## ToolService 门面
+## ToolService 外观
 
-所有工具消费者（Agent Harness、MCP 服务器和扩展插件）都通过单个 `Arc<dyn ToolService>` 门面与工具交互。这是消费者看到的唯一接口 —— 分派、权限检查和超时管理的复杂性都被隐藏在后面。
+所有工具消费者（代理工具链、MCP 服务器和扩展插件）都通过单个 `Arc<dyn ToolService>` 外观与工具交互。这是消费者看到的唯一接口——分发、权限检查和超时管理的复杂性都隐藏在其后。
 
 ```rust
 #[async_trait]
 pub trait ToolService: Send + Sync + 'static {
-    /// Execute a tool by name with JSON input.
+    /// 通过名称和 JSON 输入执行工具。
     async fn execute(&self, name: &str, input: Value) -> Result<ToolOutput, ToolError>;
 
-    /// List all currently available tools.
+    /// 列出所有当前可用工具。
     async fn list(&self) -> Vec<ToolDefinition>;
 
-    /// Get the definition for a single tool.
+    /// 获取单个工具的定义。
     async fn describe(&self, name: &str) -> Option<ToolDefinition>;
 }
 ```
 
 **位置**: `src/tools/service.rs`
 
-该门面在启动时由 `src/tools/facade.rs` 中的 `build_tool_service()` 构建。它在 `CoreDispatch` 周围连接一个中间件层的装饰器链，`CoreDispatch` 将调用路由到实际的工具处理程序。返回的 `Arc<dyn ToolService>` 是 agent loop 持有的；共享的 `Arc<ToolRegistry>` 被线程化到 `McpClient` 和 `ExtensionManager` 中，以便动态工具注册扩展同一注册表。
+外观在启动时由 `src/tools/facade.rs` 中的 `build_tool_service()` 构建。它在 `CoreDispatch` 周围连接中间件层的装饰链，将调用路由到实际工具处理程序。返回的 `Arc<dyn ToolService>` 是代理循环持有的；共享的 `Arc<ToolRegistry>` 被线程化到 `McpClient` 和 `ExtensionManager` 中，以便动态工具注册扩展同一注册表。
 
 ---
 
 ## 中间件栈
 
-每个工具调用流经一个五层中间件栈，从外到内：
+每个工具调用都通过五层中间件栈，从外到内：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  ExecAuditLayer                                         │
-│  • Traces tool calls (start / ok / err)                 │
-│  • Records latency_ms in ToolOutput metadata            │
+│  • 跟踪工具调用（开始 / 成功 / 错误）                    │
+│  • 在 ToolOutput 元数据中记录 latency_ms                │
 ├─────────────────────────────────────────────────────────┤
 │  PermissionLayer                                        │
-│  • SmartFilter classification: Allow / Confirm / Deny   │
-│  • ApprovalGate confirmation for dangerous tools        │
-│  • Swappable at runtime via set_smart_filter            │
+│  • SmartFilter 分类：允许 / 确认 / 拒绝                  │
+│  • 危险工具的 ApprovalGate 确认                          │
+│  • 通过 set_smart_filter 在运行时可交换                  │
 ├─────────────────────────────────────────────────────────┤
 │  ContextRuleLayer                                       │
-│  • ContextRule evaluation: Allow / Deny / Rewrite       │
-│  • Empty by default; rules wired via set_rules          │
+│  • ContextRule 评估：允许 / 拒绝 / 重写                  │
+│  • 默认空；通过 set_rules 接线规则                       │
 ├─────────────────────────────────────────────────────────┤
 │  TimeoutLayer                                           │
-│  • Default timeout + per-tool overrides from config     │
-│  • Emits ToolError::Timeout on elapsed                  │
+│  • 默认超时 + 配置中的每个工具覆盖                        │
+│  • 超时时发出 ToolError::Timeout                        │
 ├─────────────────────────────────────────────────────────┤
 │  CoreDispatch → ToolRegistry                            │
-│  • ArcSwap-backed snapshot for lock-free reads          │
-│  • Routes to BuiltinHandler / McpHandler / ExtHandler   │
+│  • 用于无锁读取的 ArcSwap 支持快照                       │
+│  • 路由到 BuiltinHandler / McpHandler / ExtHandler      │
 └─────────────────────────────────────────────────────────┘
 ```
 
 **位置**: `src/tools/middleware/`
 
-每一层都实现 `ToolService` 并包装下一层，因此 `execute()` 向内委托，`list()`/`describe()` 透明通过。栈在构建后不可变，除了 `PermissionLayer` 和 `ContextRuleLayer` 的 setter，它们通过 `ArcSwap` 原子交换其策略。
+每层都实现 `ToolService` 并包装下一层，因此 `execute()` 向内委托，`list()`/`describe()` 透明传递。堆栈在构建后不可变，除了 `PermissionLayer` 和 `ContextRuleLayer` 设置器，它们通过 `ArcSwap` 原子交换其策略。
 
 ### CoreDispatch
 
-在栈的底部，`CoreDispatch` 持有一个 `Arc<ToolRegistry>` 并通过注册表的 `ArcSwap` 快照路由 `execute` / `list` / `describe`。快照在 *await* 处理程序之前释放，以便并发的 `register`/`unregister` 调用永远不会阻塞正在进行的执行。
+在堆栈底部，`CoreDispatch` 持有 `Arc<ToolRegistry>` 并通过注册表的 `ArcSwap` 快照路由 `execute` / `list` / `describe`。快照在 *await* 处理程序之前释放，以便并发的 `register`/`unregister` 调用永远不会阻塞正在进行的执行。
 
 **位置**: `src/tools/dispatch.rs`
 
 ---
 
-## AlephTool 特征
+## AlephTool Trait
 
-每个内置工具都实现 `AlephTool` 特征，它提供编译时类型安全和自动 JSON Schema 生成：
+每个内置工具都实现 `AlephTool` trait，它提供编译时类型安全和自动 JSON Schema 生成：
 
 ```rust
 #[async_trait]
 pub trait AlephTool: Clone + Send + Sync + 'static {
-    /// Tool name (used in LLM tool_use calls)
+    /// 工具名称（在 LLM tool_use 调用中使用）
     const NAME: &'static str;
 
-    /// Tool description shown to the LLM
+    /// 显示给 LLM 的工具描述
     const DESCRIPTION: &'static str;
 
-    /// Argument type (auto JSON Schema via schemars)
+    /// 参数类型（通过 schemars 自动生成 JSON Schema）
     type Args: Serialize + DeserializeOwned + JsonSchema + Send;
 
-    /// Return type
+    /// 返回类型
     type Output: Serialize + Send;
 
-    /// Execute the tool with typed arguments
+    /// 使用类型化参数执行工具
     async fn call(&self, args: Self::Args) -> Result<Self::Output>;
 
-    /// JSON interface (auto-implemented by the trait)
+    /// JSON 接口（由 trait 自动实现）
     async fn call_json(&self, args: Value) -> Result<Value> {
         let typed_args: Self::Args = serde_json::from_value(args)?;
         let result = self.call(typed_args).await?;
         Ok(serde_json::to_value(result)?)
     }
 
-    /// Get tool definition (auto-implemented by the trait)
+    /// 获取工具定义（由 trait 自动实现）
     fn definition(&self) -> ToolDefinition {
         let schema = schema_for!(Self::Args);
-        // ... includes examples if provided, confirmation flag, strict mode
+        // ... 如果提供则包括示例，确认标志，严格模式
         ToolDefinition::new(Self::NAME, Self::DESCRIPTION, parameters, self.category())
             .with_confirmation(self.requires_confirmation())
             .with_strict(self.strict_schema())
@@ -118,14 +118,14 @@ pub trait AlephTool: Clone + Send + Sync + 'static {
 
 ### 关键设计决策
 
-- **`Args` 使用 `schemars::JsonSchema`**：`Args` 的特征边界意味着 JSON Schema 在编译时从 Rust 类型定义生成。结构体字段上的文档注释成为模式的 `description`，LLM 使用它来理解每个参数。
-- **`call_json` 是自动实现的**：该特征提供默认的 JSON-in/JSON-out 包装器，因此实现者只需编写类型化的 `call` 方法。
-- **`definition()` 是自动实现的**：工具定义（名称、描述、模式、示例）是自动派生的 —— 无需手动维护 JSON。
-- **`examples()` 用于少样本学习**：覆盖以提供使用示例，这些示例被注入到工具定义的 `llm_context` 字段中。
+- **`Args` 使用 `schemars::JsonSchema`**: `Args` 上的 trait 边界意味着 JSON Schema 在编译时从 Rust 类型定义生成。结构体字段上的文档注释成为模式的 `description`，LLM 使用它来理解每个参数。
+- **`call_json` 是自动实现的**: trait 提供默认的 JSON-in/JSON-out 包装器，因此实现者只编写类型化的 `call` 方法。
+- **`definition()` 是自动实现的**: 工具定义（名称、描述、模式、示例）是自动派生的——无需手动 JSON 维护。
+- **`examples()` 用于少样本学习**: 覆盖以提供使用示例，这些示例被注入到工具定义的 `llm_context` 字段中。
 
-### 动态分派
+### 动态分发
 
-对于运行时多态（注册表存储异构工具），动态分派特征包装静态特征：
+对于运行时多态性（注册表存储异构工具），动态分发 trait 包装静态 trait：
 
 ```rust
 pub trait AlephToolDyn: Send + Sync {
@@ -134,7 +134,7 @@ pub trait AlephToolDyn: Send + Sync {
     fn call(&self, args: Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send + '_>>;
 }
 
-// Blanket implementation: any AlephTool is also AlephToolDyn
+// 空实现：任何 AlephTool 也是 AlephToolDyn
 impl<T: AlephTool> AlephToolDyn for T { ... }
 ```
 
@@ -142,15 +142,15 @@ impl<T: AlephTool> AlephToolDyn for T { ... }
 
 ## 模式生成
 
-当你定义工具的参数结构体时，JSON Schema 会从 Rust 类型自动生成：
+当你定义工具的参数结构体时，JSON Schema 会自动从 Rust 类型生成：
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FileReadArgs {
-    /// File path to read
+    /// 要读取的文件路径
     pub path: String,
 
-    /// Character encoding (default: utf-8)
+    /// 字符编码（默认：utf-8）
     #[serde(default)]
     pub encoding: Option<String>,
 }
@@ -175,59 +175,59 @@ pub struct FileReadArgs {
 }
 ```
 
-`#[serde(default)]` 属性使 `encoding` 在模式中可选（不列在 `required` 中），文档注释成为字段描述。这意味着 LLM 自然知道哪些参数是必需的以及每个参数的作用。
+`#[serde(default)]` 属性使 `encoding` 在模式中是可选的（未列在 `required` 中），文档注释成为字段描述。这意味着 LLM 自然知道哪些参数是必需的以及每个参数的用途。
 
 ---
 
 ## 工具注册管道
 
-工具在启动时通过 `build_tool_service()` 注册到共享的 `ToolRegistry`：
+工具在启动时通过 `build_tool_service()` 注册到共享的 `ToolRegistry` 中：
 
 ```
-Startup
+启动
     │
     ▼
 ┌──────────────────────────────────────────────┐
-│ 1. Build CoreDispatch + ToolRegistry         │
-│    → Empty registry with ArcSwap snapshot    │
+│ 1. 构建 CoreDispatch + ToolRegistry          │
+│    → 带有 ArcSwap 快照的空注册表              │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│ 2. Register built-in tools                   │
+│ 2. 注册内置工具                              │
 │    register_builtins_into(&registry, server) │
-│    → Wrap each in BuiltinHandler             │
-│    → Insert into ArcSwap-backed registry     │
+│    → 将每个包装在 BuiltinHandler 中           │
+│    → 插入到 ArcSwap 支持的注册表              │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│ 3. Wire middleware layers                    │
+│ 3. 接线中间件层                              │
 │    TimeoutLayer → ContextRuleLayer           │
 │    → PermissionLayer → ExecAuditLayer        │
-│    → Arc<dyn ToolService> returned           │
+│    → 返回 Arc<dyn ToolService>                │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│ 4. Connect MCP servers                       │
-│    → Thread registry Arc into McpClient      │
-│    → Discover tools, wrap in McpHandler      │
-│    → Register into same registry             │
+│ 4. 连接 MCP 服务器                           │
+│    → 将注册表 Arc 线程化到 McpClient         │
+│    → 发现工具，包装在 McpHandler 中           │
+│    → 注册到同一注册表                         │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│ 5. Load extension plugins                    │
-│    → Thread registry Arc into ExtManager     │
-│    → Wrap in ExtensionHandler                │
-│    → Register into same registry             │
+│ 5. 加载扩展插件                              │
+│    → 将注册表 Arc 线程化到 ExtManager        │
+│    → 包装在 ExtensionHandler 中               │
+│    → 注册到同一注册表                         │
 └──────────────────────────────────────────────┘
 ```
 
 ### ToolRegistry
 
-`ToolRegistry` 是中心的、`ArcSwap` 支持的映射，保存所有工具：
+`ToolRegistry` 是持有所有工具的中央 `ArcSwap` 支持映射：
 
 ```rust
 pub struct ToolRegistry {
@@ -250,71 +250,71 @@ impl ToolRegistry {
 
 ## 执行管道
 
-当 Thinker 决定调用工具时，请求流经中间件栈：
+当思考器决定调用工具时，请求流经中间件栈：
 
 ```
-Thinker Decision: tool_use("bash_exec", {"command": "ls -la"})
+Thinker 决策: tool_use("bash_exec", {"command": "ls -la"})
     │
     ▼
 ┌──────────────────────────────────────────────┐
 │ 1. EXECAUDIT                                 │
 │    • tracing::info!(target: "tool.call", ...) │
-│    • Stamp latency_ms on ToolOutput metadata │
+│    • 在 ToolOutput 元数据上标记 latency_ms   │
 └──────────────────┬───────────────────────────┘
                    │
                    ▼
 ┌──────────────────────────────────────────────┐
 │ 2. PERMISSION                                │
 │    • SmartFilter.classify(name, input)       │
-│    • Allow → pass through                    │
-│    • Deny → ToolError::PermissionDenied      │
-│    • Confirm → ApprovalGate.ask()            │
+│    • 允许 → 通过                              │
+│    • 拒绝 → ToolError::PermissionDenied      │
+│    • 确认 → ApprovalGate.ask()               │
 └──────────────────┬───────────────────────────┘
                    │
                    ▼
 ┌──────────────────────────────────────────────┐
 │ 3. CONTEXTRULE                               │
-│    • Evaluate ContextRule rules (if any)     │
-│    • Allow → pass through                    │
-│    • Deny → PermissionDenied                 │
-│    • Rewrite → forward with new input        │
+│    • 评估 ContextRule 规则（如果有）          │
+│    • 允许 → 通过                              │
+│    • 拒绝 → PermissionDenied                 │
+│    • 重写 → 使用新输入转发                    │
 └──────────────────┬───────────────────────────┘
                    │
                    ▼
 ┌──────────────────────────────────────────────┐
 │ 4. TIMEOUT                                   │
-│    • Apply default or per-tool override      │
+│    • 应用默认或每个工具覆盖                   │
 │    • tokio::time::timeout()                  │
-│    • Elapsed → ToolError::Timeout            │
+│    • 超时 → ToolError::Timeout               │
 └──────────────────┬───────────────────────────┘
                    │
                    ▼
 ┌──────────────────────────────────────────────┐
 │ 5. COREDISPATCH                              │
-│    • Take ArcSwap snapshot of registry       │
-│    • Look up handler by name                 │
-│    • Release snapshot, await handler.invoke()│
-│    • Builtin → BuiltinHandler → AlephToolDyn │
+│    • 获取注册表的 ArcSwap 快照               │
+│    • 按名称查找处理程序                       │
+│    • 释放快照，等待 handler.invoke()         │
+│    • 内置 → BuiltinHandler → AlephToolDyn    │
 │    • MCP → McpHandler → McpClient RPC        │
-│    • Extension → ExtensionHandler → plugin   │
+│    • 扩展 → ExtensionHandler → 插件          │
 └──────────────────┬───────────────────────────┘
                    │
                    ▼
 ┌──────────────────────────────────────────────┐
 │ 6. RESPOND                                   │
-│    • Return ToolOutput (value + metadata)    │
-│    • Feed back into Agent Harness (Feedback) │
-│    • Emit stream.tool_end event              │
+│    • 返回 ToolOutput（值 + 元数据）           │
+│    • 反馈回代理工具链 (Feedback)              │
+│    • 发出 stream.tool_end 事件               │
 └──────────────────────────────────────────────┘
 ```
 
 ### ToolOutput
 
-每次工具执行返回一个标准化的输出：
+每个工具执行返回标准化输出：
 
 ```rust
 pub struct ToolOutput {
-    pub value: Value,              // JSON output from the tool
+    pub value: Value,              // 工具的 JSON 输出
     pub metadata: ToolOutputMetadata,
 }
 
@@ -325,7 +325,7 @@ pub struct ToolOutputMetadata {
 }
 ```
 
-失败时，错误是 `ToolError` 变体之一（`NotFound`、`PermissionDenied`、`ValidationFailed`、`Execution`、`Timeout`、`Transport`），错误消息被反馈给 Thinker，以便它可以决定如何恢复 —— 使用不同参数重试、尝试不同工具，或将错误报告给用户。
+失败时，错误是 `ToolError` 变体之一（`NotFound`、`PermissionDenied`、`ValidationFailed`、`Execution`、`Timeout`、`Transport`），错误消息反馈给思考器，以便它可以决定如何恢复——使用不同的参数重试、尝试不同的工具，或向用户报告错误。
 
 **位置**: `src/tools/service.rs`
 
@@ -337,64 +337,64 @@ pub struct ToolOutputMetadata {
 
 ### 文件操作
 
-| Tool | Description | Key Args |
+| 工具 | 说明 | 关键参数 |
 |------|-------------|----------|
-| `file_read` | Read file content | `path`, `encoding?` |
-| `file_write` | Write to file | `path`, `content` |
-| `file_list` | List directory | `path`, `recursive?` |
-| `file_delete` | Delete file or directory | `path` |
-| `file_mkdir` | Create directory | `path` |
-| `file_chmod` | Change permissions | `path`, `mode` |
+| `file_read` | 读取文件内容 | `path`、`encoding?` |
+| `file_write` | 写入文件 | `path`、`content` |
+| `file_list` | 列出目录 | `path`、`recursive?` |
+| `file_delete` | 删除文件或目录 | `path` |
+| `file_mkdir` | 创建目录 | `path` |
+| `file_chmod` | 更改权限 | `path`、`mode` |
 
 ### 代码执行
 
-| Tool | Description | Key Args |
+| 工具 | 说明 | 关键参数 |
 |------|-------------|----------|
-| `bash_exec` | Run bash command | `command`, `timeout?` |
-| `code_exec` | Execute code snippet | `language`, `code` |
-| `python_exec` | Run Python | `code`, `requirements?` |
+| `bash_exec` | 运行 bash 命令 | `command`、`timeout?` |
+| `code_exec` | 执行代码片段 | `language`、`code` |
+| `python_exec` | 运行 Python | `code`、`requirements?` |
 
-### 网页与搜索
+### 网页和搜索
 
-| Tool | Description | Key Args |
+| 工具 | 说明 | 关键参数 |
 |------|-------------|----------|
-| `web_fetch` | Fetch URL content | `url`, `method?`, `headers?` |
-| `web_search` | Search the web | `query`, `engine?` |
+| `web_fetch` | 获取 URL 内容 | `url`、`method?`、`headers?` |
+| `web_search` | 搜索网页 | `query`、`engine?` |
 
 ### 记忆
 
-| Tool | Description | Key Args |
+| 工具 | 说明 | 关键参数 |
 |------|-------------|----------|
-| `memory_store` | Store a fact | `content`, `tags?` |
-| `memory_search` | Hybrid search with deduplication | `query`, `max_results?` |
-| `memory_forget` | Delete a fact | `fact_id` |
-| `memory_browse` | Browse memory clusters | `query`, `path?` |
-| `memory_reflect` | Reflect on memory insights | `topic`, `depth?` |
-| `memory_timeline` | Timeline view of memories | `query`, `range?` |
+| `memory_store` | 存储事实 | `content`、`tags?` |
+| `memory_search` | 带去重的混合搜索 | `query`、`max_results?` |
+| `memory_forget` | 删除事实 | `fact_id` |
+| `memory_browse` | 浏览记忆集群 | `query`、`path?` |
+| `memory_reflect` | 反思记忆洞察 | `topic`、`depth?` |
+| `memory_timeline` | 记忆时间线视图 | `query`、`range?` |
 
-### 会话与 Agent
+### 会话和代理
 
-| Tool | Description | Key Args |
+| 工具 | 说明 | 关键参数 |
 |------|-------------|----------|
-| `sessions_spawn` | Spawn sub-agent | `model?`, `thinking?`, `prompt` |
-| `sessions_send` | Send message to sub-agent | `session_key`, `message` |
-| `sessions_list` | List active sub-agents | -- |
+| `sessions_spawn` | 生成子代理 | `model?`、`thinking?`、`prompt` |
+| `sessions_send` | 向子代理发送消息 | `session_key`、`message` |
+| `sessions_list` | 列出活动子代理 | -- |
 
-### 感知与生成
+### 感知和生成
 
-| Tool | Description | Key Args |
+| 工具 | 说明 | 关键参数 |
 |------|-------------|----------|
-| `snapshot_capture` | Capture AX tree + OCR | `target`, `region?`, `include_vision?` |
-| `image_generate` | Generate image | `prompt`, `provider?`, `size?` |
-| `speech_generate` | Text-to-speech | `text`, `voice?` |
-| `pdf_generate` | Generate PDF | `content`, `template?` |
+| `snapshot_capture` | 捕获 AX 树 + OCR | `target`、`region?`、`include_vision?` |
+| `image_generate` | 生成图像 | `prompt`、`provider?`、`size?` |
+| `speech_generate` | 文本转语音 | `text`、`voice?` |
+| `pdf_generate` | 生成 PDF | `content`、`template?` |
 
 ### 元工具
 
-| Tool | Description | Key Args |
+| 工具 | 说明 | 关键参数 |
 |------|-------------|----------|
-| `list_tools` | List available tools by category | `category?` |
-| `get_tool_schema` | Get JSON Schema for a tool | `tool_name` |
+| `list_tools` | 按类别列出可用工具 | `category?` |
+| `get_tool_schema` | 获取工具的 JSON Schema | `tool_name` |
 
 **位置**: `src/builtin_tools/`
 
@@ -410,13 +410,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TranslateArgs {
-    /// Text to translate
+    /// 要翻译的文本
     pub text: String,
 
-    /// Target language code (e.g., "en", "zh", "ja")
+    /// 目标语言代码（如 "en"、"zh"、"ja"）
     pub target_language: String,
 
-    /// Source language (auto-detect if omitted)
+    /// 源语言（如果省略则自动检测）
     #[serde(default)]
     pub source_language: Option<String>,
 }
@@ -452,24 +452,24 @@ impl AlephTool for TranslateTool {
 ### 步骤 3：注册
 
 ```rust
-// In builtin_tools/mod.rs
+// 在 builtin_tools/mod.rs 中
 pub fn register_builtins(server: &mut AlephToolServer) {
     server.register(TranslateTool::new(provider));
-    // ... other tools
+    // ... 其他工具
 }
 ```
 
-工具被包装在 `BuiltinHandler` 中，并在 `build_tool_service()` 期间插入共享的 `ToolRegistry`。然后它就可用于 LLM，拥有完全类型化的模式、自动 JSON 序列化以及与权限系统的集成。
+工具被包装在 `BuiltinHandler` 中，并在 `build_tool_service()` 期间插入到共享的 `ToolRegistry` 中。然后它就可用于具有完全类型模式、自动 JSON 序列化和与权限系统集成的 LLM。
 
 ---
 
 ## MCP 集成
 
-[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 允许外部工具服务器连接到 Aleph。MCP 工具通过 JSON-RPC 调用到单独的进程。
+[模型上下文协议 (MCP)](https://modelcontextprotocol.io/) 允许将外部工具服务器连接到 Aleph。MCP 工具通过对单独进程的 JSON-RPC 调用。
 
 ```rust
 pub struct McpClient {
-    transport: Transport,  // Stdio, WebSocket, or HTTP
+    transport: Transport,  // Stdio、WebSocket 或 HTTP
     tools: Vec<ToolDefinition>,
 }
 
@@ -496,17 +496,17 @@ impl McpClient {
 }
 ```
 
-MCP 工具在启动时通过 `list_tools` RPC 调用发现，包装在 `McpHandler` 中，并注册到与内置工具相同的 `ToolRegistry`。注册表中的限定名称是 `{server_id}__{tool}` 以避免冲突。从 Thinker 的角度来看，MCP 工具看起来与内置工具完全相同。
+MCP 工具在启动时通过 `list_tools` RPC 调用发现，包装在 `McpHandler` 中，并注册到与内置工具相同的 `ToolRegistry` 中。注册表中的限定名称为 `{server_id}__{tool}` 以避免冲突。从思考器的角度来看，MCP 工具看起来与内置工具完全相同。
 
 ---
 
 ## 工具过滤
 
-`PermissionLayer` 控制 LLM 看到哪些工具以及哪些需要用户通过 `SmartFilter` 特征界面确认：
+`PermissionLayer` 通过 `SmartFilter` trait 表面控制 LLM 看到哪些工具以及哪些需要用户确认：
 
 ```rust
 pub trait SmartFilter: Send + Sync {
-    /// Classify a tool invocation into Allow / Confirm / Deny.
+    /// 将工具调用分类为允许 / 确认 / 拒绝。
     fn classify(&self, name: &str, input: &Value) -> Classification;
 }
 
@@ -517,34 +517,34 @@ pub enum Classification {
 }
 ```
 
-生产实现（`src/tools/middleware/permission/resolver.rs` 中的 `LayeredPermissionResolver`）查询合并的全局 + 每个 agent 的 `ToolPermissionsConfig`。过滤器和审批器可以通过 `PermissionLayer::set_smart_filter()` 和 `set_approver()` 在运行时替换。
+生产实现（`src/tools/middleware/permission/resolver.rs` 中的 `LayeredPermissionResolver`）查询合并的全局 + 每个代理 `ToolPermissionsConfig`。过滤器和审批器可以通过 `PermissionLayer::set_smart_filter()` 和 `set_approver()` 在运行时交换。
 
-### 传统 ToolFilter（仍支持）
+### 遗留 ToolFilter（仍支持）
 
 ```rust
 pub struct ToolFilter {
-    pub allowed: Option<HashSet<String>>,  // Whitelist (if set)
-    pub blocked: HashSet<String>,           // Always excluded
+    pub allowed: Option<HashSet<String>>,  // 白名单（如果设置）
+    pub blocked: HashSet<String>,           // 始终排除
     pub require_confirmation: HashSet<String>,
 }
 ```
 
-`allowed` 列表支持 glob 模式（例如，`memory_*` 匹配所有记忆工具）。
+`allowed` 列表中支持 glob 模式（如 `memory_*` 匹配所有记忆工具）。
 
-工具过滤与安全系统交互：即使工具通过过滤器，`PolicyEngine` 也会检查 `IdentityContext` 以确保会话的角色允许工具调用。Guest 会话只能调用其 `GuestScope.allowed_tools` 中列出的工具。
+工具过滤与安全系统交互：即使工具通过过滤器，`PolicyEngine` 也会检查 `IdentityContext` 以确保会话的角色允许工具调用。访客会话只能调用其 `GuestScope.allowed_tools` 中列出的工具。
 
 ---
 
 ## 扩展工具
 
-扩展工具在沙箱化的插件运行时中运行：
+扩展工具在沙箱插件运行时中运行：
 
-| Runtime | Feature Flag | Execution Model |
+| 运行时 | 功能标志 | 执行模型 |
 |---------|-------------|-----------------|
-| WASM | `plugin-wasm` | Extism-based, sandboxed memory |
-| Node.js | `plugin-nodejs` | Spawned process, stdio communication |
+| WASM | `plugin-wasm` | 基于 Extism，沙箱内存 |
+| Node.js | `plugin-nodejs` | 生成的进程，stdio 通信 |
 
-扩展工具实现与内置工具相同的 `ToolDefinition` 接口，因此 Thinker 可以无缝发现它们。`CoreDispatch` 透明地路由到正确的处理程序：
+扩展工具实现与内置工具相同的 `ToolDefinition` 接口，因此思考器可以无缝发现它们。`CoreDispatch` 透明地路由到正确的处理程序：
 
 ```rust
 impl ToolService for CoreDispatch {
@@ -552,7 +552,7 @@ impl ToolService for CoreDispatch {
         let snapshot = self.registry.snapshot();
         let handler = snapshot.get(name).cloned()
             .ok_or_else(|| ToolError::NotFound { name: name.to_string() })?;
-        drop(snapshot);  // Release before await
+        drop(snapshot);  // 在 await 之前释放
         handler.invoke(input).await
     }
 }
@@ -565,6 +565,6 @@ impl ToolService for CoreDispatch {
 ## 相关页面
 
 - [架构概览](./overview) — 工具在系统中的位置
-- [Agent Harness](./harness) — Thinker 如何决定调用工具
+- [代理工具链](./harness) — 思考器如何决定调用工具
 - [网关架构](./gateway) — MCP 和工具 RPC 方法
 - [记忆系统](./memory) — 记忆工具和检索架构

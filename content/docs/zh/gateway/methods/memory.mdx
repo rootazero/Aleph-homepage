@@ -1,44 +1,44 @@
 ---
-title: "记忆方法"
-description: "用于记忆操作的 Gateway 内置工具。"
+title: "Memory 方法"
+description: "用于记忆操作的内置网关工具。"
 ---
 
-用于与 Aleph 记忆系统交互的 Gateway 内置工具。
+用于与 Aleph 记忆系统交互的内置网关工具。
 
 ---
 
 ## memory_search
 
-搜索知识库获取相关事实。
+搜索知识库以获取相关事实。
 
 ```
 <builtin_tool>memory_search</builtin_tool>
-<parameter name="query">我们决定了用什么数据库？</parameter>
+<parameter name="query">What database did we decide on?</parameter>
 <parameter name="limit">5</parameter>
 ```
 
 **参数：**
-- `query`（必需）— 搜索查询
+- `query`（必填）— 搜索查询
 - `limit`（可选）— 最大结果数，默认 5
 - `agent_id`（可选）— 目标代理命名空间
 - `mode`（可选）— `context` | `tools` | `hybrid`，默认 `hybrid`
 
-**返回：** 带分数的 `MemoryFact` 排序列表。
+**返回：** 带分数的 `MemoryFact` 排名列表。
 
 ---
 
 ## memory_reflect
 
-**Spec 2.** 从记忆中综合出连贯的答案，而非返回原始事实。
+**规范 2。** 从记忆中综合出连贯的答案，而不是返回原始事实。
 
 ```
 <builtin_tool>memory_reflect</builtin_tool>
-<parameter name="query">总结我们了解到的用户需求</parameter>
+<parameter name="query">Summarise what we know about the user's project requirements</parameter>
 <parameter name="depth">comprehensive</parameter>
 ```
 
 **参数：**
-- `query`（必需）— 要回答的问题
+- `query`（必填）— 要回答的问题
 - `depth`（可选）— `brief` | `standard` | `comprehensive`，默认 `standard`
 - `agent_id`（可选）— 目标代理命名空间
 
@@ -48,55 +48,55 @@ description: "用于记忆操作的 Gateway 内置工具。"
 
 ## session_search
 
-**Spec B.** 跨会话对话记录搜索。
+**规范 B。** 跨会话记录搜索。
 
 ```
 <builtin_tool>session_search</builtin_tool>
-<parameter name="query">我们什么时候讨论过认证？</parameter>
+<parameter name="query">When did we discuss authentication?</parameter>
 <parameter name="limit">5</parameter>
 ```
 
 **参数：**
-- `query`（必需）— 搜索查询
+- `query`（必填）— 搜索查询
 - `limit`（可选）— 返回的最大会话数，默认 5
 - `summarise`（可选）— `true` | `false`，默认 `true`
 
-**返回：** 匹配会话 + AI 生成摘要（如果 `summarise=true`）。
+**返回：** 匹配的会话 + AI 生成的摘要（如果 `summarise=true`）。
 
 ---
 
 ## remember
 
-**Spec A.** 将事实固定到精选热记忆。
+**规范 A。** 将事实固定到精选热记忆中。
 
 ```
 <builtin_tool>remember</builtin_tool>
-<parameter name="content">用户偏好所有应用使用深色模式</parameter>
+<parameter name="content">User prefers dark mode in all applications</parameter>
 <parameter name="priority">8</parameter>
 ```
 
 **参数：**
-- `content`（必需）— 要记住的事实
-- `priority`（可选）— 1-10，越高越重要，默认 5
+- `content`（必填）— 要记住的事实
+- `priority`（可选）— 1-10，越高 = 越重要，默认 5
 - `category`（可选）— 如 `preference`、`fact`、`warning`
 
 **返回：** 带事实 ID 的确认。
 
-**注意：** 精选记忆是**冻结快照**。变更需要显式重新策划。
+**注意：** 精选记忆是一个**冻结快照**。更改需要显式重新策划。
 
 ---
 
 ## forget
 
-从记忆中移除事实。
+从记忆中删除事实。
 
 ```
 <builtin_tool>forget</builtin_tool>
-<parameter name="query">用户的旧邮箱地址</parameter>
+<parameter name="query">The user's old email address</parameter>
 ```
 
 **参数：**
-- `query`（必需）— 要移除的事实描述
+- `query`（必填）— 要删除的事实的描述
 - `confirm`（可选）— `true` | `false`，默认 `false`
 
 **返回：** 候选事实列表 + 确认提示（如果 `confirm=false`）。
@@ -112,42 +112,42 @@ description: "用于记忆操作的 Gateway 内置工具。"
 ```
 
 **返回：**
-- 笔记总数
+- 总笔记数
 - 原始记忆数（未处理）
-- 索引健康状态（FTS + 向量）
-- 上次梦境运行时间戳
-- 精选记忆数量
+- 索引健康（FTS + 向量）
+- 上次 dream 运行时间戳
+- 精选记忆数
 
 ---
 
-## 方法对比
+## 方法比较
 
-| 方法 | 何时使用 | 返回 |
+| 方法 | 使用时机 | 返回 |
 |---|---|---|
-| `memory_search` | 需要特定事实 | 排序的事实 |
+| `memory_search` | 需要特定事实 | 排名事实 |
 | `memory_reflect` | 需要综合/答案 | 连贯答案 + 来源 |
-| `session_search` | 查找过往对话 | 会话 + 摘要 |
-| `remember` | 关键事实绝不能遗漏 | 确认 |
-| `forget` | 移除过时信息 | 确认 |
-| `memory_status` | 调试记忆问题 | 统计信息 |
+| `session_search` | 寻找过去的对话 | 会话 + 摘要 |
+| `remember` | 关键事实不能被遗漏 | 确认 |
+| `forget` | 删除过时信息 | 确认 |
+| `memory_status` | 调试记忆问题 | 统计 |
 
 ---
 
 ## 错误处理
 
-所有记忆方法返回结构化错误：
+所有记忆方法都返回结构化错误：
 
 | 错误 | 含义 |
 |---|---|
-| `MemoryNotFound` | 无匹配事实/会话 |
+| `MemoryNotFound` | 没有匹配的事实/会话 |
 | `IndexCorrupted` | SQLite 索引需要重建 |
-| `QuotaExceeded` | Token 预算耗尽 |
-| `LockTimeout` | 跨进程争用 (Spec C) |
+| `QuotaExceeded` | 令牌预算已耗尽 |
+| `LockTimeout` | 跨进程争用（规范 C） |
 
 ---
 
-## 参见
+## 另请参阅
 
-- [记忆系统](../../concepts/memory) — 概览
+- [记忆系统](../../concepts/memory) — 概述
 - [记忆架构](../../architecture/memory) — 实现
-- [记忆演进](../../architecture/memory-evolution) — 规格历史
+- [记忆演进](../../architecture/memory-evolution) — 规范历史

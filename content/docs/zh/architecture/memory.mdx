@@ -1,17 +1,17 @@
 ---
 title: "记忆架构"
-description: "深入解析 Aleph 的记忆存储、检索和后台处理实现。"
+description: "深入探讨 Aleph 的记忆存储、检索和后台处理实现。"
 ---
 
-本文档详细阐述 Aleph 记忆系统的实现。如需高层概览，请参阅 [记忆系统概念](../concepts/memory)。
+本文档详细探讨了 Aleph 记忆系统的实现。有关高级概述，请参阅[记忆系统概念](../concepts/memory)。
 
 ---
 
 ## 存储架构
 
-### 四 Trait 后端设计
+### 四特性后端设计
 
-存储层使用**四个独立的 trait**，而非单一存储。每个调用者只依赖其所需的能力：
+存储层使用**四个独立的特性**而不是单一的存储。每个调用者仅依赖其所需的能力：
 
 ```rust
 // src/memory/store/mod.rs
@@ -21,7 +21,7 @@ pub trait DreamStore: Send + Sync { /* ... */ }
 pub trait CompressionStore: Send + Sync { /* ... */ }
 ```
 
-四个 trait 均由 `SqliteMemoryBackend` 实现：
+所有四个都由 `SqliteMemoryBackend` 实现：
 
 ```rust
 pub struct SqliteMemoryBackend {
@@ -31,22 +31,22 @@ pub struct SqliteMemoryBackend {
 pub type MemoryBackend = Arc<SqliteMemoryBackend>;
 ```
 
-### 数据库结构 (SQLite + sqlite-vec)
+### 模式 (SQLite + sqlite-vec)
 
 #### 核心表
 
 | 表 | 用途 |
 |---|---|
-| `raw_memories` | 会话记录、附件文本、`is_processed` 标记 |
-| `notes_index` | 知识笔记元数据（标题、分类、标签、哈希） |
-| `notes_links` | 双向维基链接图 |
+| `raw_memories` | 会话记录、附件文本、`is_processed` 标志 |
+| `notes_index` | 知识笔记元数据（标题、类别、标签、哈希） |
+| `notes_links` | 双向 wikilink 图 |
 | `notes_fts` | 笔记内容的 FTS5 全文索引 |
-| `notes_vec_map` | 将 `(path, agent_id)` 映射到数字 rowid |
-| `notes_vec_{dim}` | sqlite-vec 虚拟表 (768/1024/1536 维度) |
-| `memory_events` | 不可变事件日志（事件溯源变更） |
-| `context_anchors` | 事实到会话来历的关联 |
-| `dream_status` | 日常/周度梦境运行追踪 |
-| `daily_insights` | 梦境守护进程输出缓存 |
+| `notes_vec_map` | 将 `(path, agent_id)` 链接到数字 rowid |
+| `notes_vec_{dim}` | sqlite-vec 虚拟表（768/1024/1536 维度） |
+| `memory_events` | 不可变事件日志（事件源突变） |
+| `context_anchors` | 用于出处的会话到事实链接 |
+| `dream_status` | 每日/每周 dream 运行跟踪 |
+| `daily_insights` | Dream 守护进程输出缓存 |
 
 #### sqlite-vec 虚拟表
 
@@ -67,7 +67,7 @@ CREATE VIRTUAL TABLE notes_vec_1536 USING vec0(
 
 ---
 
-## 检索流水线
+## 检索管道
 
 ### NoteFactRetrieval
 
@@ -86,33 +86,33 @@ pub trait NoteFactRetrieval: Send + Sync {
 }
 ```
 
-### 混合搜索 (向量 + FTS)
+### 混合搜索（向量 + FTS）
 
 ```
 查询
   ├── 向量搜索 (sqlite-vec) → 带距离分数的候选
   ├── FTS 搜索 (FTS5) → 带匹配分数的候选
-  └── RRF 融合 → 统一排序列表
+  └── RRF 融合 → 统一排名列表
 ```
 
-倒数排序融合 (RRF) 公式：
+倒数排名融合 (RRF) 公式：
 ```
 RRF_score = Σ 1 / (k + rank_i)
 ```
 其中 `k = 60`（常数），`rank_i` = 来源 `i` 的排名。
 
-### 评分流水线 (6 个阶段)
+### 评分管道（6 阶段）
 
-| 阶段 | 描述 | 默认 |
+| 阶段 | 说明 | 默认 |
 |---|---|---|
-| `cosine_rerank` | 混合向量搜索得分与实时余弦相似度 | 启用 |
-| `recency_boost` | 为最近创建的事实添加增量 boost | +0.1 |
-| `length_normalization` | 惩罚过长的内容 | 启用 |
+| `cosine_rerank` | 将向量搜索分数与新鲜余弦相似度混合 | 启用 |
+| `recency_boost` | 为最近创建的事实添加提升 | +0.1 |
+| `length_normalization` | 惩罚非常长的内容 | 启用 |
 | `time_decay` | 按年龄的指数衰减，下限 0.5 | 半衰期 30 天 |
-| `hard_min_score` | 丢弃低于阈值的候选 | 0.35 |
-| `mmr_diversity` | 最大边际相关性 — 将接近重复项推迟到尾部 | λ = 0.5 |
+| `hard_min_score` | 删除低于阈值的候选 | 0.35 |
+| `mmr_diversity` | 最大边际相关性——将近似重复项推迟到尾部 | λ = 0.5 |
 
-**已删除阶段：** `importance_weight`（在主权清理中移除）。
+**删除的阶段：** `importance_weight`（在主权清理中删除）。
 
 ---
 
@@ -129,39 +129,39 @@ RRF_score = Σ 1 / (k + rank_i)
   → 标记 is_processed = true
 ```
 
-### 梦境守护进程
+### Dream 守护进程
 
 在系统空闲时运行，有两种节奏：
 
-**日常流水线 (5 个阶段)：**
+**每日管道（5 阶段）：**
 ```
-[Consolidate] → [Drift] → [Lint] → [Decay] → [DailyDigest]
+[整合] → [漂移] → [清理] → [衰减] → [每日摘要]
 ```
 
-**周度流水线 (6 个阶段)：**
+**每周管道（6 阶段）：**
 ```
-[Consolidate] → [Drift] → [Synthesis] → [Lint] → [Decay] → [DailyDigest]
+[整合] → [漂移] → [综合] → [清理] → [衰减] → [每日摘要]
 ```
 
 ```rust
 // src/memory/dreaming/mod.rs
 pub fn ensure_dream_daemon();
-pub fn record_activity();  // 用户活动时调用以重置空闲计时器
+pub fn record_activity();  // 在用户活动时调用以重置空闲计时器
 ```
 
 ---
 
 ## 工作记忆组装
 
-### HybridAssembler (Spec 2)
+### HybridAssembler（规范 2）
 
-替代了传统的 `ContextComptroller::arbitrate` 路径。生成包含明确插槽的 `MemoryEnvelope`：
+替换遗留的 `ContextComptroller::arbitrate` 路径。生成带有显式插槽的 `MemoryEnvelope`：
 
 ```rust
 // src/memory/assembler/mod.rs
 pub struct MemoryEnvelope {
     pub system_slots: Vec<MemorySlot>,      // 始终注入的事实
-    pub user_slots: Vec<MemorySlot>,        // 与用户查询相关的事实
+    pub user_slots: Vec<MemorySlot>,        // 用户查询相关事实
     pub scratchpad: Option<String>,         // 工作笔记
 }
 
@@ -189,17 +189,17 @@ pub trait WorkingMemoryAssembler: Send + Sync {
 
 ```rust
 pub struct AssemblyBudget {
-    pub max_tokens: usize,      // 组装记忆的目标 token 预算
-    pub min_score: f32,         // 最低事实分数阈值
-    pub max_facts: usize,       // 包含的最大事实数
+    pub max_tokens: usize,      // 组装记忆的目标令牌预算
+    pub min_score: f32,         // 最小事实分数阈值
+    pub max_facts: usize,       // 要包含的最大事实数
 }
 ```
 
 ---
 
-## 精选热记忆 (Spec A)
+## 精选热记忆（规范 A）
 
-手动策划的、关键事实的冻结快照，绕过正常检索：
+手动策划的关键事实的冻结快照，绕过正常检索：
 
 ```rust
 // src/memory/curated/mod.rs
@@ -210,21 +210,21 @@ pub struct CuratedHotMemory {
 
 pub struct CuratedFact {
     pub content: String,
-    pub priority: u8,        // 1-10，越高越重要
+    pub priority: u8,        // 1-10，越高 = 越重要
     pub source: String,
 }
 ```
 
 - 通过 `remember` 内置工具创建
 - 存储在 `~/.aleph/memory/curated/{agent_id}.json`
-- 无条件注入每个提示词（在 token 预算内）
-- **冻结快照** — 变更需要显式重新策划
+- 无条件注入每个提示（最多令牌预算）
+- **冻结快照** — 更改需要显式重新策划
 
 ---
 
-## 记忆扩展 (Spec 4)
+## 记忆扩展（规范 4）
 
-用于自定义记忆行为的可插拔扩展：
+可插拔的自定义记忆行为扩展：
 
 ```rust
 // src/memory/extensions/mod.rs
@@ -259,14 +259,14 @@ pub struct ExtensionRegistry {
 
 **生命周期钩子：**
 - `on_memory_created` — 笔记创建/更新后触发
-- `on_memory_retrieved` — 可修改/过滤检索到的事实
+- `on_memory_retrieved` — 可以修改/过滤检索到的事实
 - `on_session_end` — 清理或总结
 
 ---
 
-## Memory Reflector (Spec 2)
+## 记忆反射器（规范 2）
 
-构建于 `HybridAssembler` 之上的综合层：
+`HybridAssembler` 之上的综合层：
 
 ```rust
 // src/memory/reflector/mod.rs
@@ -290,13 +290,13 @@ pub struct ReflectionResult {
 }
 ```
 
-通过 `memory_reflect` 内置工具暴露。返回连贯的、带引用来源的 LLM 综合答案。
+通过 `memory_reflect` 内置工具公开。返回带有引用来源的连贯 LLM 综合答案。
 
 ---
 
 ## 事件溯源
 
-每条笔记变更都被捕获为不可变的 `MemoryEvent`：
+每个笔记突变都被捕获为不可变的 `MemoryEvent`：
 
 ```rust
 // src/memory/events/mod.rs
@@ -319,7 +319,7 @@ pub enum MemoryEventType {
 ```
 
 事件支持：
-- 所有记忆变更的审计追踪
+- 所有记忆更改的审计跟踪
 - 时间旅行查询
 - 冲突解决
 - 扩展钩子触发
@@ -340,7 +340,7 @@ pub struct MemoryNamespace {
 
 pub enum IsolationLevel {
     Full,       // 完全隔离
-    Inherited,  // 可读取父级，写入隔离
+    Inherited,  // 可以读取父级，写入隔离
     Shared,     // 与父级读写共享
 }
 ```
@@ -351,27 +351,27 @@ pub enum IsolationLevel {
 
 | 关注点 | 缓解措施 |
 |---|---|
-| UTF-8 截断 | `chars().take(n)`（从不在字符中间截断） |
-| 锁中毒 | `unwrap_or_else(\|e\| e.into_inner())` |
-| SQL 注入 | 通过 rusqlite 参数化查询 |
-| 向量边界 | 余弦值限制在 `[-1.0, 1.0]` |
-| Token 溢出 | AssemblyBudget 强制执行限制 |
+| UTF-8 截断 | `chars().take(n)`（从不截断字符） |
+| 锁中毒 | `unwrap_or_else(|e| e.into_inner())` |
+| SQL 注入 | 通过 rusqlite 的参数化查询 |
+| 向量边界 | 余弦钳制到 `[-1.0, 1.0]` |
+| 令牌溢出 | AssemblyBudget 强制执行限制 |
 
 ---
 
-## 已删除组件 (主权清理)
+## 删除的组件（主权清理）
 
-以下组件于 2026-04-12 移除：
+以下内容于 2026-04-12 删除：
 
 | 组件 | 替代方案 |
 |---|---|
-| `MemoryTier` 枚举 | 结构区分（原始记忆 vs 笔记） |
-| `MemoryFact.strength` | 移除（由 LLM 决定相关性） |
-| `MemoryFact.confidence` | 移除（由 LLM 决定相关性） |
+| `MemoryTier` 枚举 | 结构区分（原始 vs 笔记） |
+| `MemoryFact.strength` | 已删除（LLM 决定相关性） |
+| `MemoryFact.confidence` | 已删除（LLM 决定相关性） |
 | `ValueEstimator` | 完全删除 |
-| `importance_weight` 评分 | 删除 |
+| `importance_weight` 评分 | 已删除 |
 
-理由：**LLM 主权** (R8) — 确定性的"重要性"启发式无法超越 LLM 自身对上下文中什么重要的判断。
+原理：**LLM 主权** (R8) —— 用于"重要性"的确定性启发式无法胜过 LLM 自身对上下文中重要事项的判断。
 
 ---
 
@@ -379,31 +379,31 @@ pub enum IsolationLevel {
 
 | 路径 | 内容 |
 |---|---|
-| `src/memory/mod.rs` | 模块入口，重导出 |
-| `src/memory/assembler/mod.rs` | WorkingMemoryAssembler trait, HybridAssembler 实现 |
-| `src/memory/curated/mod.rs` | CuratedHotMemory, remember 工具集成 |
-| `src/memory/extensions/mod.rs` | MemoryExtension trait, ExtensionRegistry |
-| `src/memory/reflector/mod.rs` | MemoryReflector, ReflectionResult |
-| `src/memory/note_retrieval/mod.rs` | NoteFactRetrieval trait, 混合搜索实现 |
+| `src/memory/mod.rs` | 模块入口，重新导出 |
+| `src/memory/assembler/mod.rs` | WorkingMemoryAssembler trait、HybridAssembler 实现 |
+| `src/memory/curated/mod.rs` | CuratedHotMemory、remember 工具集成 |
+| `src/memory/extensions/mod.rs` | MemoryExtension trait、ExtensionRegistry |
+| `src/memory/reflector/mod.rs` | MemoryReflector、ReflectionResult |
+| `src/memory/note_retrieval/mod.rs` | NoteFactRetrieval trait、混合搜索实现 |
 | `src/memory/notes/note.rs` | KnowledgeNote 结构体 |
 | `src/memory/notes/store.rs` | NoteStore trait |
 | `src/memory/notes/indexer.rs` | NoteIndexer (Markdown → SQLite) |
-| `src/memory/store/mod.rs` | RawMemoryStore, DreamStore, CompressionStore traits |
+| `src/memory/store/mod.rs` | RawMemoryStore、DreamStore、CompressionStore traits |
 | `src/memory/store/sqlite/mod.rs` | SqliteMemoryBackend 实现 |
 | `src/memory/store/sqlite/vec.rs` | sqlite-vec 集成 |
 | `src/memory/retrieval/mod.rs` | 通用检索接口 |
 | `src/memory/scoring_pipeline/mod.rs` | 6 阶段评分 |
-| `src/memory/dreaming/mod.rs` | DreamDaemon, 流水线阶段 |
-| `src/memory/events/mod.rs` | MemoryEvent, 事件溯源 |
-| `src/memory/transcript_indexer/mod.rs` | 对话分块与索引 |
-| `src/memory/namespace/mod.rs` | MemoryNamespace, 隔离级别 |
-| `src/memory/context_comptroller/mod.rs` | 传统预算管理器（已弃用） |
+| `src/memory/dreaming/mod.rs` | DreamDaemon、管道阶段 |
+| `src/memory/events/mod.rs` | MemoryEvent、事件溯源 |
+| `src/memory/transcript_indexer/mod.rs` | 记录分块和索引 |
+| `src/memory/namespace/mod.rs` | MemoryNamespace、隔离级别 |
+| `src/memory/context_comptroller/mod.rs` | 遗留预算管理器（已弃用） |
 
 ---
 
 ## 相关文档
 
-- [记忆系统概念](../concepts/memory) — 高层概览
-- [记忆演进](memory-evolution) — 规格历史 (Spec 1-4, A-C)
-- [Gateway: 记忆方法](../gateway/methods/memory) — API 参考
-- [思考者](../concepts/thinker) — 记忆如何被注入提示词
+- [记忆系统概念](../concepts/memory) — 高级概述
+- [记忆演进](memory-evolution) — 规范历史（规范 1-4、A-C）
+- [网关：记忆方法](../gateway/methods/memory) — API 参考
+- [思考器](../concepts/thinker) — 记忆如何注入提示

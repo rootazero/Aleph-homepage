@@ -1,27 +1,27 @@
 ---
-title: "接口概述"
-description: "多通道消息架构，驱动 Aleph 的多态通信。"
+title: "接口概览"
+description: "为多通道消息架构提供支持，驱动 Aleph 的多态通信"
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Aleph 通过**接口**（也称为通道）与用户通信——可插拔的适配器，将消息平台桥接到 Gateway 的统一消息总线。单个 Aleph 实例可以同时服务 Telegram、Discord、iMessage、WebChat 和 CLI，全部共享相同的 agent 大脑、内存和工具生态系统。
+Aleph 通过**接口**（也称为频道）与用户通信——可插拔的适配器，将消息平台桥接到 Gateway 的统一消息总线。单个 Aleph 实例可以同时为 Telegram、Discord、iMessage、WebChat 和 CLI 提供服务，所有这些都共享同一个 Agent 大脑、记忆和工具生态系统。
 
 ## 架构
 
 每个接口遵循相同的数据流：
 
 ```
-Platform API ──> Interface Adapter ──> InboundMessage ──> Gateway Router
+平台 API ──> 接口适配器 ──> InboundMessage ──> Gateway 路由器
+                                                              │
+                                                         会话密钥
+                                                              │
+                                                          执行器
                                                                │
-                                                          Session Key
-                                                               │
-                                                           Harness
-                                                                │
-Platform API <── Interface Adapter <── OutboundMessage <── Response
+平台 API <── 接口适配器 <── OutboundMessage <── 响应
 ```
 
-Gateway 的 **ChannelRegistry** 管理所有活动接口的生命周期。当 Aleph 启动时，它读取通道配置，通过其 **ChannelFactory** 实例化每个启用的接口，并调用 `start()`。从那时起，入站消息通过 `mpsc` 通道流向 Gateway，出站响应通过同一个适配器分派回去。
+Gateway 的 **ChannelRegistry** 管理所有活动接口的生命周期。当 Aleph 启动时，它读取频道配置，通过 **ChannelFactory** 实例化每个启用的接口，并调用 `start()`。从那时起，入站消息通过 `mpsc` 频道流向 Gateway，出站响应通过同一个适配器调度回去。
 
 ## Channel Trait
 
@@ -30,22 +30,22 @@ Gateway 的 **ChannelRegistry** 管理所有活动接口的生命周期。当 Al
 ```rust
 #[async_trait]
 pub trait Channel: Send + Sync {
-    /// 通道元数据（id、名称、类型、状态、能力）
+    /// 频道元数据（id、名称、类型、状态、能力）
     fn info(&self) -> &ChannelInfo;
 
-    /// 启动通道（连接、认证、开始轮询/监听）
+    /// 启动频道（连接、认证、开始轮询/监听）
     async fn start(&mut self) -> ChannelResult<()>;
 
-    /// 停止通道（断开连接、清理）
+    /// 停止频道（断开连接、清理）
     async fn stop(&mut self) -> ChannelResult<()>;
 
-    /// 通过此通道发送消息
+    /// 通过此频道发送消息
     async fn send(&self, message: OutboundMessage) -> ChannelResult<SendResult>;
 
     /// 获取入站消息接收器
     fn inbound_receiver(&self) -> Option<mpsc::Receiver<InboundMessage>>;
 
-    /// 发送输入指示器
+    /// 发送输入中指示器
     async fn send_typing(&self, conversation_id: &ConversationId) -> ChannelResult<()>;
 
     /// 对消息做出反应
@@ -59,11 +59,11 @@ pub trait Channel: Send + Sync {
 }
 ```
 
-每个接口还有一个 **ChannelFactory**，在运行时从 JSON/TOML 配置创建实例，当配置文件更改时启用热重载。
+每个接口还有一个 **ChannelFactory**，用于在运行时从 JSON/TOML 配置创建实例，当配置文件更改时支持热重载。
 
-## 通道能力
+## 频道能力
 
-并非每个平台都支持每个功能。每个通道声明一个 `ChannelCapabilities` 结构体，以便 agent 可以调整其行为：
+并非每个平台都支持每个功能。每个频道声明一个 `ChannelCapabilities` 结构体，以便 Agent 可以调整其行为：
 
 ```rust
 pub struct ChannelCapabilities {
@@ -83,82 +83,82 @@ pub struct ChannelCapabilities {
 }
 ```
 
-### 通道比较表
+### 频道对比表
 
 | 功能 | Telegram | Discord | iMessage | WebChat | CLI |
 |---------|:--------:|:-------:|:--------:|:-------:|:---:|
-| **富文本 (Markdown)** | Yes | Yes | No | Yes | Yes |
-| **附件** | Yes | Yes | Yes | Yes | No |
-| **图片** | Yes | Yes | Yes | Yes | No |
-| **音频/视频** | Yes | Yes | Yes | No | No |
-| **反应** | Limited | Yes | Tapbacks | No | No |
-| **回复线程** | Yes | Yes | No | No | No |
-| **消息编辑** | Yes | Yes | No | No | No |
-| **消息删除** | Yes | Yes | No | No | No |
-| **输入指示器** | Yes | Yes | No | No | No |
-| **内联键盘** | Yes | No | No | No | No |
-| **最大消息长度** | 4,096 | 2,000 | ~20,000 | Unlimited | Unlimited |
-| **最大附件大小** | 50 MB | 25 MB | 100 MB | Configurable | N/A |
-| **配置键** | `telegram` | `discord` | macOS only | `gateway` | `cli` |
-| **设置难度** | Easy | Medium | Medium | Included | Included |
+| **富文本 (Markdown)** | 是 | 是 | 否 | 是 | 是 |
+| **附件** | 是 | 是 | 是 | 是 | 否 |
+| **图片** | 是 | 是 | 是 | 是 | 否 |
+| **音频/视频** | 是 | 是 | 是 | 否 | 否 |
+| **反应** | 有限 | 是 | 轻点反馈 | 否 | 否 |
+| **回复线程** | 是 | 是 | 否 | 否 | 否 |
+| **消息编辑** | 是 | 是 | 否 | 否 | 否 |
+| **消息删除** | 是 | 是 | 否 | 否 | 否 |
+| **输入中指示器** | 是 | 是 | 否 | 否 | 否 |
+| **内联键盘** | 是 | 否 | 否 | 否 | 否 |
+| **最大消息长度** | 4,096 | 2,000 | ~20,000 | 无限制 | 无限制 |
+| **最大附件大小** | 50 MB | 25 MB | 100 MB | 可配置 | N/A |
+| **配置键** | `telegram` | `discord` | macOS 独有 | `gateway` | `cli` |
+| **设置难度** | 简单 | 中等 | 中等 | 包含 | 包含 |
 
 ## InteractionManifest
 
-除了原始能力之外，Aleph 使用 **InteractionManifest** 系统来通知 AI 当前通道可以做什么。每个通道属于一个 `InteractionParadigm`：
+除了原始能力之外，Aleph 还使用 **InteractionManifest** 系统来通知 AI 当前频道可以做什么。每个频道属于一个 `InteractionParadigm`：
 
-| 范式 | 通道 | 能力 |
+| 范式 | 频道 | 能力 |
 |----------|----------|-------------|
-| **CLI** | Terminal | 富文本、代码高亮、流式传输 |
-| **WebRich** | WebChat、Desktop apps | 完整的交互式 UI、画布、mermaid 图表、流式传输 |
+| **CLI** | 终端 | 富文本、代码高亮、流式传输 |
+| **WebRich** | WebChat、桌面应用 | 完整交互式 UI、canvas、mermaid 图表、流式传输 |
 | **Messaging** | Telegram、Discord、iMessage | 富文本、内联图片 |
-| **Background** | Cron jobs、webhooks | 仅静默回复 |
+| **Background** | Cron 作业、webhooks | 仅静默回复 |
 | **Embedded** | 最小 UI 上下文 | 无特殊能力 |
 
-清单告诉 AI 是否可以使用 Mermaid 图表、交互式按钮、画布绘图或流式传输——因此它将其输出格式定制为在用户屏幕上实际渲染的内容。
+清单告诉 AI 它是否可以使用 Mermaid 图表、交互式按钮、canvas 绘图或流式传输——因此它会根据用户屏幕上实际渲染的内容定制其输出格式。
 
-## Session Key 解析
+## 会话密钥解析
 
-当消息到达任何接口时，Gateway 解析一个 **SessionKey**，确定加载哪个对话历史。会话密钥编码完整上下文：
+当消息到达任何接口时，Gateway 会解析一个 **SessionKey**，确定要加载哪个对话历史记录。会话密钥编码完整上下文：
 
-| 会话类型 | 键格式 | 示例 |
+| 会话类型 | 密钥格式 | 示例 |
 |-------------|-----------|---------|
 | **Main** | `agent:{id}:main` | `agent:main:main` |
-| **DM (per-peer)** | `agent:{id}:dm:{peer}` | `agent:main:dm:user123` |
-| **DM (per-channel-peer)** | `agent:{id}:{channel}:dm:{peer}` | `agent:main:telegram:dm:user123` |
-| **Group** | `agent:{id}:{channel}:group:{peer}` | `agent:main:discord:group:guild456` |
-| **Task** | `agent:{id}:{type}:{task}` | `agent:main:cron:daily-summary` |
-| **Ephemeral** | `agent:{id}:ephemeral:{uuid}` | `agent:main:ephemeral:a1b2c3` |
+| **DM (按对话方)** | `agent:{id}:dm:{peer}` | `agent:main:dm:user123` |
+| **DM (按频道-对话方)** | `agent:{id}:{channel}:dm:{peer}` | `agent:main:telegram:dm:user123` |
+| **群组** | `agent:{id}:{channel}:group:{peer}` | `agent:main:discord:group:guild456` |
+| **任务** | `agent:{id}:{type}:{task}` | `agent:main:cron:daily-summary` |
+| **临时** | `agent:{id}:ephemeral:{uuid}` | `agent:main:ephemeral:a1b2c3` |
 
-**DmScope** 策略控制直接消息如何隔离：
+**DmScope** 策略控制如何隔离直接消息：
 
-- **`Main`** -- 所有 DM 共享主会话（跨用户的对话合并）
-- **`PerPeer`** -- 每个用户获得自己的会话，跨通道共享（默认）
-- **`PerChannelPeer`** -- 每个通道上的每个用户获得一个单独的会话
+- **`Main`** — 所有 DM 共享主会话（跨用户的对话合并）
+- **`PerPeer`** — 每个用户获得自己的会话，跨频道共享（默认）
+- **`PerChannelPeer`** — 每个频道上的每个用户获得单独的会话
 
 <Callout type="info">
-**Identity Links** 允许你跨通道映射同一个人。如果 Telegram 上的用户 `123` 和 Discord 上的用户 `456` 都是 "john"，他们的 DM 会话可以在 `agent:main:dm:john` 下统一。
+**身份链接**允许你跨频道映射同一个人。如果 Telegram 上的用户 `123` 和 Discord 上的用户 `456` 都是 "john"，他们的 DM 会话可以在 `agent:main:dm:john` 下统一。
 </Callout>
 
 ## 路由绑定
 
-你可以使用路由绑定将特定通道、用户或公会绑定到不同的 agent。解析遵循优先级链：
+你可以使用路由绑定将特定频道、用户或公会绑定到不同的 Agent。解析遵循优先级链：
 
-1. **Peer** -- 特定用户/聊天匹配（最高优先级）
-2. **Guild** -- Discord 公会或 Slack 工作区匹配
-3. **Team** -- 团队级匹配
-4. **Account** -- 特定账户匹配
-5. **Channel** -- 通道类型匹配（例如，所有 Telegram 到一个 agent）
-6. **Default** -- 回退到默认 agent
+1. **Peer** — 特定用户/聊天匹配（最高优先级）
+2. **Guild** — Discord 公会或 Slack 工作区匹配
+3. **Team** — 团队级匹配
+4. **Account** — 特定账户匹配
+5. **Channel** — 频道类型匹配（例如，所有 Telegram 到一个 Agent）
+6. **Default** — 回退到默认 Agent
 
 ```toml
-# 将所有 Telegram 消息路由到 "personal" agent
+# 将所有 Telegram 消息路由到 "personal" Agent
 [[bindings]]
 agent_id = "personal"
 [bindings.match_rule]
 channel = "telegram"
 account_id = "*"
 
-# 将特定 Discord 公会路由到 "work" agent
+# 将特定 Discord 公会路由到 "work" Agent
 [[bindings]]
 agent_id = "work"
 [bindings.match_rule]
@@ -168,13 +168,13 @@ guild_id = "123456789"
 
 ## 功能编译
 
-Aleph 默认编译所有生产功能。接口通过配置启用（而不是编译时功能）。只需在 `~/.aleph/config.toml` 中启用你需要的通道。
+Aleph 默认编译所有生产功能。接口通过配置启用（而非编译时功能）。只需在 `~/.aleph/config.toml` 中启用你需要的频道。
 
-iMessage 接口仅针对 macOS 条件编译（`#[cfg(target_os = "macos")]`）。
+iMessage 接口仅在 macOS 上有条件编译（`#[cfg(target_os = "macos")]`）。
 
-## 通道配置
+## 频道配置
 
-所有通道都通过 Aleph 配置文件 (`~/.aleph/config.toml`) 进行配置。更改由文件监视器检测并在 600ms 内通过热重载应用：
+所有频道都通过 Aleph 配置文件（`~/.aleph/config.toml`）进行配置。文件监视器检测到更改，并在 600 毫秒内通过热重载应用：
 
 ```toml
 [channels.telegram]
@@ -193,13 +193,13 @@ port = 18790
 cors_origins = ["http://localhost:*"]
 ```
 
-配置支持 `${ENV_VAR}` 扩展用于密钥，因此 token 永远不需要以明文存储。
+配置支持 `${ENV_VAR}` 扩展用于密钥，因此令牌永远不需要以明文存储。
 
 ## 下一步
 
 深入了解各个接口指南：
 
-- [Telegram](/docs/interfaces/telegram) -- Bot 设置、允许列表、媒体处理
-- [Discord](/docs/interfaces/discord) -- 公会权限、斜杠命令、嵌入
-- [iMessage](/docs/interfaces/imessage) -- 通过 Messages.app 的 macOS 原生集成
-- [WebChat](/docs/interfaces/webchat) -- 带有 WebSocket 流式传输的嵌入式网页聊天
+- [Telegram](/docs/interfaces/telegram) — 机器人设置、白名单、媒体处理
+- [Discord](/docs/interfaces/discord) — 公会权限、斜杠命令、嵌入
+- [iMessage](/docs/interfaces/imessage) — 通过 Messages.app 进行 macOS 原生集成
+- [WebChat](/docs/interfaces/webchat) — 带有 WebSocket 流式传输的嵌入式 Web 聊天

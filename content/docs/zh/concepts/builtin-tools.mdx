@@ -1,6 +1,235 @@
 ---
-title: "Builtin Tools"
-description: "Built-in tool system implementing rig's Tool trait for AI-callable functions."
+title: "内置工具"
+description: "内置工具系统实现 rig 的 Tool trait，用于 AI 可调用的函数，包括文件操作、代码执行、Web 获取、搜索、PDF 生成和进度回调。"
 ---
 
-Builtin Tools documentation is available in English. Chinese translation is in progress.
+`builtin_tools` 模块实现 Aleph 的内置工具系统。所有工具都实现 rig 的 `Tool` trait，使它们可以直接被 AI 代理调用。此模块包含 40 多个工具实现，涵盖文件操作、代码执行、Web 交互、媒体生成和系统管理。
+
+## 设计理念
+
+工具系统遵循两个原则：
+
+1. **统一接口** — 每个工具实现相同的 `Tool` trait，因此代理无论它们做什么都以相同的方式调用它们
+2. **进度可见性** — 工具执行发出回调以实现实时 UI 更新
+
+---
+
+## 工具类别
+
+### 文件操作
+
+用于读取、写入和操作文件的文件系统工具：
+
+```rust
+pub struct FileOpsTool;
+pub struct FileReadTool;
+pub struct FileWriteTool;
+pub struct FileEditTool;
+```
+
+**能力：**
+- `list` — 列出目录内容
+- `read` — 读取文件内容
+- `write` — 写入或覆盖文件
+- `move` / `copy` — 文件重定位
+- `delete` — 删除文件和目录
+- `mkdir` — 创建目录
+- `search` — 按模式查找文件
+
+**安全：** 通过边界验证防止路径遍历 —— 在目录创建后调用 `canonicalize`，并针对允许的边界验证路径。
+
+### 代码执行
+
+在沙箱环境中执行代码：
+
+```rust
+pub struct CodeExecTool;
+```
+
+**语言：** Python, JavaScript, Shell
+
+**安全：**
+- 在执行之前创建和验证工作目录
+- 通过规范化阻止路径遍历
+- 错误传播使用 `?` —— 永远不会静默吞咽失败
+
+### Web 获取
+
+检索网页内容：
+
+```rust
+pub struct WebFetchTool;
+```
+
+获取 URL 并返回清理后的文本内容供代理分析。
+
+### 搜索
+
+通过多个后端进行 Web 搜索：
+
+```rust
+pub struct SearchTool;
+```
+
+**提供商：** SearXNG（隐私优先，自托管）
+
+### PDF 生成
+
+从文本或 Markdown 生成 PDF：
+
+```rust
+pub struct PdfGenerateTool;
+```
+
+使用浏览器引擎渲染 HTML 并导出为 PDF。临时文件使用 `AtomicU64` 计数器作为唯一文件名，以防止并发调用中的竞争条件。
+
+### 媒体生成
+
+生成图像和语音：
+
+```rust
+pub struct ImageGenerateTool;
+pub struct SpeechGenerateTool;
+```
+
+**提供商：** DALL-E, Stable Diffusion, Midjourney, ElevenLabs, OpenAI TTS
+
+### 桌面操作
+
+与桌面环境交互：
+
+```rust
+pub struct DesktopTool;
+```
+
+**能力：**
+- 可访问性树查询（按角色、聚焦元素、完整树）
+- 权限检查
+- 截图捕获
+
+### 内存工具
+
+访问代理的内存系统：
+
+```rust
+pub struct MemorySearchTool;
+pub struct MemoryBrowseTool;
+pub struct MemoryReflectTool;
+pub struct MemoryExploreTool;
+pub struct MemoryTimelineTool;
+```
+
+### 元工具
+
+用于工具发现的工具：
+
+```rust
+pub struct ListToolsTool;      // 按类别列出可用工具
+pub struct GetToolSchemaTool;  // 获取特定工具的 JSON 模式
+```
+
+### MCP 包装器
+
+将 MCP 服务器工具包装为 rig 兼容的工具：
+
+```rust
+pub struct McpToolWrapper;
+```
+
+---
+
+## 工具进度回调
+
+工具执行可以通过全局回调系统进行监控：
+
+```rust
+pub trait ToolProgressCallback: Send + Sync {
+    fn on_tool_start(&self, tool_name: &str, args_summary: &str);
+    fn on_tool_result(
+        &self,
+        tool_name: &str,
+        result_summary: &str,
+        success: bool,
+    );
+    fn on_tool_streaming_chunk(&self, tool_name: &str, chunk: &str,
+    );
+}
+```
+
+**用法：**
+
+```rust
+let handler = Arc::new(MyHandler::new());
+set_tool_progress_handler(Some(handler));
+// ... 执行代理操作 ...
+set_tool_progress_handler(None); // 完成后清除
+```
+
+**线程安全：** 回调存储在 `Mutex<Option<Arc<...>>>` 中。对于流式块，`Arc` 在短暂的锁下克隆，以避免在回调期间持有互斥锁。
+
+---
+
+## 工具输出压缩
+
+`tool_output` 模块在发送到 LLM 之前压缩冗长的工具输出：
+
+```rust
+pub fn compress_snapshot(output: &str, max_chars: usize) -> String
+```
+
+**策略：**
+- JSON 数组 —— 截断并带有元素计数
+- JSON 对象 —— 带有值截断的键摘要
+- 纯文本 —— 在边界处的字符安全截断
+- 空输入 —— 原样返回
+
+**安全：** 使用 `is_char_boundary()` 进行 UTF-8 安全截断。无字节级切片。
+
+---
+
+## 错误处理
+
+所有工具返回 `Result<T, ToolError>`：
+
+```rust
+pub enum ToolError {
+    Execution(String),
+    InvalidArgs(String),
+    NotFound(String),
+    PermissionDenied(String),
+    Timeout,
+}
+```
+
+---
+
+## 安全属性
+
+- **无路径遍历** — 文件操作中的 `canonicalize` + 边界验证
+- **无竞争条件** — 临时文件名的 `AtomicU64`
+- **UTF-8 安全** — 使用 `chars().count()` 获取长度，而非 `.len()` 字节
+- **锁恢复** — `unwrap_or_else(|e| e.into_inner())` 模式
+- **无 `static mut`** — 未找到
+
+---
+
+## 代码位置
+
+- `src/builtin_tools/mod.rs` — 模块入口点和进度回调
+- `src/builtin_tools/file_ops/` — 文件操作工具
+- `src/builtin_tools/code_exec.rs` — 代码执行
+- `src/builtin_tools/web_fetch.rs` — Web 获取
+- `src/builtin_tools/search.rs` — 搜索工具
+- `src/builtin_tools/pdf_generate/` — PDF 生成
+- `src/builtin_tools/generation.rs` — 媒体生成包装器
+- `src/builtin_tools/browser_tools/` — 浏览器自动化
+- `src/builtin_tools/memory_*.rs` — 内存工具
+- `src/builtin_tools/meta_tools.rs` — 工具发现
+- `src/builtin_tools/mcp_wrapper.rs` — MCP 集成
+- `src/tool_output/compressor.rs` — 输出压缩
+
+## 另请参阅
+
+- [生成](/docs/zh/concepts/generation) — 媒体生成提供商
+- [媒体处理](/docs/zh/concepts/media-processing) — 附件处理管道
+- [搜索](/docs/zh/concepts/search) — 搜索提供商实现

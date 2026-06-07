@@ -1,6 +1,259 @@
 ---
-title: "Media Processing"
-description: "Multimodal media processing pipeline handling attachment download, caching, and vision-based understanding."
+title: "媒体处理"
+description: "多模态媒体处理管道，处理附件下载、缓存、格式检测、图像注入、音频转录和基于视觉的理解。"
 ---
 
-Media Processing documentation is available in English. Chinese translation is in progress.
+`media` 和 `vision` 模块构成 Aleph 的多模态处理管道。它们处理来自任何通道的附件，检测格式，缓存下载的内容，并通过视觉理解或音频转录将媒体转换为 LLM 兼容的内容块。
+
+## 设计理念
+
+媒体管道遵循三个原则：
+
+1. **统一入口** — `MediaProcessor` 通过单一接口处理所有媒体类型
+2. **提供商回退** — `MediaPipeline` 按优先级顺序尝试提供商，直到一个成功
+3. **基于能力的路由** — `VisionPipeline` 跳过不支持请求操作的提供商
+
+---
+
+## 数据流
+
+```
+Channel → InboundMessage.attachments
+    → RunRequest.attachments
+        → MediaProcessor.process()
+            ├─ Image + vision → ContentBlock::Image (原生)
+            ├─ Image - vision → VisionPipeline → ContentBlock::Text
+            ├─ Audio + STT    → WhisperAPI → ContentBlock::Text
+            └─ Other          → ContentBlock::Text (占位符)
+        → UnifiedMessage::User { content: [Text, Image, ...] }
+            → Provider adapter → LLM API call
+```
+
+---
+
+## 核心组件
+
+### MediaProcessor
+
+由 `ExecutionEngine` 拥有的统一入口点：
+
+```rust
+pub struct MediaProcessor {
+    pipeline: MediaPipeline,
+    cache: MediaCache,
+    policy: MediaPolicy,
+}
+
+impl MediaProcessor {
+    pub async fn process(
+        &self,
+        attachments: Vec<Attachment>,
+    ) -> Result<Vec<ContentBlock>> { /* ... */ }
+}
+```
+
+### MediaPipeline
+
+使用基于优先级的回退编排提供商：
+
+```rust
+pub struct MediaPipeline {
+    providers: Vec<Box<dyn MediaProvider>>,
+}
+
+impl MediaPipeline {
+    pub fn add_provider(
+        &mut self,
+        provider: Box<dyn MediaProvider>,
+    ) { /* ... */ }
+
+    pub async fn process(
+        &self,
+        input: &MediaInput,
+        media_type: &MediaType,
+        prompt: Option<&str>,
+    ) -> Result<MediaOutput> { /* ... */ }
+}
+```
+
+### MediaProvider Trait
+
+```rust
+pub trait MediaProvider: Send + Sync {
+    fn can_process(&self, media_type: &MediaType) -> bool;
+
+    async fn process(
+        &self,
+        input: &MediaInput,
+        media_type: &MediaType,
+        prompt: Option<&str>,
+    ) -> Result<MediaOutput>;
+}
+```
+
+**内置提供商：**
+- `ImageMediaProvider` — 将图像路由到 VisionPipeline
+- `TextDocumentProvider` — 从 Markdown、TXT、PDF 中提取文本
+- `AudioStubProvider` — 音频处理的占位符
+
+### 格式检测
+
+从魔术字节和文件扩展名检测媒体类型：
+
+```rust
+pub fn detect_by_extension(path: &str) -> Option<MediaType>;
+pub fn detect_by_magic(bytes: &[u8]) -> Option<MediaType>;
+pub fn detect_from_path(path: &Path) -> Option<MediaType>;
+```
+
+**支持的格式：**
+- 图像: PNG, JPEG, WebP, GIF
+- 音频: MP3, WAV, OGG, M4A
+- 视频: MP4, WebM, MOV
+- 文档: PDF, Markdown, TXT
+
+### MediaCache
+
+使用智能清理缓存下载的媒体：
+
+```rust
+pub struct MediaCache {
+    max_size: usize,
+    ttl: Duration,
+}
+```
+
+**特性：**
+- 基于 URL 的去重
+- `.created_at` 标记模式以避免 mtime 漂移
+- 过时条目清理
+
+**安全：** 使用 `chars().take(30)` 进行 URL 预览（而非字节切片）以处理多字节字符。
+
+### MediaPolicy
+
+强制执行大小和生命周期约束：
+
+```rust
+pub struct MediaPolicy {
+    max_file_size: usize,
+    max_image_dimensions: (u32, u32),
+    allowed_types: Vec<MediaType>,
+}
+```
+
+---
+
+## 视觉管道
+
+`vision` 模块通过基于提供商的管道提供图像理解、OCR 和对象检测：
+
+```rust
+pub struct VisionPipeline {
+    providers: Vec<Box<dyn VisionProvider>,
+}
+```
+
+### VisionProvider Trait
+
+```rust
+#[async_trait]
+pub trait VisionProvider: Send + Sync {
+    async fn understand_image(
+        &self,
+        image: &ImageInput,
+        prompt: &str,
+    ) -> Result<VisionResult>;
+
+    async fn ocr(&self,
+        image: &ImageInput,
+    ) -> Result<OcrResult>;
+
+    fn capabilities(&self) -> VisionCapabilities;
+    fn name(&self) -> &str;
+}
+```
+
+### 回退行为
+
+提供商按注册顺序尝试。第一个成功的结果获胜：
+
+```rust
+// 跳过没有所需能力的提供商
+if !provider.capabilities().image_understanding {
+    continue;
+}
+```
+
+**当前提供商：**
+- `ClaudeVisionProvider` — 返回错误（待 API 接线）
+- `PlatformOcrProvider` — 委托给 Desktop Bridge 进行 OCR
+
+### ImageInput
+
+```rust
+pub enum ImageInput {
+    Url { url: String },
+    Base64 { data: String, format: ImageFormat },
+}
+```
+
+### VisionResult
+
+```rust
+pub struct VisionResult {
+    pub description: String,
+    pub elements: Vec<VisualElement>,
+    pub confidence: f64,
+}
+```
+
+---
+
+## 音频转录
+
+音频附件通过 Whisper API 进行转录：
+
+```rust
+pub struct WhisperTranscriber {
+    api_key: String,
+    model: String,
+}
+```
+
+**流程：** 音频文件 → Whisper API → 文本内容块
+
+---
+
+## 安全属性
+
+- **UTF-8 安全** — 无字节切片；使用 `chars().take(n)` 进行截断
+- **无锁问题** — 媒体模块中无 `Mutex`/`RwLock`
+- **无 SQL 注入** — 无数据库查询
+- **路径验证** — `is_hidden()` 防止扫描点目录
+
+---
+
+## 代码位置
+
+**Media:**
+- `src/media/mod.rs` — 管道和数据流
+- `src/media/processor.rs` — MediaProcessor
+- `src/media/pipeline.rs` — MediaPipeline
+- `src/media/processors.rs` — 内置提供商
+- `src/media/detect.rs` — 格式检测
+- `src/media/cache.rs` — 媒体缓存
+- `src/media/policy.rs` — 大小/生命周期策略
+- `src/media/types.rs` — 核心类型
+- `src/media/whisper.rs` — 转录
+
+**Vision:**
+- `src/vision/mod.rs` — VisionPipeline
+- `src/vision/provider.rs` — VisionProvider trait
+- `src/vision/providers/` — 提供商实现
+- `src/vision/types.rs` — ImageInput, VisionResult 等
+
+## 另请参阅
+
+- [生成](/docs/zh/concepts/generation) — 如何生成图像/音频
+- [内置工具](/docs/zh/concepts/builtin-tools) — 使用媒体处理的工具

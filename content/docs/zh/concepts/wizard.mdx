@@ -1,6 +1,152 @@
 ---
-title: "Wizard"
-description: "基于会话的向导框架，用于引导式配置流程。"
+title: "向导"
+description: "用于引导式入门和配置流程的基于会话的向导框架。"
 ---
 
-Wizard文档目前提供英文版本。中文翻译正在进行中。
+`wizard` 模块为入门和配置流程提供基于会话的向导框架。它通过延迟承诺和有状态会话引导用户完成多步设置过程。
+
+## 设计理念
+
+1. **基于会话的状态机** — 向导进度在交互之间持久化
+2. **延迟承诺** — 每个步骤可以在不阻塞整体流程的情况下收集数据
+3. **通道无关** — 通过 CLI、RPC 或任何接口工作
+
+---
+
+## 架构
+
+```
+客户端                        WizardSession                     WizardFlow
+   │                               │                                │
+   │── wizard.start ──────────────▶│                                │
+   │                               │── run(prompter) ──────────────▶│
+   │◀── { step: intro } ───────────│◀── prompt(intro) ──────────────│
+   │                               │                                │
+   │── wizard.next { null } ──────▶│                                │
+   │◀── { step: select } ──────────│◀── prompt(select) ─────────────│
+   │                               │                                │
+   │── wizard.next { "local" } ───▶│                                │
+   │                               │── answer("local") ────────────▶│
+   │◀── { step: text } ────────────│◀── prompt(text) ───────────────│
+   │                               │                                │
+   │── wizard.cancel ─────────────▶│                                │
+   │◀── { done: true } ────────────│                                │
+```
+
+---
+
+## 核心组件
+
+### WizardSession
+
+管理向导生命周期：
+
+```rust
+pub struct WizardSession {
+    flow: Box<dyn WizardFlow>,
+    state: WizardState,
+}
+
+impl WizardSession {
+    pub async fn start(
+        &mut self,
+    ) -> Result<WizardStep> { /* ... */ }
+
+    pub async fn next(
+        &mut self,
+        answer: Option<String>,
+    ) -> Result<WizardNextResult> { /* ... */ }
+
+    pub fn cancel(&mut self,
+    ) -> WizardStatus { /* ... */ }
+}
+```
+
+### WizardFlow
+
+定义步骤序列：
+
+```rust
+pub trait WizardFlow: Send + Sync {
+    async fn run(
+        &self,
+        prompter: &dyn WizardPrompter,
+    ) -> Result<()>;
+}
+```
+
+### WizardPrompter
+
+抽象用户交互：
+
+```rust
+pub trait WizardPrompter: Send + Sync {
+    fn intro(&self, title: &str, description: &str) -> ProgressHandle;
+    fn text(&self, prompt: &str) -> Result<String>;
+    fn select(&self, prompt: &str, options: &[WizardOption]) -> Result<String>;
+    fn confirm(&self, prompt: &str) -> Result<bool>;
+}
+```
+
+**实现：**
+- `CliPrompter` — 命令行提示（存根，TODO: 集成 dialoguer）
+- `RpcPrompter` — 用于远程客户端的基于 JSON-RPC 的提示
+
+### WizardStep
+
+```rust
+pub struct WizardStep {
+    pub step_type: StepType,
+    pub prompt: String,
+    pub options: Vec<WizardOption>,
+}
+
+pub enum StepType {
+    Intro,
+    Text,
+    Select,
+    Confirm,
+    Complete,
+}
+```
+
+---
+
+## 入门流程
+
+内置向导用于初始设置：
+
+```rust
+pub struct QuickSetupFlow;
+pub struct ProviderSetupFlow;
+```
+
+**收集：**
+- AI 提供商选择 (OpenAI, Anthropic 等)
+- API 密钥配置
+- 消息应用偏好
+- 思考级别偏好
+
+---
+
+## 安全属性
+
+- **原子计数器** — `AtomicU64` 用于步骤计数（无锁开销）
+- **锁恢复** — `unwrap_or_else(|e| e.into_inner())` 用于 RwLock
+- **动态宽度** — 框宽度从标题长度计算
+- **生产中无 unwrap** — 所有用户路径返回 `Result`
+
+---
+
+## 代码位置
+
+- `src/wizard/mod.rs` — 模块入口点
+- `src/wizard/session.rs` — `WizardSession` 和 `WizardFlow` trait
+- `src/wizard/prompter.rs` — Prompter trait 和实现
+- `src/wizard/types.rs` — 步骤类型和选项
+- `src/wizard/flows/` — 内置流程（入门、提供商设置）
+
+## 另请参阅
+
+- [配置](/docs/zh/getting-started/configuration) — 配置系统
+- [安装](/docs/zh/getting-started/installation) — 初始设置

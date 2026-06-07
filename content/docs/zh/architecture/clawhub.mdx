@@ -1,8 +1,117 @@
 ---
 title: "ClawHub"
-description: "ClawHub 插件中心架构"
+description: "用于 ClawHub 技能注册表集成的 HTTP 客户端和类型。"
 ---
 
-> 此页面正在翻译中。
+`clawhub` 模块提供与 [ClawHub](https://clawhub.ai) 的 HTTP 客户端集成，ClawHub 是一个用于发现和安装社区贡献技能技能注册表。
 
-请参阅[英文版](/en/docs/architecture/clawhub)。
+## 概览
+
+ClawHub 集成使 Aleph 能够：
+- **浏览技能** —— 搜索和发现社区技能
+- **安装技能** —— 从注册表下载和安装技能
+- **同步元数据** —— 保持技能元数据最新
+
+## 架构
+
+```
+ClawHubClient
+  ├── HTTP 客户端 (reqwest)
+  ├── 类型 —— 请求/响应模式
+  └── 认证 (API token)
+```
+
+## 核心组件
+
+### ClawHubClient
+
+ClawHub API 的 HTTP 客户端：
+
+```rust
+// src/clawhub/client.rs
+pub struct ClawHubClient {
+    base_url: String,
+    client: reqwest::Client,
+    auth_token: Option<String>,
+}
+
+impl ClawHubClient {
+    pub fn new(base_url: String) -> Self;
+    
+    pub async fn search_skills(
+        &self,
+        query: &str,
+    ) -> Result<Vec<SkillListing>>;
+    
+    pub async fn get_skill(
+        &self,
+        id: &str,
+    ) -> Result<SkillDetail>;
+    
+    pub async fn download_skill(
+        &self,
+        id: &str,
+        dest: &Path,
+    ) -> Result<()>;
+}
+```
+
+### 类型
+
+```rust
+// src/clawhub/types.rs
+pub struct SkillListing {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub version: String,
+    pub downloads: u64,
+    pub rating: f32,
+}
+
+pub struct SkillDetail {
+    pub listing: SkillListing,
+    pub readme: String,
+    pub dependencies: Vec<String>,
+    pub tools: Vec<String>,
+}
+```
+
+## 用法
+
+```rust
+use alephcore::clawhub::ClawHubClient;
+
+let client = ClawHubClient::new(
+    "https://api.clawhub.ai".to_string()
+);
+
+// 搜索技能
+let results = client.search_skills("code review").await?;
+
+// 下载技能
+client.download_skill("code-review", 
+    Path::new("~/.aleph/skills/")
+).await?;
+```
+
+## 配置
+
+```toml
+[clawhub]
+enabled = true
+base_url = "https://api.clawhub.ai"
+api_token = "${CLAWHUB_TOKEN}"
+```
+
+## 代码位置
+
+- `src/clawhub/mod.rs` —— 模块入口点
+- `src/clawhub/client.rs` —— HTTP 客户端
+- `src/clawhub/types.rs` —— 请求/响应类型
+
+## 另请参阅
+
+- [技能](../concepts/skills) —— 技能系统概览
+- [技能安装器](../concepts/skills#installation) —— 从 ClawHub 安装技能
