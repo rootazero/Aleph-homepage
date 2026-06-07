@@ -137,7 +137,7 @@ Aleph 的架构建立在四个原则之上，这些原则指导每一个设计�
 
 ## 模块依赖关系
 
-下图展示了 Rust 模块在编译时如何相互依赖。`gateway` crate 是入口点；它分支到接口、路由和编排器。编排器分发到工具链，工具链驱动记忆和执行子系统。
+下图展示了 Rust 模块在编译时如何相互依赖。`gateway` crate 是入口点；它分支到接口、路由和编排器。编排器分发到工具链，工具链驱动记忆和执行子系统。`workflow` 模块将声明式模板编译到现有的 `coord_tasks` DAG 中，由 `TeamDispatcher` 执行（参见 [工作流](./workflow)）。
 
 ```
                     ┌─────────────┐
@@ -236,6 +236,7 @@ Aleph 的架构建立在四个原则之上，这些原则指导每一个设计�
 | **supervisor** | `src/supervisor/` | 执行监督 |
 | **tasks** | `src/tasks/` | 任务管理 |
 | **teams** | `src/teams/` | 团队协调 |
+| **workflow** | `src/workflow/` | 声明式工作流模板、编译和执行 |
 | **tool_output** | `src/tool_output/` | 工具输出处理 |
 | **utils** | `src/utils/` | 工具函数 |
 | **vision** | `src/vision/` | 视觉处理 |
@@ -436,6 +437,7 @@ aleph/
 │   ├── providers/          # AI 提供商适配器
 │   ├── sandbox/            # WorkspaceSandbox、OsSandboxDriver
 │   ├── session/            # SessionService、仅追加事件日志
+│   ├── workflow/           # 声明式工作流模板、编译、.workflow.js 互操作
 │   └── ...                 # 50+ 附加模块
 ├── desktop/
 │   ├── shell/              # Tauri v2 原生桌面应用（薄壳）

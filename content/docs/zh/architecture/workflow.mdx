@@ -1,0 +1,260 @@
+---
+title: "工作流"
+description: "声明式、可重用的工作流模板——代理-工作流谱系中的工作流部分。"
+---
+
+`workflow` 模块提供**声明式、可重用的工作流模板**，通过预定义的确定性编排来补充 Aleph 的代理驱动推理。虽然代理动态地指导自己的过程（Think→Act 循环、LLM 编写的团队任务 DAG），但工作流是**命名的、可保存的、可重复运行的模板**，其中 LLM 通过预定义的代码路径进行编排。
+
+## 概览
+
+工作流支持：
+
+- **命名、可重用的模板** —— 将多步骤工作流保存到磁盘，按需运行
+- **声明式编排** —— 将代理步骤、依赖关系和执行顺序定义为纯数据
+- **两种步骤类型** —— 代理步骤（完整的代理循环）和澄清步骤（暂停等待用户输入）
+- **DAG 执行** —— 依赖边通过现有的 `TeamDispatcher` 驱动 Tokio 并发执行
+- **澄清交互性** —— 暂停工作流以向用户提出结构化问题，然后恢复
+- **Claude Code 互操作性** —— `.workflow.js` 格式的双向导入/导出
+- **MetaSkill 提案** —— 从观察到的技能共现模式自动起草工作流模板
+
+## 设计理念
+
+> **没有新的调度器，没有新的推理。**
+
+`WorkflowDef` 是纯数据。它被持久化到磁盘（[`store`](./store)），在运行时通过*编译*（[`compile::materialize`](./compile)）到现有的 `coord_tasks` DAG 中，然后由现有的 [`TeamDispatcher`](./teams) 执行。该模块**不贡献新的调度器和新的推理**——它是一个模式 + 文件存储 + 确定性编译器。
+
+每个步骤都是一个完整的代理运行；依赖边驱动的并发执行是单代理参考设计无法表达的。
+
+## 架构
+
+```
+工作流系统
+  ├── def — WorkflowDef / WorkflowStepDef 模式 + 验证
+  ├── store — 文件系统持久化 ($ALEPH_HOME/workflows/*.json)
+  ├── compile — 将 WorkflowDef 实例化为 coord_tasks DAG
+  ├── clarify — 用户交互式澄清步骤的共享类型
+  ├── interop — 与 .workflow.js 格式的双向桥接
+  │   ├── import — 将 .workflow.js 解析为 WorkflowManifest
+  │   ├── export — 将 WorkflowManifest 渲染为 .workflow.js
+  │   └── manifest — AWI（Aleph 工作流交换）超集
+  └── proposal — 门控 MetaSkill 草稿层（proposals/ 目录）
+```
+
+## 核心组件
+
+### WorkflowDef
+
+可重用的多步骤工作流模板，在保存时验证，在运行时实例化：
+
+```rust
+// src/workflow/def.rs
+pub struct WorkflowDef {
+    pub name: String,
+    pub description: String,
+    pub steps: Vec<WorkflowStepDef>,
+}
+
+pub struct WorkflowStepDef {
+    pub id: String,
+    pub agent: String,
+    pub prompt: String,
+    pub depends_on: Vec<String>,
+    pub kind: WorkflowStepKind,
+    pub choices: Vec<String>,
+}
+
+pub enum WorkflowStepKind {
+    Agent,    // 针对提示运行代理（默认）
+    Clarify,  // 暂停并询问用户问题
+}
+```
+
+验证检查：非空名称、至少一个步骤、唯一的步骤 ID、可解析的 `depends_on`、无自依赖，以及无环依赖图（通过 Kahn 拓扑排序证明）。
+
+### 实例化
+
+编译器将每个 `WorkflowStepDef` 映射为一个由 `step.agent` 拥有的 `coord_task`，`step.depends_on` 映射为 `coord_task.blocked_by`。任务被标记为 `{"managed_by": "dispatcher"}`，以便自主循环拾取它们：
+
+```rust
+// src/workflow/compile.rs
+pub async fn materialize(
+    def: &WorkflowDef,
+    input: &str,
+    team_id: &str,
+    store: &dyn CoordTaskStore,
+    clarify_ctx: Option<&ClarifyContext>,
+) -> Result<MaterializedWorkflow>
+```
+
+任务按拓扑顺序创建，因此每个 `blocked_by` 引用一个已经存在的任务 ID。渲染后的提示将 `{input}` 替换为运行输入。上游步骤的输出通过调度器的 `build_handoff_context` 自动流入每个步骤。
+
+### 澄清步骤
+
+**Clarify** 步骤暂停 DAG 以从用户那里收集结构化答案。它的 `prompt` 是问题，`choices`（如果有）是菜单 —— `agent` 被忽略。该步骤由一个哨兵（`__clarify__`）拥有，并在 `coord_task` 元数据中携带等待记录：
+
+```rust
+// src/workflow/clarify.rs
+pub struct ClarifyTaskMeta {
+    pub question: String,
+    pub choices: Vec<String>,
+    pub channel_id: String,
+    pub conversation_id: String,
+    pub session_key: String,
+}
+```
+
+调度器通过 [`is_clarify_task`](./clarify) 检测澄清任务，传递问题，并将任务停放在 `Paused` 状态。入站路由器通过完成停放任务及其答案来解析用户的回复。这种设计意味着澄清步骤可以在进程重启后存活，无需重建内存状态。
+
+### 持久化
+
+工作流以 JSON 文件的形式存储在 `$ALEPH_HOME/workflows/*.json` 下。持久化的文档是 `WorkflowManifest` 超集 —— 单一事实来源，保留了 `.workflow.js` 兼容的元数据（`whenToUse`、`phases`、每个步骤的 `label`/`model`/`phase`/`schema`/`isolation`/`agentType`），跨越 `import → save → export`：
+
+```rust
+// src/workflow/store.rs
+pub fn save(manifest: &WorkflowManifest) -> Result<PathBuf>;
+pub fn load(name: &str) -> Result<WorkflowManifest>;
+pub fn list() -> Result<Vec<WorkflowMeta>>;
+pub fn delete(name: &str) -> Result<bool>;
+```
+
+写入是原子的（临时文件 + 重命名），因此读取器永远不会看到撕裂的写入。
+
+### Claude Code 互操作性
+
+`interop` 模块提供 Aleph 的 `WorkflowDef` 和 Claude Code 的 `.workflow.js` 工程格式之间的双向转换：
+
+**导入** (`parse_workflow_js`) —— 三条路径，按优先级排序：
+1. **裸清单 JSON**（以 `{` 开头）→ 精确解析，无损失
+2. **嵌入块**（`/* @aleph-workflow {json} */`）→ 精确解析，无损失
+3. **裸 `.workflow.js`** → 对纯字面量 `meta` 块 + 有序 `phase()` / `agent()` 调用进行轻量级扫描；命令式构造进入 `dropped`
+
+**导出** (`render_workflow_js`) —— 将清单渲染为 `.workflow.js` 源字符串，包含：
+1. 无损往返头（`/* @aleph-workflow {json} */`）
+2. `meta` 块（纯字面量）
+3. 主体：拓扑层 → `parallel()` / 顺序 `agent()` 骨架
+
+### MetaSkill 提案
+
+`proposal` 模块在活动工作流存储之上实现了**门控草稿层**。梦境管道挖掘重复的技能共现，并在 `proposals/` 中起草候选工作流。提案**永远不会**是活动工作流 —— 只有在显式 `accept` 之后（"提案门控"）才会运行：
+
+```rust
+// src/workflow/proposal.rs
+pub fn list_proposals() -> Result<Vec<WorkflowMeta>>;
+pub fn accept(name: &str) -> Result<PathBuf>;  // 将草稿提升为活动状态
+```
+
+这保持了循环的 R5 安静 —— 能力在后台增长，但没有任何东西自动激活，也没有任何窃取焦点。
+
+## 工作流示例
+
+```json
+{
+  "name": "research-report",
+  "description": "Research a topic and write a report",
+  "steps": [
+    {
+      "id": "gather",
+      "agent": "researcher",
+      "prompt": "Research the topic: {input}. Collect key facts, sources, and perspectives."
+    },
+    {
+      "id": "ask-focus",
+      "prompt": "What angle should the report take?",
+      "kind": "clarify",
+      "choices": ["Technical deep-dive", "Executive summary", "Critical analysis"],
+      "depends_on": ["gather"]
+    },
+    {
+      "id": "write",
+      "agent": "writer",
+      "prompt": "Write a report on {input} based on the research and the chosen angle.",
+      "depends_on": ["ask-focus"]
+    },
+    {
+      "id": "review",
+      "agent": "editor",
+      "prompt": "Review the report for clarity, accuracy, and completeness. Suggest improvements.",
+      "depends_on": ["write"]
+    }
+  ]
+}
+```
+
+这定义了一个菱形工作流：研究 → 澄清 → 写作 → 审阅。澄清步骤暂停执行以向用户询问焦点方向，然后作者和编辑继续。
+
+## 执行流程
+
+```
+用户运行 workflow(action='run', name='research-report', input='quantum computing')
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ 网关：工作流工具处理程序                              │
+│   • 从存储加载 WorkflowDef                            │
+│   • 验证模板                                          │
+│   • 创建团队（如果需要）                               │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ 工作流编译器 (materialize)                            │
+│   • 拓扑排序步骤（Kahn 算法）                          │
+│   • 为每个步骤创建 coord_task                         │
+│   • 映射 depends_on → blocked_by 边                   │
+│   • 替换提示中的 {input}                              │
+│   • 将任务标记为调度器管理                             │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ TeamDispatcher (现有)                                │
+│   • 拾取待处理任务                                    │
+│   • 对于代理步骤：路由到 step.agent                    │
+│   • 对于澄清步骤：传递问题，停放任务                   │
+│   • 从上游输出构建交接上下文                           │
+│   • 使用 Tokio 并发执行                               │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ 入站路由器（用户回复澄清时）                           │
+│   • 从回复解析会话                                    │
+│   • 完成停放的澄清任务                                │
+│   • 解除下游步骤的阻塞                                │
+└─────────────────────────────────────────────────────┘
+```
+
+## 配置
+
+工作流存储在 `$ALEPH_HOME/workflows/` 中（回退到 `~/.aleph/workflows/`）：
+
+```
+~/.aleph/
+├── workflows/
+│   ├── research-report.json
+│   ├── deploy-pipeline.json
+│   └── proposals/
+│       ├── metaskill-git-pr.json
+│       └── metaskill-research-write.json
+```
+
+## 代码位置
+
+- `src/workflow/mod.rs` —— 模块入口点和公共 API
+- `src/workflow/def.rs` —— `WorkflowDef` 模式、验证和拓扑排序
+- `src/workflow/compile.rs` —— 将工作流实例化为 `coord_tasks`
+- `src/workflow/store.rs` —— 文件系统持久化（原子写入）
+- `src/workflow/clarify.rs` —— 澄清步骤类型和元数据
+- `src/workflow/interop/mod.rs` —— 互操作模块入口
+- `src/workflow/interop/import.rs` —— 将 `.workflow.js` 解析为清单
+- `src/workflow/interop/export.rs` —— 将清单渲染为 `.workflow.js`
+- `src/workflow/interop/manifest.rs` —— AWI 清单超集
+- `src/workflow/proposal.rs` —— 门控 MetaSkill 提案
+
+## 另请参阅
+
+- [团队](./teams) —— 团队协调和 `TeamDispatcher`
+- [编排器](./orchestrator) —— AgentDef + FlowSpec 解析
+- [工具链](./harness) —— 执行每个步骤的 Think→Act 循环
+- [调度器](./dispatcher) —— 任务编排和工具过滤
+- [工具](../tools/overview) —— 工具执行架构

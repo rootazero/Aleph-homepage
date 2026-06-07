@@ -1,0 +1,260 @@
+---
+title: "Workflow"
+description: "Declarative, reusable workflow templates — the workflow half of the agent-workflow spectrum."
+---
+
+The `workflow` module provides **declarative, reusable workflow templates** that complement Aleph's agent-driven reasoning with predefined, deterministic orchestration. While agents dynamically direct their own process (Think→Act loop, LLM-authored team task DAG), workflows are **named, saved, and re-runnable templates** where LLMs are orchestrated through predefined code paths.
+
+## Overview
+
+Workflows enable:
+
+- **Named, reusable templates** — Save multi-step workflows to disk and run them on demand
+- **Declarative orchestration** — Define agent steps, dependencies, and execution order as pure data
+- **Two step types** — Agent steps (full agent loop) and Clarify steps (pause for user input)
+- **DAG execution** — Dependency edges drive Tokio-concurrent execution via the existing `TeamDispatcher`
+- **Clarify interactivity** — Pause the workflow to ask the user a structured question, then resume
+- **Claude Code interoperability** — Bidirectional import/export of `.workflow.js` format
+- **MetaSkill proposals** — Auto-drafted workflow templates from observed skill co-occurrence patterns
+
+## Design Philosophy
+
+> **No new scheduler, no new reasoning.**
+
+A `WorkflowDef` is pure data. It is persisted to disk ([`store`](./store)) and, on run, *compiled* ([`compile::materialize`](./compile)) into the existing `coord_tasks` DAG, then executed by the existing [`TeamDispatcher`](./teams). This module contributes **no scheduler and no reasoning** — it is a schema + a file store + a deterministic compiler.
+
+Each step is a full agent run; dependency edges drive concurrent execution that single-agent reference designs cannot express.
+
+## Architecture
+
+```
+Workflow System
+  ├── def — WorkflowDef / WorkflowStepDef schema + validation
+  ├── store — File-system persistence ($ALEPH_HOME/workflows/*.json)
+  ├── compile — Materialise WorkflowDef → coord_tasks DAG
+  ├── clarify — Shared types for user-interactive clarify steps
+  ├── interop — Bidirectional bridge with .workflow.js format
+  │   ├── import — Parse .workflow.js → WorkflowManifest
+  │   ├── export — Render WorkflowManifest → .workflow.js
+  │   └── manifest — AWI (Aleph Workflow Interchange) superset
+  └── proposal — Gated MetaSkill draft tier (proposals/ dir)
+```
+
+## Core Components
+
+### WorkflowDef
+
+A reusable multi-step workflow template, validated on save and materialised on run:
+
+```rust
+// src/workflow/def.rs
+pub struct WorkflowDef {
+    pub name: String,
+    pub description: String,
+    pub steps: Vec<WorkflowStepDef>,
+}
+
+pub struct WorkflowStepDef {
+    pub id: String,
+    pub agent: String,
+    pub prompt: String,
+    pub depends_on: Vec<String>,
+    pub kind: WorkflowStepKind,
+    pub choices: Vec<String>,
+}
+
+pub enum WorkflowStepKind {
+    Agent,    // Run the agent against the prompt (default)
+    Clarify,  // Pause and ask the user a question
+}
+```
+
+Validation checks: non-empty name, at least one step, unique step ids, resolvable `depends_on`, no self-dependency, and acyclic dependency graph (proven via Kahn's topological sort).
+
+### Materialisation
+
+The compiler maps each `WorkflowStepDef` to one `coord_task` owned by `step.agent`, with `step.depends_on` mapped to `coord_task.blocked_by`. Tasks are tagged `{"managed_by": "dispatcher"}` so the autonomous loop picks them up:
+
+```rust
+// src/workflow/compile.rs
+pub async fn materialize(
+    def: &WorkflowDef,
+    input: &str,
+    team_id: &str,
+    store: &dyn CoordTaskStore,
+    clarify_ctx: Option<&ClarifyContext>,
+) -> Result<MaterializedWorkflow>
+```
+
+Tasks are created in topological order so each `blocked_by` references an already-minted task id. The rendered prompt substitutes `{input}` with the run input. Upstream step outputs flow into each step automatically via the dispatcher's `build_handoff_context`.
+
+### Clarify Steps
+
+A **Clarify** step pauses the DAG to collect a structured answer from the user. Its `prompt` is the question and `choices` (if any) the menu — `agent` is ignored. The step is owned by a sentinel (`__clarify__`) and carries an awaiting record in the `coord_task` metadata:
+
+```rust
+// src/workflow/clarify.rs
+pub struct ClarifyTaskMeta {
+    pub question: String,
+    pub choices: Vec<String>,
+    pub channel_id: String,
+    pub conversation_id: String,
+    pub session_key: String,
+}
+```
+
+The dispatcher detects clarify tasks via [`is_clarify_task`](./clarify), delivers the question, and parks the task in `Paused`. The inbound router resolves the user's reply by completing the parked task with their answer. This design means a clarify step survives a process restart with no in-memory state to reconstruct.
+
+### Persistence
+
+Workflows are stored as JSON files under `$ALEPH_HOME/workflows/*.json`. The persisted document is the `WorkflowManifest` superset — the single source of truth that preserves `.workflow.js`-compatible metadata (`whenToUse`, `phases`, per-step `label`/`model`/`phase`/`schema`/`isolation`/`agentType`) across `import → save → export`:
+
+```rust
+// src/workflow/store.rs
+pub fn save(manifest: &WorkflowManifest) -> Result<PathBuf>;
+pub fn load(name: &str) -> Result<WorkflowManifest>;
+pub fn list() -> Result<Vec<WorkflowMeta>>;
+pub fn delete(name: &str) -> Result<bool>;
+```
+
+Writes are atomic (temp-file + rename) so readers never see a torn write.
+
+### Claude Code Interoperability
+
+The `interop` module provides bidirectional translation between Aleph's `WorkflowDef` and Claude Code's `.workflow.js` engineering format:
+
+**Import** (`parse_workflow_js`) — Three paths, in priority order:
+1. **Bare manifest JSON** (starts with `{`) → exact parse, lossless
+2. **Embedded block** (`/* @aleph-workflow {json} */`) → exact parse, lossless
+3. **Bare `.workflow.js`** → lightweight scan of the pure-literal `meta` block + ordered `phase()` / `agent()` calls; imperative constructs go into `dropped`
+
+**Export** (`render_workflow_js`) — Renders the manifest as a `.workflow.js` source string with:
+1. Lossless round-trip header (`/* @aleph-workflow {json} */`)
+2. `meta` block (pure literal)
+3. Body: topological layers → `parallel()` / sequential `agent()` skeleton
+
+### MetaSkill Proposals
+
+The `proposal` module implements a **gated draft tier** above the active workflow store. The dream pipeline mines recurring skill co-occurrence and drafts candidate workflows in `proposals/`. A proposal is **never** an active workflow — it only runs after an explicit `accept` (the "提案门控" / proposal gate):
+
+```rust
+// src/workflow/proposal.rs
+pub fn list_proposals() -> Result<Vec<WorkflowMeta>>;
+pub fn accept(name: &str) -> Result<PathBuf>;  // Promote draft → active
+```
+
+This keeps the loop R5-quiet — capabilities grow in the background, but nothing auto-activates and nothing steals focus.
+
+## Example Workflow
+
+```json
+{
+  "name": "research-report",
+  "description": "Research a topic and write a report",
+  "steps": [
+    {
+      "id": "gather",
+      "agent": "researcher",
+      "prompt": "Research the topic: {input}. Collect key facts, sources, and perspectives."
+    },
+    {
+      "id": "ask-focus",
+      "prompt": "What angle should the report take?",
+      "kind": "clarify",
+      "choices": ["Technical deep-dive", "Executive summary", "Critical analysis"],
+      "depends_on": ["gather"]
+    },
+    {
+      "id": "write",
+      "agent": "writer",
+      "prompt": "Write a report on {input} based on the research and the chosen angle.",
+      "depends_on": ["ask-focus"]
+    },
+    {
+      "id": "review",
+      "agent": "editor",
+      "prompt": "Review the report for clarity, accuracy, and completeness. Suggest improvements.",
+      "depends_on": ["write"]
+    }
+  ]
+}
+```
+
+This defines a diamond-like workflow: research → clarify → write → review. The clarify step pauses execution to ask the user for focus direction before the writer and editor proceed.
+
+## Execution Flow
+
+```
+User runs workflow(action='run', name='research-report', input='quantum computing')
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ Gateway: workflow tool handler                      │
+│   • Load WorkflowDef from store                     │
+│   • Validate template                               │
+│   • Create team (if needed)                         │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ Workflow Compiler (materialize)                     │
+│   • Topo-sort steps (Kahn's algorithm)              │
+│   • Create coord_task for each step                 │
+│   • Map depends_on → blocked_by edges               │
+│   • Substitute {input} in prompts                   │
+│   • Tag tasks as dispatcher-managed                 │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ TeamDispatcher (existing)                           │
+│   • Pick up pending tasks                           │
+│   • For agent steps: route to step.agent            │
+│   • For clarify steps: deliver question, park task  │
+│   • Build handoff context from upstream outputs     │
+│   • Execute with Tokio concurrency                  │
+└─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ Inbound Router (on user reply to clarify)           │
+│   • Resolve session from reply                      │
+│   • Complete parked clarify task                    │
+│   • Unblock downstream steps                        │
+└─────────────────────────────────────────────────────┘
+```
+
+## Configuration
+
+Workflows are stored in `$ALEPH_HOME/workflows/` (falls back to `~/.aleph/workflows/`):
+
+```
+~/.aleph/
+├── workflows/
+│   ├── research-report.json
+│   ├── deploy-pipeline.json
+│   └── proposals/
+│       ├── metaskill-git-pr.json
+│       └── metaskill-research-write.json
+```
+
+## Code Location
+
+- `src/workflow/mod.rs` — Module entry point and public API
+- `src/workflow/def.rs` — `WorkflowDef` schema, validation, and topo sort
+- `src/workflow/compile.rs` — Materialise workflow into `coord_tasks`
+- `src/workflow/store.rs` — File-system persistence (atomic writes)
+- `src/workflow/clarify.rs` — Clarify step types and metadata
+- `src/workflow/interop/mod.rs` — Interop module entry
+- `src/workflow/interop/import.rs` — Parse `.workflow.js` into manifest
+- `src/workflow/interop/export.rs` — Render manifest as `.workflow.js`
+- `src/workflow/interop/manifest.rs` — AWI manifest superset
+- `src/workflow/proposal.rs` — Gated MetaSkill proposals
+
+## See Also
+
+- [Teams](./teams) — Team coordination and `TeamDispatcher`
+- [Orchestrator](./orchestrator) — AgentDef + FlowSpec resolution
+- [Harness](./harness) — Think→Act loop that executes each step
+- [Dispatcher](./dispatcher) — Task orchestration and tool filtering
+- [Tools](../tools/overview) — Tool execution architecture

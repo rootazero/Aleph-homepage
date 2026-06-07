@@ -137,7 +137,7 @@ The bottom layer provides persistent storage and state management. **Memory** us
 
 ## Module Dependencies
 
-The following diagram shows how Rust modules depend on each other at compile time. The `gateway` crate is the entry point; it fans out into interfaces, routing, and the orchestrator. The orchestrator dispatches to the harness, which drives memory and execution subsystems.
+The following diagram shows how Rust modules depend on each other at compile time. The `gateway` crate is the entry point; it fans out into interfaces, routing, and the orchestrator. The orchestrator dispatches to the harness, which drives memory and execution subsystems. The `workflow` module compiles declarative templates into the existing `coord_tasks` DAG executed by the `TeamDispatcher` (see [Workflow](./workflow)).
 
 ```
                     ┌─────────────┐
@@ -236,6 +236,7 @@ The following diagram shows how Rust modules depend on each other at compile tim
 | **supervisor** | `src/supervisor/` | Execution supervision |
 | **tasks** | `src/tasks/` | Task management |
 | **teams** | `src/teams/` | Team coordination |
+| **workflow** | `src/workflow/` | Declarative workflow templates, compilation, and execution |
 | **tool_output** | `src/tool_output/` | Tool output handling |
 | **utils** | `src/utils/` | Utilities |
 | **vision** | `src/vision/` | Vision processing |
@@ -436,6 +437,7 @@ aleph/
 │   ├── providers/          # AI provider adapters
 │   ├── sandbox/            # WorkspaceSandbox, OsSandboxDriver
 │   ├── session/            # SessionService, append-only event log
+│   ├── workflow/           # Declarative workflow templates, compilation, .workflow.js interop
 │   └── ...                 # 50+ additional modules
 ├── desktop/
 │   ├── shell/              # Tauri v2 native desktop app (thin shell)
