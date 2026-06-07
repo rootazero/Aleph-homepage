@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 export type OS = "mac" | "windows" | "linux";
 
@@ -17,13 +17,12 @@ function detectOS(): OS {
   return "mac";
 }
 
+const subscribeOS = () => () => {};
+
 export function useOS(): OS {
-  // Lazy initializer: runs only on the client (useEffect not needed).
-  // SSR returns "mac" as the safe default.
-  const [os] = useState<OS>(() =>
-    typeof window !== "undefined" ? detectOS() : "mac"
-  );
-  return os;
+  // useSyncExternalStore: server snapshot ("mac") matches the initial client
+  // render, then React re-renders with the real OS — hydration-safe + lint-clean.
+  return useSyncExternalStore(subscribeOS, () => detectOS(), () => "mac");
 }
 
 /** Continuous parallax driven by scrollY; rate e.g. 0.18 / -0.18. */
