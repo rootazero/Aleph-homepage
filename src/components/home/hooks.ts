@@ -1,8 +1,44 @@
 "use client";
 
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 export type OS = "mac" | "windows" | "linux";
+
+/** Format a star count like GitHub does: 3400 -> "3.4k", 3000 -> "3k". */
+function formatStars(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+}
+
+/**
+ * Fetch a repo's live star count, formatted (e.g. "3.4k"). Returns null until
+ * the request resolves; callers fall back to a static string while null or on
+ * error. Client-only: null on the server and the first client render, so the
+ * hydrated markup matches and no suppressHydrationWarning is needed.
+ */
+export function useGitHubStars(repo: string): string | null {
+  const [stars, setStars] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`https://api.github.com/repos/${repo}`, {
+      headers: { Accept: "application/vnd.github+json" },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+        return res.json() as Promise<{ stargazers_count: number }>;
+      })
+      .then((data) => {
+        if (!cancelled) setStars(formatStars(data.stargazers_count));
+      })
+      .catch(() => {
+        // Keep the static fallback; nothing else to do.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repo]);
+  return stars;
+}
 
 function detectOS(): OS {
   if (typeof navigator === "undefined") return "mac";
