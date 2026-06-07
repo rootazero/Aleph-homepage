@@ -1,106 +1,122 @@
 @import "tailwindcss";
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
+@import "./home.css";
+@import "./docs.css";
 
 /* Let Tailwind scan Fumadocs UI for class names (path relative to this file). */
 @source "../../node_modules/fumadocs-ui/dist/**/*.js";
 
-@custom-variant dark (&:where(.dark, .dark *));
-
 @theme {
-  /* Brand tokens — exposed as utilities (bg-page, text-heading, ...) */
-  --color-page: var(--page);
+  /* Brand tokens exposed as utilities (bg-paper, text-ink, text-coral, ...) */
+  --color-paper: var(--paper);
+  --color-paper-deep: var(--paper-deep);
   --color-panel: var(--panel);
-  --color-surface: var(--surface);
-  --color-edge: var(--edge);
-  --color-heading: var(--heading);
-  --color-muted: var(--muted);
-  --color-faint: var(--faint);
-  --color-accent: var(--accent);
-  --color-accent-purple: var(--accent-purple);
-  --color-accent-cyan: var(--accent-cyan);
-  --color-codeblock: var(--codeblock);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-coral: var(--coral);
+  --color-mustard: var(--mustard);
+  --color-sage: var(--sage);
+  --color-line: var(--line);
 
-  /* Typography */
-  --font-display: "Geist", ui-sans-serif, system-ui, sans-serif;
-  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, monospace;
-
-  /* Easings + entrance animations (used by docs/marketing sections) */
-  --ease-fluid: cubic-bezier(0.3, 0, 0, 1);
-  --ease-snappy: cubic-bezier(0.2, 0, 0, 1);
+  /* Typography mapped to next/font CSS variables */
+  --font-serif: var(--font-serif);
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
 }
 
 /*
- * Dark-only palette. Both :root and .dark resolve to the same values so the
- * brand looks identical whether or not the `.dark` class is present (it always
- * is — forced on <html>). Fumadocs UI reads the mapped `--color-fd-*` tokens.
+ * Light editorial palette (single source of truth). Aliases for home.css
+ * (--serif/--display/--sans/--mono) bridge to the next/font variables.
+ * Fumadocs UI reads the mapped --color-fd-* tokens (light).
  */
-:root,
-.dark {
-  --page: #050508;
-  --panel: #07070a;
-  --surface: rgba(255, 255, 255, 0.04);
-  --edge: #1f2937;
-  --heading: #f3f4f6;
-  --muted: #9ca3af;
-  --faint: #4b5563;
-  --accent: #22d3ee;
-  --accent-purple: #a855f7;
-  --accent-cyan: #22d3ee;
-  --codeblock: #0b0b0f;
-  --glow: rgba(34, 211, 238, 0.15);
+:root {
+  /* paper + ink */
+  --paper: #f0ead9;
+  --paper-deep: #e8e0cc;
+  --panel: #f6f1e4;
+  --ink: #1b1712;
+  --ink-2: #4d4639;
+  --ink-3: #847a64;
 
-  /* Map Aleph tokens → Fumadocs UI variables */
-  --color-fd-background: var(--page);
-  --color-fd-foreground: var(--heading);
-  --color-fd-muted: var(--codeblock);
-  --color-fd-muted-foreground: var(--faint);
+  /* accents */
+  --coral: #df4f26;
+  --coral-deep: #bf3d1a;
+  --coral-soft: #ec6a44;
+  --mustard: #d4a23c;
+  --stone: #c8b99c;
+  --stone-deep: #ab9b78;
+  --sage: #5c6f52;
+
+  /* dark sections */
+  --night: #15120d;
+  --night-2: #211c15;
+
+  /* lines */
+  --line: rgba(27, 23, 18, 0.16);
+  --line-soft: rgba(27, 23, 18, 0.09);
+
+  --maxw: 1320px;
+  --gutter: clamp(20px, 4vw, 64px);
+
+  /* font aliases used throughout home.css */
+  --serif: var(--font-serif), "Instrument Serif", Georgia, serif;
+  --display: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  --sans: var(--font-sans), "Archivo", system-ui, sans-serif;
+  --mono: var(--font-mono), "Space Mono", ui-monospace, monospace;
+
+  /* Map Aleph tokens -> Fumadocs UI variables (light) */
+  --color-fd-background: var(--paper);
+  --color-fd-foreground: var(--ink);
+  --color-fd-muted: var(--paper-deep);
+  --color-fd-muted-foreground: var(--ink-3);
   --color-fd-popover: var(--panel);
-  --color-fd-popover-foreground: var(--heading);
+  --color-fd-popover-foreground: var(--ink);
   --color-fd-card: var(--panel);
-  --color-fd-card-foreground: var(--heading);
-  --color-fd-border: var(--edge);
-  --color-fd-primary: var(--accent);
-  --color-fd-primary-foreground: #050508;
-  --color-fd-secondary: #14141a;
-  --color-fd-secondary-foreground: var(--heading);
-  --color-fd-accent: rgba(255, 255, 255, 0.06);
-  --color-fd-accent-foreground: var(--heading);
-  --color-fd-ring: var(--accent);
+  --color-fd-card-foreground: var(--ink);
+  --color-fd-border: var(--line);
+  --color-fd-primary: var(--coral);
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-secondary: var(--paper-deep);
+  --color-fd-secondary-foreground: var(--ink);
+  --color-fd-accent: var(--paper-deep);
+  --color-fd-accent-foreground: var(--ink);
+  --color-fd-ring: var(--coral);
 }
 
 :root {
-  background-color: #050508;
-  color: #d1d5db;
+  background-color: var(--paper);
+  color: var(--ink);
 }
 
 body {
-  background-color: #050508;
   margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.62;
+  overflow-x: hidden;
+  position: relative;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-@keyframes spin-slow {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.animate-spin-slow {
-  animation: spin-slow 20s linear infinite;
-}
-
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes slide-up {
-  from { opacity: 0; transform: translateY(24px); }
-  to { opacity: 1; transform: translateY(0); }
+/* paper grain overlay */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.05;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 ::selection {
-  background-color: #164e63; /* cyan-900 */
-  color: #ecfeff; /* cyan-50 */
+  background-color: var(--coral);
+  color: #fff;
 }
