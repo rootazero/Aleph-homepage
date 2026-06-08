@@ -12,13 +12,13 @@
   },
   "hero": {
     "index_label": "[ Index — 00 ]",
-    "tag_label": "Personal · Local · Multi-agent",
+    "tag_label": "Local-first · One core, many shells · Multi-agent",
     "est_label": "Est. 2026 — Aleph Labs",
     "geo_label": "N 37.77° · W 122.41°",
     "eyebrow": "Universal Personal AI",
     "title": "Aleph",
     "sub_html": "Your <span class=\"serif-it coral\">agent</span> intelligence — <span class=\"serif-it\">not</span> a black box.",
-    "desc": "One personal agent that remembers you, runs on your terms, and quietly orchestrates a team of specialists across research, writing, code, scheduling, and the small logistics of a life.",
+    "desc": "One personal agent that lives natively on your desktop and reaches you on every channel you already use — Telegram, Slack, your browser. It remembers you, runs on your terms, and quietly orchestrates a team of specialists across research, writing, code, scheduling, and the small logistics of a life.",
     "star": "Star on GitHub",
     "dl_for": "Download for {os}",
     "dl_also": "Also for",
@@ -28,31 +28,31 @@
     "spec1_b": "Runs locally",
     "spec1": "by default",
     "spec2_b": "Remembers",
-    "spec2": "across sessions",
+    "spec2": "across every channel",
     "spec3_b": "Orchestrates",
     "spec3": "sub-agents",
     "scroll": "Scroll to explore ↓"
   },
   "marquee": {
-    "items": ["Research", "Inbox triage", "Calendar", "Writing", "Code", "Data analysis", "Bookings", "Memory", "Local-first", "Multi-agent"]
+    "items": ["Research", "Inbox triage", "Calendar", "Writing", "Code", "Telegram", "Slack", "Desktop", "One core · many shells", "Memory", "Sandboxed", "Local-first"]
   },
   "manifesto": {
     "eyebrow_label": "[ Philosophy — 01 ]",
     "sub_label": "Aleph / ℵ — the first letter",
     "statement_html": "We treat your <span class=\"serif-it coral\">assistant</span> as a partner you can <span class=\"serif-it\">read</span>, not a box you have to <span class=\"serif-it\">trust</span>.",
-    "body": "Most AI hides its reasoning and hopes you don't ask. Aleph does the opposite — every plan it forms, every sub-agent it dispatches, every memory it keeps about you is legible, editable, and yours. It works on your device, with your data, under your rules. Intelligence that earns trust by showing its work.",
+    "body": "Most AI hides its reasoning behind a cloud URL and hopes you don't ask. Aleph does the opposite. The brain runs on your machine; every channel — desktop, phone, browser — is just a door to the same mind. Every plan it forms, every sub-agent it dispatches, every memory it keeps, every tool it runs in its sandbox is legible, editable, and yours. Intelligence that earns trust by showing its work.",
     "s1_b": "Legible",
     "s1": "see every step",
     "s2_b": "Local",
-    "s2": "your data stays put",
-    "s3_b": "Yours",
-    "s3": "export anything, anytime",
+    "s2": "one core, many shells",
+    "s3_b": "Sovereign",
+    "s3": "your keys, your sandbox",
     "fig_caption": "Fig. 1 — the legible mind"
   },
   "capabilities": {
     "eyebrow": "Capabilities — 02",
     "heading_html": "Skills, systems & an interface — <span class=\"serif-it coral\">all in service of one</span> agent.",
-    "lede": "Pick a capability to preview how Aleph actually handles it — live, step by step. Ten specialists, one conversation, zero context-switching.",
+    "lede": "Pick a capability to preview how Aleph actually handles it — live, step by step. Ten specialists, one conversation, zero context-switching. Every step is visible; nothing runs off your device without your say-so.",
     "items": {
       "research": {
         "title": "Deep research",
@@ -135,7 +135,7 @@
     "steps": [
       { "t": "Capture", "d": "You hand over an intention — a sentence, a file, a voice note." },
       { "t": "Understand", "d": "Aleph reads context from memory and forms a legible plan." },
-      { "t": "Orchestrate", "d": "Sub-agents run in parallel; you can pause and steer any one." },
+      { "t": "Orchestrate", "d": "Sub-agents run in parallel in a sandbox; you can pause, steer, or veto any one." },
       { "t": "Deliver", "d": "A finished artifact, plus the full trace of how it got there." }
     ]
   },
@@ -166,7 +166,7 @@
   "models": {
     "eyebrow": "Engine room — 07",
     "heading_html": "Powered by the world’s <span class=\"serif-it coral\">best</span> agents & models — pick yours.",
-    "lede": "Aleph is model-agnostic. Route any task to the engine you trust, or let it choose. Swap providers without losing your memory or your skills.",
+    "lede": "Aleph is model-agnostic. Route any task to the engine you trust — or let Aleph route each step dynamically to the right model. Swap providers anytime without losing your memory or your skills.",
     "chips": ["Claude", "GPT", "Gemini", "Llama (local)", "Mistral", "Qwen", "DeepSeek", "Your own"]
   },
   "faq": {
@@ -174,15 +174,15 @@
     "title_html": "On <span class=\"coral\">Aleph</span>, agents, memory & the local-first question.",
     "talk": "Talk to us",
     "items": [
-      { "q": "What makes Aleph \"local-first\"?", "a": "By default, Aleph runs on your device with your data. Memory, files, and reasoning stay local unless you explicitly route a task to a cloud model — and even then, you see exactly what leaves your machine." },
-      { "q": "How is this different from a single chatbot?", "a": "A chatbot answers. Aleph orchestrates. It dispatches named sub-agents for research, writing, code, and logistics, runs them in parallel, and stitches the results into one finished artifact — all in a single conversation." },
+      { "q": "What makes Aleph \"local-first\"?", "a": "By default, Aleph runs on your device with your data. Memory, files, and reasoning stay local. Risky tools run in an OS sandbox and ask before acting — and when you explicitly route a task to a cloud model, you see exactly what leaves your machine." },
+      { "q": "How is this different from a single chatbot?", "a": "A chatbot answers in one window. Aleph is one brain that lives natively on your desktop and reaches you everywhere — Telegram, Slack, your browser — with the same memory and identity. It dispatches named sub-agents for research, writing, code, and logistics, runs them in parallel, and stitches the results into one finished artifact — all in a single conversation." },
       { "q": "What does \"legible\" actually mean here?", "a": "Every plan, every sub-agent call, and every memory Aleph keeps about you is visible and editable. You can open the trace on any task, see the reasoning, and correct it. Nothing happens in a black box." },
       { "q": "Can I choose which AI model powers it?", "a": "Yes. Aleph is model-agnostic. Route any task to Claude, GPT, Gemini, a local Llama, or your own fine-tune — and switch providers anytime without losing your memory or your skills." },
-      { "q": "How does memory and personalization work?", "a": "Aleph builds a private, structured memory of your preferences, projects, and people. It is yours: inspectable, exportable, and deletable at the level of a single fact." }
+      { "q": "How does memory and personalization work?", "a": "Aleph keeps a private, structured memory — linked notes it can traverse, not just a vector blob — of your preferences, projects, and people, compacting and connecting them over time. It is yours: inspectable, exportable, and deletable at the level of a single fact." }
     ]
   },
   "footer": {
-    "tagline": "Universal personal AI agent intelligence. Local-first. Legible by design.",
+    "tagline": "Universal personal AI agent intelligence. One core, many shells. Local-first, legible by design.",
     "h_product": "Product",
     "h_company": "Company",
     "h_start": "Get started",
