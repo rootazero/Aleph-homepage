@@ -1,0 +1,185 @@
+---
+title: "Cluster Federation"
+description: "Single-center asymmetric node federation — one brain orchestrates many machines while the cluster keeps exactly one mind. Reverse RPC, node_invoke, command allowlists, and approval routing."
+---
+
+"One core, many shells" gives one brain many **I/O channels**. Cluster Federation extends the same principle to one brain, many **execution bodies**: a single center `aleph-server` orchestrates work across several physical machines (nodes) — while preserving the hard rule that the cluster has exactly **one mind**.
+
+This is the *"one core, many bodies"* extension of [Single-Core Multi-Terminal](./overview#design-philosophy). The center is still the only reasoning core; nodes are pure execution arms.
+
+For how a single shell attaches to a single core (local or remote), see [Desktop Bridge](./desktop-bridge). This page is about the orthogonal axis: how the center commands many nodes.
+
+---
+
+## Topology: Single-Center, Asymmetric
+
+Aleph deliberately rejects symmetric mesh, multi-master, and distributed consensus. The cluster is **one center + N nodes**:
+
+```
+        [Human / Aleph Channel]              ← attaches to the single front door (center),
+              │ JSON-RPC over WS                local or remote, mutually exclusive
+              ▼
+   ╔══════════════════════════╗
+   ║   Center Aleph Core       ║   The LLM sees exactly TWO cluster tools:
+   ║   (the only brain)        ║     environments.list      (read)
+   ║   Think → Act loop        ║     node_invoke(node, cmd, params)  (write)
+   ║                           ║
+   ║  ┌────────────────────┐   ║   NodeRegistry: nodes_by_id / nodes_by_conn
+   ║  │ src/cluster/        │   ║   pending_invokes: reverse-RPC id correlation
+   ║  │  NodeRegistry        │   ║
+   ║  │  env aggregation +   │   ║
+   ║  │  routing             │   ║
+   ║  └─────────┬──────────┘   ║
+   ╚════════════│═════════════╝
+   center→node  │ node.invoke         node→center ▲ events
+   (reverse RPC)│ (over the node's    (push back)  │
+                │  always-open WS)
+        ┌───────┴───────┬───────────────────┐
+        ▼               ▼                   ▼
+   ┌─────────┐     ┌─────────┐        ┌──────────┐
+   │ Node B   │    │ Node C   │        │  local   │
+   │NodeClient│    │NodeClient│        │ (the host│
+   │ dials →  │    │ dials →  │        │  is also │
+   │  center  │    │  center  │        │  an env) │
+   │ declares │    │ declares │        └──────────┘
+   │ commands │    │ commands │
+   │ executes │    │ executes │
+   │ locally  │    │ locally  │
+   └─────────┘     └─────────┘
+   node = pure execution arm: receives node.invoke → runs a local
+   tool/agent → returns result + events
+```
+
+| Dimension | Decision |
+|-----------|----------|
+| **Topology** | Single-center asymmetric: 1 center (the only brain, holds the `NodeRegistry` + orchestration) + N nodes (pure execution arms that dial in). |
+| **Front door** | The center is the **only** entry point. Connecting to a node ≠ using the cluster — a node cannot see or orchestrate the cluster. Operating the cluster remotely means remotely connecting a channel to the *center*. |
+| **Dial direction** | Nodes **dial out** to the center (NAT-friendly), not the other way around. |
+| **Identity** | Identity = (the core you connect to) × (the tier that core grants your device). Reuses the existing pairing + operator/guest + chat/config model. No new identity system. |
+| **Memory** | Center memory = cluster memory. **No distributed shared memory.** A node's sub-agent uses the node's local memory; results flow back to the center. |
+| **Dual role** | A machine is exactly one of: standalone / center / node. No machine is simultaneously a center and someone else's node. |
+
+> **Not a high-availability cluster.** The single center is a single point — fine for a personal assistant spanning a few machines. There is no failover, no multi-center, no consensus.
+
+---
+
+## The LLM sees two tools, not N
+
+The center LLM never sees a growing tool surface as nodes join. It always sees the same two cluster primitives:
+
+- **`environments.list`** — self-describing. Each online node reports its `id`, `status`, and **command catalog** (names + JSON Schema). The host itself is an environment with `id: "local"`.
+- **`node_invoke(node_id, command, params)`** — the universal execution entry point.
+
+The model reads `environments.list` and assembles the invoke itself. Which machine, which command, which params — all of it is reasoning that lives in the prompt, not in deterministic routing code. This is [LLM Sovereignty](./overview) applied to placement: "on which machine should this run?" is just one more parameter the model fills in.
+
+Four capability classes collapse into one transport + one command catalog:
+
+| Capability | Expressed as |
+|------------|--------------|
+| **Tool execution** | `node_invoke("node:B", "bash", { ... })` |
+| **Capability access** | `node_invoke("node:B", "desktop.screenshot", { ... })` |
+| **Sub-agent delegation** | `node_invoke("node:B", "agent.run", { task })` — B runs Think→Act locally, streams progress back |
+| **Event reporting** | node → center event channel (reverse); the center subscribes and the LLM reacts proactively |
+
+A dedicated **`node_file(node, direction, local_path, remote_path)`** tool moves binaries and large files between center and node (push/pull, SHA-256 verified on both ends). Bytes flow process-to-process and **never enter the LLM context** — only paths go in, and a `{ direction, bytes, sha256, paths }` summary comes back.
+
+---
+
+## Node lifecycle
+
+The whole lifecycle reuses the existing pairing / token / tool machinery — there is no parallel enrollment system.
+
+1. **Enroll.** On node B, the operator says (in natural language) "join this machine to `<center URL>`." B's `aleph-server node` arm dials out to the center and runs the **interactive pairing** flow: the center issues a 6-digit code, B prints it to stdout, and the center operator approves it from the **Panel** (the same approval surface used for cold-browser pairing). On approval the center mints a `DeviceRole::Node` token, which B persists at `~/.aleph/node/<name>.json` (mode `0600`).
+2. **Declare.** Once connected, B reports the **command catalog it is willing to expose** (names + JSON Schema), sourced from B's local tools/skills. **Default deny, explicit allowlist** — the center can only call what B approved.
+3. **Invoke.** The center LLM calls `node_invoke("node:B", "bash", { ... })` → the `node_invoke` tool → `NodeRegistry` finds B's session → the call is delivered over the always-open WS as a reverse-RPC `tool.call` frame → B's `NodeClient` dispatches it to a **local** tool → the result returns by id → the pending table wakes → control returns to the LLM. Long tasks stream back over the event channel.
+4. **Perceive.** B's daemon events and sub-agent progress push back over the same WS. The center routes them by topic to subscribers — Panel rendering, and the center LLM reacting proactively.
+
+---
+
+## Reverse RPC: the core new mechanism
+
+A plain Gateway connection is client→server request/response plus server→client one-way notifications (the event bus). The cluster needs the missing piece: **server→center can issue an id-correlated request down to a connected node and await its response.**
+
+```
+center                                   node B (NodeClient)
+  │  node_invoke("node:B","bash",{…})        │
+  │                                          │
+  ├─ pending.insert((conn,id), tx) ──────────┤
+  │  tool.call { method, params, id } ──────▶ │  dispatch to local tool
+  │                                          │  (spawned, never blocks
+  │                                          │   the read loop)
+  │  ◀────────── { result, id } ─────────────┤
+  ├─ pending.remove((conn,id)) → tx.send ────┤
+  │  result returns to the LLM               │
+```
+
+- **Pending table:** `DashMap<(conn_id, req_id), oneshot::Sender<…>>` correlates each outgoing request with the node's eventual reply.
+- **No head-of-line blocking on the node:** the node dispatches each `tool.call` on its own task, so its read loop is always free to receive the next frame (and the approval responses described below).
+- **Liveness:** when a node disconnects, every in-flight call against it is cancelled immediately — the pending senders are drained so callers get a fast `Cancelled` error instead of waiting out the timeout. The center emits `node.connected` / `node.disconnected` events (mirroring presence join/leave) so subscribers and the LLM learn about topology changes without polling.
+
+---
+
+## Approval routing: nodes can ask the center
+
+A node runs headless — it has no operator sitting at it. So when a node's sandbox hits a command that needs a capability upgrade, it doesn't decide locally; it **routes the approval request back up to the center**, where a human operator decides.
+
+```
+node B sandbox hits a privileged command
+  │
+  │  node.approval.request  (reverse, over B's WS)
+  ▼
+center  →  ExecApprovalManager  →  Panel approval card
+              (the SAME card used for local exec approval;
+               the node context is encoded into the command
+               field: "node '<name>': <tool> — <reason>")
+  │
+  │  operator approves / denies / approves-for-session
+  ▼
+decision returns down to B as the JSON-RPC response → B's
+sandbox maps it to an outcome (approved / approved_session /
+denied / timeout) — fail-closed on every path
+```
+
+The node's identity on every approval is stamped from the **authenticated connection**, never from request params — so a node cannot forge another node's identity or approve itself. The request is `approval.**`-scoped and resolves through the existing `exec.approval.resolve` method; no new Panel UI or event scope was needed.
+
+---
+
+## Security model
+
+`node_invoke` is, by design, a remote code-execution channel — the center can run commands on a node. The boundaries are therefore non-negotiable:
+
+- **The node-side allowlist is the only security boundary.** B exposes only explicitly declared commands; the center can call **only** approved ones. Default deny. Even a compromised center can do only what B permits.
+- **Bidirectional trust.** B dialing in + holding a center-issued node token = B trusts that center. The center holding B's allowlist = the center can only drive B within the boundary.
+- **Tier gating on the human.** Whoever triggers `node_invoke` is bound by the center's tiering — operators may orchestrate the cluster; chat/guest sessions are read-only (`environments.list`) and cannot invoke.
+- **Sensitive node operations route to approval.** Commands marked at the config tier suspend and wait for the center operator (see approval routing above).
+- **Credential isolation.** The node token is never the host token, mirroring the "the host token never leaks to a remote" discipline of shell-core separation.
+- **Transport.** Same explicit trade-off as remote shells: plaintext over LAN/Tailscale is acceptable; run over a private network.
+
+For file transfer specifically, both ends verify SHA-256, a single frame is capped at 8 MB, and the node jails every path inside its session workspace (an explicit `canonical_root` containment check, not just a deny-list).
+
+---
+
+## Architectural fit
+
+The cluster adds capability without touching the agent loop. The harness still only schedules Think→Act — it does not even know a tool is remote.
+
+| Redline | How it holds |
+|---------|--------------|
+| **R1 — Brain/limb separation** | Federation is core↔node, all Rust. A node's platform capabilities still go through its local `DesktopCapability` trait + bridge; `src` never touches platform APIs. |
+| **R3 — Core minimalism** | Zero new heavy dependencies; reuses the existing WS / JSON-RPC / DashMap stack. |
+| **R4 — Interface is pure I/O** | The Panel only *renders* `environments` (a thin contract) — it does not aggregate, route, or persist. |
+| **R6 — One core, many channels** | The single center is the only brain; the cluster is its "one core, many bodies" extension. |
+| **R7 — LLM sovereignty** | Which machine, which params, retry on failure — all left to the model. No deterministic intent classification or routing engine. |
+| **R8 — Everything is a tool** | Cluster management (enroll / approve / expose / list) and node capabilities are all tools — conversation *is* the control panel. |
+| **R9 — Intelligence in the prompt** | `environments` is injected as data into the prompt; one inference pass covers the placement decision. |
+| **R10 — Thin harness** | `src/harness/` gains no logic; `NodeRegistry`, reverse RPC, and `node_invoke` live in `cluster` / `gateway` / `builtin_tools` respectively. |
+
+---
+
+## See also
+
+- [Architecture Overview](./overview) — the five-layer pipeline and the four design principles
+- [Desktop Bridge](./desktop-bridge) — how a single shell attaches to a single core (the orthogonal axis)
+- [Gateway Architecture](./gateway) — the WebSocket control plane the reverse-RPC channel extends
+- [Execution Approval](../security/exec-approval) — the approval infrastructure node requests route into
+- [Device Pairing](../security/pairing) — the enrollment flow nodes reuse

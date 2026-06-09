@@ -21,6 +21,8 @@ Aleph's architecture is built on four principles that govern every design decisi
 
 4. **Access Control** — Every connection is authenticated. The desktop shell reads a shared token from the core's security database. Remote connections use the same token mechanism. Guest sessions carry restricted scopes. See [Identity and Security](#identity-and-security) for details.
 
+> **From "many channels" to "many bodies."** Single-Core Multi-Terminal gives one brain many I/O channels. [Cluster Federation](./cluster) extends the same principle to many *execution bodies*: a single center core orchestrates work across several machines (nodes) — while the cluster still has exactly one mind.
+
 ---
 
 ## System Layers

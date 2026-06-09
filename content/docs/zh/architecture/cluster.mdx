@@ -1,0 +1,181 @@
+---
+title: "集群联邦"
+description: "单中心非对称节点联邦 —— 一个大脑编排多台机器，集群始终只有一个心智。反向 RPC、node_invoke、命令白名单与审批路由。"
+---
+
+「一核多端」让一个大脑拥有多个 **I/O 通道**。集群联邦把同一原则推进到「一核多体」：一个中心 `aleph-server` 编排多台物理机器（节点）协同工作 —— 同时严守「集群只有一个心智」这条硬规则。
+
+这是 [一核多端](./overview#设计理念) 的「一核多体」延伸。中心仍是唯一的推理核心，节点是纯执行臂。
+
+单个壳如何附着到单个核（本机或远程），见 [桌面桥接](./desktop-bridge)。本页讲的是正交的另一根轴：中心如何指挥多个节点。
+
+---
+
+## 拓扑：单中心、非对称
+
+Aleph 刻意否决对称网格、多主和分布式共识。集群是**一个中心 + N 个节点**：
+
+```
+        [人 / Aleph 专属 Channel]            ← 连接唯一前门（中心），
+              │ JSON-RPC over WS               本机/远程二选一互斥
+              ▼
+   ╔══════════════════════════╗
+   ║   中心 Aleph Core          ║   LLM 只看到两个集群工具：
+   ║   （唯一的大脑）            ║     environments.list      （读）
+   ║   Think → Act 循环         ║     node_invoke(node, cmd, params)  （写）
+   ║                           ║
+   ║  ┌────────────────────┐   ║   NodeRegistry: nodes_by_id / nodes_by_conn
+   ║  │ src/cluster/        │   ║   pending_invokes: 反向 RPC id 关联
+   ║  │  NodeRegistry        │   ║
+   ║  │  环境聚合 + 路由       │   ║
+   ║  └─────────┬──────────┘   ║
+   ╚════════════│═════════════╝
+   中心→节点     │ node.invoke         节点→中心 ▲ events
+   （反向 RPC）  │ （走节点拨入的常开 WS）（回推）  │
+                │
+        ┌───────┴───────┬───────────────────┐
+        ▼               ▼                   ▼
+   ┌─────────┐     ┌─────────┐        ┌──────────┐
+   │ 节点 B   │    │ 节点 C   │        │  local   │
+   │NodeClient│    │NodeClient│        │ （本机也是│
+   │ 拨出 →   │    │ 拨出 →   │        │  一个环境）│
+   │  中心    │    │  中心    │        └──────────┘
+   │ 声明命令 │    │ 声明命令 │
+   │ 本地执行 │    │ 本地执行 │
+   └─────────┘     └─────────┘
+   节点 = 纯执行臂：收 node.invoke → 调本地工具/agent
+   → 回结果 + 事件
+```
+
+| 维度 | 决策 |
+|------|------|
+| **拓扑** | 单中心非对称：1 中心（唯一大脑，持 `NodeRegistry` + 编排）+ N 节点（拨入的纯执行臂）。 |
+| **前门** | 中心是**唯一**入口。连节点 ≠ 用集群 —— 节点看不到也不编排集群。异地操作集群 = 把 channel 远程连到*中心*。 |
+| **拨向** | 节点**拨出**到中心（NAT 友好），而非中心连节点。 |
+| **身份** | 身份 = （你连的核）×（该核给你设备的档位）。复用现有 pairing + operator/guest + chat/config 模型。无新身份体系。 |
+| **记忆** | 中心记忆 = 集群记忆。**无分布式共享记忆。** 节点子代理用节点本地记忆，结果回流中心。 |
+| **双重身份** | 一台机器是 单机 / 中心 / 节点 三选一，不会同时既是中心又是别人的节点。 |
+
+> **不是高可用集群。** 单中心是单点 —— 对跨几台机器的个人助手足够。没有故障转移、没有多中心、没有共识。
+
+---
+
+## LLM 只看到两个工具，而非 N 个
+
+无论加入多少节点，中心 LLM 的工具面都不膨胀。它永远只看到两个集群原语：
+
+- **`environments.list`** —— 自描述。每个在线节点上报自己的 `id`、`status` 和**命令目录**（名字 + JSON Schema）。本机本身也是一个环境，`id: "local"`。
+- **`node_invoke(node_id, command, params)`** —— 通用执行入口。
+
+模型读 `environments.list` 后自己拼出 invoke。哪台机器、哪个命令、哪些参数 —— 全是 prompt 里的推理，而非确定性的路由代码。这是把 [LLM 主权](./overview) 用到了「放置决策」上：「这事该在哪台机器上跑？」只是模型要填的又一个参数。
+
+四类能力坍缩为同一套传输 + 一个命令目录：
+
+| 能力 | 表达为 |
+|------|--------|
+| **工具执行** | `node_invoke("node:B", "bash", { ... })` |
+| **能力访问** | `node_invoke("node:B", "desktop.screenshot", { ... })` |
+| **子代理委派** | `node_invoke("node:B", "agent.run", { task })` —— B 本地跑 Think→Act，流式回推进度 |
+| **事件上报** | 节点 → 中心事件通道（反向）；中心订阅，LLM 主动反应 |
+
+专用的 **`node_file(node, direction, local_path, remote_path)`** 工具在中心与节点间搬运二进制和大文件（push/pull，两端 SHA-256 校验）。字节在进程间流动，**永不进入 LLM 上下文** —— 只传路径，返回 `{ direction, bytes, sha256, paths }` 摘要。
+
+---
+
+## 节点生命周期
+
+整个生命周期复用现有的 pairing / token / tool 设施 —— 没有另起一套入伙系统。
+
+1. **入伙（enroll）。** 在节点 B 上，operator 用自然语言说「把这台机器加入 `<中心 URL>`」。B 的 `aleph-server node` 执行臂拨出到中心，走**交互式配对**流程：中心签发 6 位码，B 打印到 stdout，中心 operator 在 **Panel** 批准（与冷浏览器配对同一审批面）。批准后中心铸造 `DeviceRole::Node` token，B 持久化到 `~/.aleph/node/<name>.json`（权限 `0600`）。
+2. **声明（declare）。** 连上后，B 上报**它愿意暴露的命令目录**（名字 + JSON Schema），来源是 B 本地的工具/skill。**默认 deny，显式白名单** —— 中心只能调被 B 批准的。
+3. **调用（invoke）。** 中心 LLM 调 `node_invoke("node:B", "bash", { ... })` → `node_invoke` 工具 → `NodeRegistry` 查到 B 的 session → 经常开 WS 以反向 RPC `tool.call` 帧下发 → B 的 `NodeClient` 派给**本地**工具 → 结果按 id 回中心 → pending 表唤醒 → 回到 LLM。长任务经事件通道流式回推。
+4. **感知（perceive）。** B 的 daemon 事件和子代理进度经同一条 WS 回推。中心按 topic 路由给订阅者 —— Panel 渲染，以及中心 LLM 主动反应。
+
+---
+
+## 反向 RPC：核心的新机制
+
+一条普通的网关连接是 client→server 请求/响应，加 server→client 单向通知（事件总线）。集群需要那块缺失的拼图：**服务端（中心）能向已连接的节点下发一个带 id 关联的请求并等待其响应。**
+
+```
+中心                                      节点 B (NodeClient)
+  │  node_invoke("node:B","bash",{…})        │
+  │                                          │
+  ├─ pending.insert((conn,id), tx) ──────────┤
+  │  tool.call { method, params, id } ──────▶ │  派发给本地工具
+  │                                          │  （spawn，绝不阻塞
+  │                                          │   读循环）
+  │  ◀────────── { result, id } ─────────────┤
+  ├─ pending.remove((conn,id)) → tx.send ────┤
+  │  结果回到 LLM                             │
+```
+
+- **Pending 表：** `DashMap<(conn_id, req_id), oneshot::Sender<…>>` 把每个发出的请求与节点最终的回复关联起来。
+- **节点不阻塞队头：** 节点把每个 `tool.call` 派到独立任务上，读循环始终空闲，可以收下一帧（以及下文的审批响应）。
+- **存活性：** 节点掉线时，针对它的所有在途调用立即取消 —— 排空 pending sender，让调用方拿到快速的 `Cancelled` 错误而不必等满超时。中心发出 `node.connected` / `node.disconnected` 事件（镜像 presence 加入/离开），订阅者和 LLM 无需轮询即可感知拓扑变化。
+
+---
+
+## 审批路由：节点可以反向问中心
+
+节点跑在 headless 模式 —— 旁边没有 operator。所以当节点的 sandbox 命中需要能力升级的命令时，它不在本地决策，而是**把审批请求反向路由回中心**，由人类 operator 决定。
+
+```
+节点 B 的 sandbox 命中特权命令
+  │
+  │  node.approval.request  （反向，走 B 的 WS）
+  ▼
+中心  →  ExecApprovalManager  →  Panel 审批卡
+              （与本地 exec 审批同一张卡；
+               节点上下文编码进 command 字段：
+               "node '<name>': <tool> — <reason>"）
+  │
+  │  operator 批准 / 拒绝 / 本会话批准
+  ▼
+决策作为 JSON-RPC 响应下行回 B → B 的 sandbox 映射为结果
+（approved / approved_session / denied / timeout）—— 全路径 fail-closed
+```
+
+每次审批中，节点身份从**认证连接**盖章，绝不取自请求参数 —— 所以节点无法伪造其他节点的身份，也无法自我批准。请求以 `approval.**` 限定 scope，经现有的 `exec.approval.resolve` 方法解析；无需新的 Panel UI 或事件 scope。
+
+---
+
+## 安全模型
+
+`node_invoke` 本质是按设计的远程代码执行通道 —— 中心能在节点上跑命令。因此边界不可妥协：
+
+- **节点侧白名单是唯一的安全边界。** B 只暴露显式声明的命令，中心**只能**调被批准的。默认 deny。即使中心被攻陷，也只能做 B 允许的事。
+- **双向信任。** B 拨入 + 持中心签发的 node token = B 信任该中心；中心持 B 的白名单 = 中心只能在边界内驱动 B。
+- **对人的档位门控。** 触发 `node_invoke` 的人受中心 tiering 约束 —— operator 可编排集群；chat/guest 会话只读（`environments.list`），不能 invoke。
+- **敏感节点操作走审批。** 标在 config 档的命令会挂起，等中心 operator 决策（见上文审批路由）。
+- **凭证隔离。** node token 绝不复用本机 token，与壳核分离「本机 token 绝不外泄给远程」同一纪律。
+- **传输。** 与远程壳同样的显式权衡：LAN/Tailscale 上明文可接受；请在私有网络内运行。
+
+文件传输方面：两端校验 SHA-256，单帧硬上限 8 MB，节点把每条路径关进它的会话 workspace（显式的 `canonical_root` 包含检查，而非仅靠 deny-list）。
+
+---
+
+## 架构契合
+
+集群在不碰 agent 循环的前提下增加能力。harness 仍只调度 Think→Act —— 它甚至不知道某个工具是远程的。
+
+| 红线 | 如何守住 |
+|------|----------|
+| **R1 — 大脑/四肢分离** | 联邦是核↔节点，全 Rust。节点的平台能力仍走其本地 `DesktopCapability` trait + bridge；`src` 不碰平台 API。 |
+| **R3 — 核心轻量化** | 零新重依赖；复用现有 WS / JSON-RPC / DashMap 栈。 |
+| **R4 — Interface 纯 I/O** | Panel 只**渲染** `environments`（薄契约），不聚合、不路由、不持久化。 |
+| **R6 — 一核多端** | 单中心 = 唯一大脑；集群是其「一核多体」延伸。 |
+| **R7 — LLM 主权** | 哪台机器、哪些参数、失败重试 —— 全交模型。无确定性意图分类或路由引擎。 |
+| **R8 — 一切皆工具** | 集群管理（enroll / approve / expose / list）+ 节点能力全是工具 —— 对话即管理面板。 |
+| **R9 — 智慧在 prompt** | `environments` 作数据注入 prompt；一次推理覆盖放置决策。 |
+| **R10 — 薄 harness** | `src/harness/` 不增逻辑；`NodeRegistry`、反向 RPC、`node_invoke` 各归 `cluster` / `gateway` / `builtin_tools`。 |
+
+---
+
+## 另见
+
+- [架构概览](./overview) —— 五层管道与四大设计原则
+- [桌面桥接](./desktop-bridge) —— 单个壳如何附着到单个核（正交的另一根轴）
+- [网关架构](./gateway) —— 反向 RPC 通道所扩展的 WebSocket 控制平面
+- [执行审批](../security/exec-approval) —— 节点审批请求路由进入的审批设施
+- [设备配对](../security/pairing) —— 节点复用的入伙流程
