@@ -46,3 +46,8 @@ test-results/
 
 # Claude agent state (not project content)
 **/.claude/homunculus/
+/.claude/
+
+# local working files (not project content)
+/task_plan.md
+/AlephHome/
