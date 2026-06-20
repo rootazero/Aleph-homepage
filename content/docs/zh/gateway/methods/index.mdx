@@ -225,6 +225,7 @@ Aleph 网关通过命名空间的 JSON-RPC 2.0 方法公开其功能。每个命
 | 命名空间 | 方法 | 说明 |
 |-----------|---------|-------------|
 | `skills.*` | `status`, `update`, `install_dep`, `remove`, `install` | 技能系统 v2 管理 |
+| `extensions.*` | `catalog`, `installed`, `disclosure`, `configure`, `install`, `toggle`, `uninstall`, `sources.list`, `sources.refresh` | 统一[扩展商店](/docs/zh/concepts/extensions-store)门面（聚合 技能/插件/MCP） |
 | `plugin.*` | `list`, `install`, `installFromZip`, `uninstall`, `enable`, `disable`, `load`, `unload`, `reload`, `callTool`, `executeCommand` | 插件生命周期（规范） |
 | `plugins.*` | `list`, `install`, `installFromZip`, `uninstall`, `enable`, `disable`, `load`, `unload`, `callTool`, `executeCommand` | 插件生命周期（遗留） |
 | `plugin.marketplace.*` | `list`, `add`, `update`, `remove`, `install` | 插件市场 |
@@ -243,10 +244,10 @@ Aleph 网关通过命名空间的 JSON-RPC 2.0 方法公开其功能。每个命
 
 | 命名空间 | 方法 | 说明 |
 |-----------|---------|-------------|
-| `group_chat.*` | `start`, `continue`, `mention`, `end`, `list`, `history` | 多代理群聊 |
-| `teams.*` | `list`, `get`, `disband`, `delete` | 团队管理 |
+| `group_chat.*` | `start`, `continue`, `mention`, `end`, `list`, `history` | 多代理群聊会话原语 |
+| `teams.*` | `create`, `get`, `list`, `rename`, `disband`, `delete`, `chat.send`, `chat.thread`, `chat.history`, `create_task`, `update_task`, `list_tasks`, `task.*`, `snapshot.*`, `workflow.*`, `acp_member.*`, `usage` | 团队管理、群聊线程、看板任务、快照与工作流 |
 | `arena.*` | `create`, `query`, `settle` | 多代理竞技场 |
-| `clawhub.*` | `search`, `browse`, `detail`, `install` | ClawHub 代理注册表 |
+| `clawhub.*` | `search`, `browse`, `detail`, `install` | ClawHub 技能注册表（不再是一等商店源；仅作为商店智能体长尾路径） |
 
 ### 调度和服务
 

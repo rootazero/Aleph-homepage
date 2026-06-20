@@ -1,0 +1,165 @@
+---
+title: "Extensions Store"
+description: "The unified Extension concept — MCP servers, plugins, and skills under one umbrella — discovered and installed through a single, trust-gated Extensions store."
+---
+
+For everyday use, Aleph no longer asks you to think about *MCP servers* vs *plugins* vs *skills*.
+They are all just **Extensions** — capabilities you can browse, install with one click, configure with a
+wizard, and enable, disable, or remove. The **Extensions Store** is the top-level surface that unifies all
+three, organised by *what an extension does* rather than by its technical type.
+
+> **The umbrella term.** An **Extension** is the user-facing concept; under the hood it is exactly one of
+> three **kinds** — `Skill`, `Plugin`, or `Mcp`. The store is a *thin federation*: one `Extension` façade
+> that routes by kind to the existing skill / plugin / MCP subsystems. Power users still get the kind badge
+> and the original per-type management panels.
+
+## One concept, three kinds
+
+| Kind | What it is | Backend it routes to |
+|------|-----------|----------------------|
+| **Skill** | A prompt-driven capability (`SKILL.md` + optional tools) | Skill system (`~/.aleph/skills/`) |
+| **Plugin** | A WASM or Node.js module declaring tools, hooks, channels, providers, routes | Plugin host (`src/extension/`) |
+| **MCP** | An external Model Context Protocol server (stdio or remote) | MCP manager (`mcp.add`) |
+
+The **primary browse axis is the functional category** — Search & Web, Developer, Data & Databases,
+Productivity, Writing, Communication, Knowledge, Files, Design, Automation, Finance, Utilities. The
+**kind** (Skill / Plugin / MCP) and the **trust tier** are *secondary* filters and a small badge on each
+card. You browse by intent ("query my database", "search the web"), not by implementation.
+
+> **Naming note.** The store-facing `ExtensionKind { Skill, Plugin, Mcp }` is distinct from the runtime
+> `PluginKind { Wasm, Mcp, Static }`. The umbrella lives in a new `src/store/` module; the existing
+> `src/extension/` module remains the **plugin host** and was deliberately *not* renamed. See
+> [Extensions (plugin host)](/docs/en/concepts/extensions) and [Extension System](/docs/en/concepts/extension-system)
+> for the plugin runtime itself.
+
+## Where it lives in the app
+
+The Extensions Store is a **top-level panel mode** (`/extensions`), grouped with Teams in the upper
+navigation, and takes over the full chat window (with an explicit "← Back to chat"). It joins the panel's
+seven top-level modes: **Chat · Dashboard · Memory · Agents · Teams · Extensions · Settings**.
+
+Two things moved as part of this consolidation:
+
+- **Settings → MCP / Plugins / Skills** panels were **demoted to an "Advanced" group**. They still exist for
+  power users (manual MCP command/env editing, raw manifest views), but they are no longer the primary path.
+- The **ClawHub settings tab was removed**. ClawHub is no longer a first-class source; it is reachable only
+  through the Store Agent's long-tail install path (see [ClawHub](/docs/en/concepts/clawhub)).
+
+## Sources
+
+The catalog is aggregated from a few **mirror-safe, curated sources** by a deterministic data pipeline and
+cached locally in SQLite (`~/.aleph/`). Browse and search are always served from the cache, so the store
+works offline; each source carries a "last synced" / "may be stale" indicator.
+
+| Source | Kinds | Trust tier | Notes |
+|--------|-------|-----------|-------|
+| Aleph built-in + Claude plugin marketplaces (`marketplace.json`) | Plugin (+ bundled skills) | Official / Verified | Reuses the existing `MarketplaceManager`; SHA-pinned |
+| Official MCP Registry (`registry.modelcontextprotocol.io`) | MCP | Community | Namespace-verified only; `config_schema` synthesized from declared env vars |
+| Docker MCP Catalog (`catalog.yaml`) | MCP | Official / Verified | Signed `image@sha256` servers |
+
+A `SourceProvider` trait + `ProviderRegistry` fan syncs out concurrently (one failing source never blocks the
+catalog), de-duplicating across providers. Background sync runs per-provider on a TTL (marketplaces ~6–12h via
+ETag, MCP registry hourly incremental, Docker daily). Adding a community source is implementing the trait and
+registering it — zero UI change.
+
+> **ClawHub** is *not* a first-class deterministic provider in v1 (no stable third-party API, low trust). The
+> GitHub-wide crawler, and Glama / Smithery / npm enrichment overlays, are deferred post-v1.
+
+## Installed-state reconciliation
+
+The store shows installed **and** not-installed extensions. On catalog build it enumerates everything already
+installed (`plugins.list`, `skills.status`, `mcp.list`) and represents each as an installed entry:
+
+- **Matched** to a catalog entry (by repo URL / package id / name) → merged and enriched.
+- **Unmatched** (a hand-configured MCP server, a local skill) → surfaced as **"Installed · manual / not in
+  catalog"**, still toggle- and uninstall-able from the store.
+
+## Trust & security
+
+"Listed in a registry" is not "vetted" — **Aleph itself is the trust boundary.** Every install passes through
+system-enforced rails that the Store Agent cannot bypass.
+
+**Trust tiers** (source-level default): `Official` · `Verified publisher` · `Community` (listed + scanned,
+unverified author) · `Unverified` (manual URL / long-tail).
+
+**Risk classes**, surfaced per item:
+
+- **MCP (stdio)** → red banner *"runs commands on your computer"*.
+- **Skill / Plugin** → yellow banner *"can instruct the agent"* (prompt-injection / tool-poisoning).
+- **MCP (remote URL)** → softer note.
+
+**Mandatory pre-install disclosure** (no silent bypass): the exact command + args (verbatim, copyable); each
+required secret and what it is for; declared network + filesystem reach; the pinned version and **SHA256** that
+will be installed; the trust tier and provenance. Community / LLM-derived MCP servers additionally require an
+explicit **"I understand the risk"** acknowledgement.
+
+**Secrets** are stored in the OS keychain / vault (AES-256-GCM), never in plaintext config and never in a raw
+inheritable child environment — injected per-MCP-server at spawn through Aleph's WASM credential-injection
+boundary.
+
+**Pin + re-gate on change** kills rug-pulls: the approved SHA256, version, and tool/skill descriptions are
+bound at install. A version bump, hash change, or tool-description change triggers a re-scan and re-prompt
+("this extension changed what it can do").
+
+**Injection hardening** scans disclosure text (zero-width characters, RTL overrides, hidden blocks,
+"ignore previous / read .env" patterns) before it is shown — including text that reaches the curating agent.
+
+> **Sandbox is a fast-follow, not v1.** Informed-consent disclosure is the v1 boundary for untrusted stdio MCP
+> servers (matching current VS Code / Claude Desktop / Cursor norms). Process / container sandboxing is the top
+> deferred item. Likewise, **OCI / Docker-image MCP servers are browsable but not installable in v1**.
+
+## The Store Agent
+
+A built-in, **protected (non-deletable)** agent — at the same level as `main` — owns the
+discover → curate → install → verify lifecycle. It runs in SubAgent mode with a private tool set
+(`STORE_TOOLS`) that is **not exposed to chat agents**:
+
+| Tool | Purpose |
+|------|---------|
+| `store_catalog_sync` | Run provider syncs into the local catalog cache |
+| `store_fetch_docs` | Fetch a repo / URL's README & manifest (long-tail) |
+| `store_resolve_spec` | Derive and validate an `InstallSpec` |
+| `store_install_run` | Execute a trust-gated, atomic, SHA256-verified install |
+| `store_install_verify` | Post-install verification (MCP starts and lists tools; skill parses; plugin loads) |
+
+The agent **curates presentation and drives installs**, but **install specs, trust verdicts, SHA256, secrets,
+and the sandbox are system rails** — it cannot fabricate or bypass them. Curation is deterministic first
+(a keyword → category map), with the LLM used only for ambiguous entries; it is lazy, incremental, and cached
+so it never burns user tokens.
+
+## Install model
+
+Two tiers, both gated by the same rails:
+
+- **Deterministic fast-path** (most installs, no LLM): clean machine-readable specs — a synthesized
+  MCP-official spec, a Docker image ref, a marketplace plugin or skill — go straight to `store_install_run`.
+- **LLM-assisted long-tail**: point the Store Agent at any GitHub repo or URL →
+  `store_fetch_docs` → `store_resolve_spec` (infer kind + spec + required secrets) → trust gate →
+  `store_install_run` → `store_install_verify`. This covers the open-source long tail without a global crawler.
+
+Installs are atomic, so navigating away mid-install only cancels — it never corrupts.
+
+## RPC surface
+
+The UI talks to a thin `extensions.*` façade that dispatches to the existing per-kind handlers. See
+[gateway methods: extensions](/docs/en/gateway/methods/extensions) for the full reference.
+
+| Method | Purpose |
+|--------|---------|
+| `extensions.catalog` | Browse the cached catalog (filter by kind / category / source / query) |
+| `extensions.installed` | The reconciled installed list (catalog + manual items) |
+| `extensions.disclosure` | The pre-install disclosure payload + injection findings |
+| `extensions.configure` | Write config / secret values for an extension |
+| `extensions.install` | Trust-gated install (returns `needs_ack` / `missing` / verify result) |
+| `extensions.toggle` | Enable or disable an installed extension |
+| `extensions.uninstall` | Remove an extension |
+| `extensions.sources.list` | List configured sources with trust tier and kinds |
+| `extensions.sources.refresh` | Trigger a background re-sync |
+
+## Related pages
+
+- [Extensions (plugin host)](/docs/en/concepts/extensions) — the plugin runtime and manifest
+- [Skills](/docs/en/concepts/skills) — the Skill kind
+- [MCP Integration](/docs/en/concepts/mcp-integration) — the MCP kind
+- [ClawHub](/docs/en/concepts/clawhub) — long-tail skill source (no longer first-class)
+- [Gateway methods: extensions](/docs/en/gateway/methods/extensions) — the `extensions.*` RPC surface

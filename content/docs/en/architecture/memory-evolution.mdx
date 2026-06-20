@@ -80,6 +80,8 @@ pub trait MemoryExtension: Send + Sync {
 
 Extensions register at startup and receive callbacks for all memory events.
 
+> The `MemoryExtension` trait has since converged on five hook points: `on_capture`, `on_retrieve`, `on_delegation`, `on_pre_compress`, and `on_session_switch`.
+
 ---
 
 ## Spec A: Curated Hot Memory
@@ -138,6 +140,32 @@ Solution:
 
 ---
 
+## Memory Hub Unification
+
+**Status:** Shipped (2026-06-20)  
+**Focus:** Fold the two former memory surfaces into one host.
+
+The radial Graph canvas (formerly `/memory`) and the faceted Table vault (formerly `/dashboard/memory`) are now a single **Memory Hub** with a shared toolbar — a Graph ↔ Table toggle, unified search, and a shared agent selector.
+
+- Node identity is the note path; the same note is the same entity in both views.
+- Bidirectional navigation: a table row's **View in graph** highlights the node, and a graph node's **View in list** jumps the table to that note's facet/page and opens its drawer.
+- The old `/dashboard/memory` route now redirects to `/memory?view=table`.
+
+---
+
+## Governance Surfacing
+
+**Status:** Shipped (2026-06-20)  
+**Focus:** Read-only observability for the memory governance lifecycle.
+
+Writes stay LLM/tool-driven; these surfaces only observe. Both live under **Settings → Memory**.
+
+- **Dream Insights** panel — recent daily synthesis notes from the dream daemon plus dream-run history, backed by `dreaming.list_insights` (with `dreaming.run_now` to trigger a synthesis on demand).
+- **Corrections** panel — surfaces the correction → distillation lifecycle, backed by `memory.list_corrections`.
+- **Retrieval trace** — `memory.retrieve_with_trace` is wired to the real `NoteFactRetrieval` scoring pipeline and returns per-stage telemetry (query → candidate pool → BM25 + vector scores → RRF fusion → cutoff → ranked) for debugging why a fact did or didn't surface.
+
+---
+
 ## Timeline
 
 | Date | Milestone |
@@ -150,6 +178,8 @@ Solution:
 | 2025-09 | Spec B: Session Search Summarization |
 | 2025-10 | Spec C: Cross-Process Safety |
 | 2026-04 | Memory Sovereignty Cleanup (deleted ValueEstimator, MemoryTier, etc.) |
+| 2026-06 | Memory Hub Unification (graph + table) |
+| 2026-06 | Governance Surfacing (Dream Insights + Corrections) |
 
 ---
 

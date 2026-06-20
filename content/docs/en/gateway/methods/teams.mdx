@@ -3,67 +3,26 @@ title: "teams.*"
 description: "Team and multi-agent orchestration RPC methods"
 ---
 
-Team methods manage multi-agent teams — groups of AI agents that collaborate on tasks with defined roles, communication patterns, and coordination strategies.
+Team methods manage multi-agent teams — a **leader** plus **members** that collaborate through a durable group-chat thread and a shared task board. On a team's first message the leader plans first ("Team Strata" strategic coordination); the plan is welded into every member's prompt, and members work under assigned Coord Tasks (`Pending -> InProgress -> WaitingReview -> Completed`).
 
-## Methods
+> Related list endpoint: `agents.teams` returns the team list augmented with a small `members_preview` and `last_message` per team (used to render the sidebar's "Group Chats" history). For the live group-chat session primitive, see [`group_chat.*`](/docs/en/gateway/methods/group_chat).
 
-### teams.list
-
-List all configured teams.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "teams.list",
-  "params": {}
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "teams": [
-      {
-        "id": "team-1",
-        "name": "Code Review Team",
-        "agents": ["reviewer", "tester", "documenter"],
-        "status": "idle"
-      }
-    ]
-  }
-}
-```
+## CRUD
 
 ### teams.create
 
-Create a new team configuration.
+Create a team from a leader, a set of members, and an optional auto-naming flag. A blank-named team gets LLM auto-naming on its first message when `auto_name` is set.
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 2,
+  "id": 1,
   "method": "teams.create",
   "params": {
-    "name": "Bug Fix Squad",
-    "agents": [
-      {
-        "role": "debugger",
-        "model": "claude-sonnet",
-        "system_prompt": "You are a debugging specialist."
-      },
-      {
-        "role": "fixer",
-        "model": "claude-sonnet",
-        "system_prompt": "You implement fixes."
-      }
-    ],
-    "coordination": "sequential"
+    "leader": "main",
+    "members": ["reviewer", "tester", "documenter"],
+    "auto_name": true
   }
 }
 ```
@@ -72,13 +31,13 @@ Create a new team configuration.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 2,
+  "id": 1,
   "result": {
     "team": {
-      "id": "team-2",
-      "name": "Bug Fix Squad",
-      "agents": ["debugger", "fixer"],
-      "status": "idle"
+      "id": "team-1",
+      "name": "",
+      "leader": "main",
+      "members": ["reviewer", "tester", "documenter"]
     }
   }
 }
@@ -88,83 +47,167 @@ Create a new team configuration.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | Yes | Team name |
-| `agents` | object[] | Yes | Agent configurations with `role`, `model`, `system_prompt` |
-| `coordination` | string | No | Coordination mode: `"sequential"`, `"parallel"`, `"hierarchical"` |
+| `leader` | string | Yes | Agent id that plans and reviews member work |
+| `members` | string[] | Yes | Agent ids working under assigned Coord Tasks |
+| `auto_name` | boolean | No | Let the LLM name a blank team on first message |
 
 ### teams.get
 
-Get team details.
+Get a single team's details (leader, members, name).
+
+### teams.list
+
+List all configured teams.
+
+### teams.rename
+
+Rename a team.
+
+### teams.disband
+
+Disband a team — tears down its working state while preserving history.
+
+### teams.delete
+
+Delete a team configuration.
+
+## Chat
+
+The team work-thread is a durable, per-team group-chat thread. Its history powers the attribution-bubble replay in the group-chat window.
+
+### teams.chat.send
+
+Send a message into the team's group-chat thread. Routed to the leader on first message for planning, and to members per their Coord Tasks.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "teams.chat.send",
+  "params": {
+    "team_id": "team-1",
+    "text": "Review this pull request for security issues",
+    "mention": "@all"
+  }
+}
+```
+
+### teams.chat.thread
+
+Fetch the team's durable group-chat thread metadata.
+
+### teams.chat.history
+
+Replay the message history for a team's thread (drives attribution bubbles).
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "teams.get",
+  "method": "teams.chat.history",
   "params": {
     "team_id": "team-1"
   }
 }
 ```
 
-### teams.run
+## Tasks / Kanban
 
-Execute a task with a team.
+Members work under Coord Tasks (`Pending -> InProgress -> WaitingReview -> Completed`). The leader accepts or rejects deliverables; on a member task submit, a synthetic re-dispatch routes the task back to the leader for review.
+
+### teams.create_task
+
+Create a Coord Task for a member.
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 4,
-  "method": "teams.run",
+  "method": "teams.create_task",
   "params": {
     "team_id": "team-1",
-    "task": "Review this pull request for security issues",
-    "context": {
-      "pr_url": "https://github.com/org/repo/pull/123"
-    }
+    "assignee": "reviewer",
+    "title": "Audit auth module for injection",
+    "description": "Check all query construction paths."
   }
 }
 ```
 
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 4,
-  "result": {
-    "run_id": "run-team-1",
-    "status": "running"
-  }
-}
-```
+### teams.update_task
 
-### teams.delete
-
-Delete a team configuration.
+Update a task's status, assignee, or fields.
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "teams.delete",
+  "method": "teams.update_task",
   "params": {
-    "team_id": "team-2"
+    "team_id": "team-1",
+    "task_id": "task-7",
+    "status": "InProgress"
   }
 }
 ```
 
-## Coordination Modes
+| Method | Description |
+|--------|-------------|
+| `teams.create_task` | Create a Coord Task for a member |
+| `teams.update_task` | Update a task's status/assignee/fields |
+| `teams.list_tasks` | List tasks on a team's board |
+| `teams.add_task_comment` | Add a comment to a task |
+| `teams.list_task_comments` | List comments on a task |
+| `teams.list_task_events` | List a task's lifecycle events |
+| `teams.list_task_runs` | List execution runs for a task |
+| `teams.list_templates` | List available task templates |
+| `teams.task.pause` | Pause a running task |
+| `teams.task.resume` | Resume a paused task |
+| `teams.task.retry` | Retry a failed task |
+| `teams.task.skip` | Skip a task |
+| `teams.task.trace` | Fetch a task's execution trace |
+| `teams.task.journal.get` | Get a task's journal entry |
+| `teams.task.journal.list` | List a task's journal entries |
 
-| Mode | Description |
-|------|-------------|
-| `sequential` | Agents run one after another, passing output forward |
-| `parallel` | Agents run simultaneously, results merged at the end |
-| `hierarchical` | A leader agent delegates subtasks to worker agents |
+## Snapshots
+
+| Method | Description |
+|--------|-------------|
+| `teams.snapshot.create` | Create a snapshot of team state |
+| `teams.snapshot.get` | Get a single snapshot |
+| `teams.snapshot.list` | List snapshots for a team |
+| `teams.snapshot.restore` | Restore team state from a snapshot |
+| `teams.snapshot.delete` | Delete a snapshot |
+
+## Workflow
+
+| Method | Description |
+|--------|-------------|
+| `teams.workflow.export_canvas` | Export the team workflow canvas |
+| `teams.workflow.import_canvas` | Import a workflow canvas |
+| `teams.workflow.approve_step` | Approve a workflow step |
+| `teams.workflow.reject_step` | Reject a workflow step |
+| `teams.workflow.retry_step` | Retry a workflow step |
+
+## ACP members
+
+| Method | Description |
+|--------|-------------|
+| `teams.acp_member.add` | Add an ACP (external agent-client-protocol) member |
+| `teams.acp_member.list` | List ACP members on a team |
+| `teams.acp_member.remove` | Remove an ACP member |
+
+## Usage
+
+### teams.usage
+
+Report usage (tokens, cost) for a team.
 
 ## See Also
 
 - [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [group_chat.*](/docs/en/gateway/methods/group_chat) -- Group-chat session primitive
 - [Architecture: Teams](/docs/en/architecture/teams) -- Team orchestration architecture

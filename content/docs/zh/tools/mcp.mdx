@@ -11,6 +11,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Aleph 充当 **MCP 客户端**，连接到一个或多个提供工具、资源和提示的 MCP 服务器。这种架构允许你扩展 Aleph 的功能而无需修改其核心 —— 只需在 Aleph 旁边运行一个 MCP 服务器。
 
+<Callout type="info">
+MCP 是三种扩展类型（`Skill`、`Plugin`、`Mcp`）之一。在日常使用中，你通过统一的[扩展商店](/docs/zh/concepts/extensions-store)发现并安装 MCP 服务器，它按功能类别浏览全部三种类型。本页介绍底层的 MCP 客户端机制。
+</Callout>
+
 ## 架构
 
 ```

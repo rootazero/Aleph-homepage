@@ -1,9 +1,11 @@
 ---
 title: Extensions
-description: Aleph's plugin architecture supporting WASM and Node.js runtimes, manifest-driven configuration, hook systems, background services, and channel/provider plugins.
+description: Aleph's plugin runtime -- one of the three Extension kinds -- supporting WASM and Node.js runtimes, manifest-driven configuration, hook systems, background services, and channel/provider plugins.
 ---
 
-The extension system is how Aleph grows beyond its built-in capabilities. Through a manifest-driven plugin architecture, third-party developers (or you) can add new tools, intercept system events, define custom AI providers, expose HTTP endpoints, and even create entirely new messaging channels. Extensions run in sandboxed runtimes -- either fast WebAssembly modules or full-featured Node.js processes -- with declarative permission controls.
+This page documents the **plugin runtime** -- one of the three Extension kinds (`Skill`, `Plugin`, `Mcp`) that Aleph unifies under the single user-facing **Extension** concept. A plugin is how Aleph grows beyond its built-in capabilities through code: a manifest-driven architecture lets third-party developers (or you) add new tools, intercept system events, define custom AI providers, expose HTTP endpoints, and even create entirely new messaging channels. Plugins run in sandboxed runtimes -- either fast WebAssembly modules or full-featured Node.js processes -- with declarative permission controls. For unified discovery and one-click installation across all three kinds, see the Extensions Store.
+
+> Looking for how to browse and install extensions by category? See the [Extensions Store](/docs/en/concepts/extensions-store) -- the single panel for discovering, vetting, and installing skills, plugins, and MCP servers. This page covers the lower-level plugin host that backs the `Plugin` kind.
 
 ## Architecture Overview
 
@@ -446,6 +448,7 @@ node_version = "20"
 
 ## Related Pages
 
+- [Extensions Store](/docs/en/concepts/extensions-store) -- Unified discovery and installation of skills, plugins, and MCP servers by category
 - [Skills](/docs/en/concepts/skills) -- How skills integrate with the extension system
 - [Model Providers](/docs/en/concepts/model-providers) -- Provider plugins for custom AI backends
 - [Workspaces](/docs/en/concepts/workspaces) -- Plugin directory structure and discovery paths

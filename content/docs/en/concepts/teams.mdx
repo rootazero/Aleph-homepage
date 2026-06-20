@@ -5,11 +5,14 @@ description: "Team management with SQLite-backed store for agent teams, membersh
 
 The `teams` module provides types and a SQLite-backed store for managing teams of agents. It handles team creation, membership, per-team task tracking, lifecycle management, and plan approval workflows.
 
+A team is **leader-led**. On a team's first message the leader plans before any member acts — strategic planning known as **Team Strata**. That plan is welded into every member's prompt, so members work from a shared strategy rather than improvising in isolation. Members then execute assigned **Coord Tasks** under a status flow with an explicit review gate, and the leader accepts or rejects each deliverable via the `task_review` tool.
+
 ## Design Philosophy
 
 1. **Persistence-first** — All team state is stored in SQLite for durability
 2. **Lifecycle-aware** — Teams have explicit states (active, disbanded, archived)
 3. **Task integration** — Teams can have shared tasks with per-member assignments
+4. **Leader-led strategy** — The leader plans first (Team Strata); the plan welds into member prompts, and the leader reviews deliverables before they count as done
 
 ---
 
@@ -68,10 +71,21 @@ pub struct TeamTask {
 pub enum TeamTaskStatus {
     Pending,
     InProgress,
+    WaitingReview,
     Completed,
-    Blocked,
 }
 ```
+
+Coord Tasks move through `Pending → InProgress → WaitingReview → Completed`. A member does not mark its own task done — when it submits, the task lands in `WaitingReview` and a synthetic re-dispatch routes the deliverable back to the leader. The leader then accepts or rejects it:
+
+```text
+task_review { task_id, verdict: approve | reject, feedback? }
+```
+
+- **approve** → the task advances to `Completed`.
+- **reject** (with optional `feedback`) → the task returns to the member for revision.
+
+This keeps the leader as the single gate on what counts as finished work.
 
 ---
 
@@ -139,6 +153,24 @@ Created → Active → [Disbanded | Archived]
 
 ---
 
+## Team Strata (Strategic Coordination)
+
+On a team's **first message**, the leader plans before any member runs:
+
+```text
+First message → leader plans (Team Strata)
+             → plan welded into every member's prompt
+             → members execute assigned Coord Tasks
+             → submit → WaitingReview → leader task_review (approve/reject)
+             → Completed
+```
+
+The leader's strategic plan is injected into each member's prompt for that team, so every member shares the same picture of the goal, the breakdown, and their assignment. Members work under Coord Tasks and submit deliverables for review; the leader gates completion with `task_review`. A blank-named team is auto-named by the LLM on its first message.
+
+> In the desktop panel, a team is chosen from a **ModelPicker-style pill + popover** at the **top of the sidebar** — switching the active team is one click, alongside the team's [Group Chat](/docs/en/concepts/group-chat) window.
+
+---
+
 ## Events
 
 ```rust
@@ -192,6 +224,6 @@ pub struct TeamArtifact {
 
 ## See Also
 
-- [Agent Runtime](./agent-runtime) — How agents spawn and manage tasks
-- [Group Chat](./group-chat) — Multi-persona discussions
-- [Arena](./arena) — Multi-agent collaboration workspace
+- [Agent Runtime](/docs/en/concepts/agent-runtime) — How agents spawn and manage tasks
+- [Group Chat](/docs/en/concepts/group-chat) — Three-panel team chat with attribution bubbles
+- [Arena](/docs/en/concepts/arena) — Multi-agent collaboration workspace

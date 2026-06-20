@@ -3,6 +3,8 @@ title: "ClawHub"
 description: "HTTP client and types for the ClawHub skill registry integration."
 ---
 
+> **Deprecated — historical reference.** ClawHub is no longer a first-class source. Its dedicated Settings tab has been removed, and its discovery role is subsumed into the [Extensions Store](/docs/en/concepts/extensions-store), which browses Skills, Plugins, and MCP servers under one **Extension** umbrella by functional category. The first-class sources are now the Claude/Aleph plugin marketplaces, the Official MCP Registry, and the Docker MCP Catalog. ClawHub is reachable only via the Store Agent's long-tail path (the agent reads a URL/repo for installs that no curated source covers). The architecture below is retained as historical reference for the `clawhub` module.
+
 The `clawhub` module provides HTTP client integration with [ClawHub](https://clawhub.ai), a skill registry for discovering and installing community-contributed skills.
 
 ## Overview
@@ -113,5 +115,6 @@ api_token = "${CLAWHUB_TOKEN}"
 
 ## See Also
 
-- [Skills](../concepts/skills) — Skill system overview
-- [Skill Installer](../concepts/skills#installation) — Installing skills from ClawHub
+- [Extensions Store](/docs/en/concepts/extensions-store) — The current umbrella for discovering and installing Skills, Plugins, and MCP servers (supersedes ClawHub)
+- [Skills](/docs/en/concepts/skills) — Skill system overview
+- [Skill Installer](/docs/en/concepts/skills#installation) — Installing skills

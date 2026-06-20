@@ -6,7 +6,7 @@ description: "内置 Web 聊天接口，支持 WebSocket 流式传输和静态�
 import { Callout } from "fumadocs-ui/components/callout";
 import { Steps, Step } from "fumadocs-ui/components/steps";
 
-WebChat 是 Aleph 的内置基于 Web 的聊天接口。它由 Gateway 的 HTTP 服务器直接提供， alongside WebSocket 端点，无需外部依赖或第三方 API。WebChat 使用与所有其他 Gateway 客户端相同的 JSON-RPC 2.0 协议。
+WebChat 是 Aleph 的内置基于 Web 的聊天接口。它由 Gateway 的 HTTP 服务器直接提供，与 WebSocket 端点并存，无需外部依赖或第三方 API。WebChat 使用与所有其他 Gateway 客户端相同的 JSON-RPC 2.0 协议。
 
 ## 架构
 
@@ -37,6 +37,27 @@ WebChat 是 Aleph 的内置基于 Web 的聊天接口。它由 Gateway 的 HTTP 
 ```
 
 WebChat 作为单页应用 (SPA) 从 Gateway 的静态文件目录提供。与 Gateway 的 WebSocket 连接使用与 macOS 应用、Tauri 桌面应用和 CLI 相同的 JSON-RPC 协议提供实时双向通信。
+
+## 面板导航
+
+桌面面板（以及完整的 WebChat SPA）公开了**七个顶层模式**，可从分区切换器进入。它们按以下导航顺序排列：
+
+| 模式 | 路由 | 用途 |
+|------|-------|---------|
+| Chat | `/chat` | 主对话界面 |
+| Dashboard | `/dashboard` | 状态、活动和概览 |
+| Memory | `/memory` | 记忆中心 —— 图谱视图和表格视图统一在一个宿主中 |
+| Agents | `/agents` | 浏览和配置智能体 |
+| Teams | `/teams` | 多智能体团队和群聊 |
+| Extensions | `/extensions` | 统一的扩展商店 |
+| Settings | `/settings` | 配置 |
+
+这个拓扑带来了几处变化：
+
+- **Extensions**（`/extensions`）是统一的**扩展商店** —— 一个按功能类别浏览技能（Skill）、插件（Plugin）和 MCP 服务器的统一场所。它**取代了旧的 ClawHub 标签页**，后者已被移除。完整概念参见[扩展商店](/docs/zh/concepts/extensions-store)。
+- 旧的 **MCP / Plugins / Skills** 设置面板现在位于 **Settings > Advanced** 之下，而非作为顶层标签页。
+
+> 切换模式只改变面板界面；底层的 Gateway 会话和 WebSocket 连接保持不变，因此下文描述的同一 JSON-RPC 协议适用于全部七个模式。
 
 ## 能力
 

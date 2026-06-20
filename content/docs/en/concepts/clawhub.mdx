@@ -3,6 +3,8 @@ title: "ClawHub"
 description: "HTTP client and types for the ClawHub skill registry at clawhub.ai."
 ---
 
+> **Status (2026-06): ClawHub is no longer a first-class source.** Its Settings tab was removed and it has been subsumed into the [Extensions Store](/docs/en/concepts/extensions-store). ClawHub is no longer browsable in the main UI; the Store browses Skills, Plugins, and MCP servers from the Claude/Aleph plugin marketplaces, the Official MCP Registry, and the Docker MCP Catalog. The ClawHub HTTP API documented below is still reachable, but only via the Store Agent's long-tail install path (its `store_fetch_docs` tool reads a URL/repo) — not the main browse UI. This page is kept as historical reference.
+
 The `clawhub` module provides an HTTP client and type definitions for interacting with the ClawHub skill registry. ClawHub is a public repository where users can browse, search, and download skills for use with Aleph and compatible agents.
 
 ## Design Philosophy
@@ -149,5 +151,6 @@ The client uses `reqwest` for HTTP and returns `Result<T, ClawHubError>` from al
 
 ## See Also
 
+- [Extensions Store](/docs/en/concepts/extensions-store) — The unified panel that replaced ClawHub as the way to browse and install Extensions
 - [Skills](./skills) — How skills work within Aleph
 - [Extensions](./extensions) — Plugin architecture for adding capabilities

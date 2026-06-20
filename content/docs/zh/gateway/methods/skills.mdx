@@ -5,6 +5,8 @@ description: "技能系统 v2 管理 RPC 方法"
 
 技能方法管理技能系统 v2——一个统一的技能发现、注册和生命周期管理框架。技能为代理添加工具、提示和能力。
 
+> **注意：** `skills.*` 是统一 `extensions.*` 门面背后按类型划分的后端之一。对于日常用户，技能、插件和 MCP 服务器统一在同一个**扩展**概念下，通过[扩展商店](/docs/zh/concepts/extensions-store)浏览和安装。下面的 `skills.*` 方法仍是底层的技能后端；伞形 RPC 参见 [extensions.*](/docs/zh/gateway/methods/extensions)。
+
 ## 方法
 
 ### skills.status
@@ -219,4 +221,6 @@ description: "技能系统 v2 管理 RPC 方法"
 ## 另请参阅
 
 - [概念：技能](/docs/zh/concepts/skills)——技能系统 v2 的工作原理
+- [概念：扩展商店](/docs/zh/concepts/extensions-store)——统一的扩展概念（技能 / 插件 / MCP）
+- [extensions.*](/docs/zh/gateway/methods/extensions)——路由到各类型后端的统一门面
 - [方法参考](/docs/zh/gateway/methods)——所有方法命名空间

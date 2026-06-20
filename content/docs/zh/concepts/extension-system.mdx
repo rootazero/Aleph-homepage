@@ -5,6 +5,8 @@ description: "具有 WASM 和 Node.js 运行时、清单驱动注册和统一钩
 
 `extension` 模块为 Aleph 提供统一的扩展系统。它支持插件（WASM 和 Node.js 运行时）和技能，具有清单驱动注册、统一注册表和基于钩子的集成。
 
+> **辨析。** 在代码库中，`extension`（本页所述的 `src/extension/` 模块）是**插件宿主**——负责加载、注册并运行 WASM/Node.js 插件的后端。它不同于面向用户的伞形概念“Extension（扩展）”，后者把技能、插件和 MCP 服务器统一为同一个理念，并通过**扩展商店**来浏览。该伞形概念及其商店位于独立的 `src/store/` 模块；参见[扩展商店](/docs/zh/concepts/extensions-store)。
+
 ## 设计理念
 
 1. **统一注册表** —— 插件可以提供的所有内容（工具、频道、HTTP 路由）都注册在单个 `PluginRegistry` 中
@@ -218,4 +220,4 @@ pub trait HookHandler: Send + Sync {
 
 - [能力系统](./capability-system) —— 插件能力声明
 - [技能系统](./skill-system) —— 技能管理
-- [扩展](./extensions) —— 概念概述（如果存在）
+- [扩展商店](/docs/zh/concepts/extensions-store) —— 面向用户的伞形概念（技能 + 插件 + MCP）及其商店

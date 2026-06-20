@@ -1,145 +1,128 @@
 ---
 title: "Group Chat"
-description: "Multi-agent group chat with channel-agnostic orchestration for collaborative discussions."
+description: "Multi-agent team group chat: broadcaster fan-out, leader strategy planning, team event topics, and three-panel attribution UI."
 ---
 
-The `group_chat` module provides multi-agent group chat functionality, enabling collaborative discussions between multiple personas in a shared conversation.
+Group chat is how a **team** of agents holds a shared, durable conversation. A user
+message is dispatched to a team, the leader plans first, `@`-targets are resolved, the
+addressed members run, and each member's reply fans out as a `team.<id>.message` event
+that the panel renders as an attribution bubble.
+
+> Group chat is a **team** surface. For how teams, leaders, and Coord Tasks are defined,
+> see [Teams](/docs/en/architecture/teams).
 
 ## Overview
 
-Group Chat enables:
-- **Multi-persona conversations** — Multiple agent personas participate in a single chat
-- **Channel-agnostic** — Works across Telegram, Discord, Slack, and other channels
-- **Collaborative decision-making** — Agents can discuss and reach consensus
-- **Role-based participation** — Each persona has specific expertise and behavior
+Group chat enables:
 
-## Architecture
+- **Multi-agent conversations** — Several agents in one team participate in a single shared thread.
+- **Leader-led strategy** — On the team's first message the leader plans first; the plan is welded into every member's prompt (see [Team Strata](/docs/en/architecture/teams)).
+- **Targeted addressing** — `@<id>` addresses one member; `@all` addresses the whole roster.
+- **Per-agent attribution** — Every reply carries its author (agent emoji + display name + a stable per-agent color), replayed from durable history.
 
-```
-GroupChatOrchestrator
-  ├── Coordinator — Manages turn-taking and flow
-  ├── Session — Group chat state and history
-  ├── PersonaRegistry — Available personas
-  ├── Protocol — Message protocol
-  ├── Executor — Runs persona responses
-  └── Channel — Channel-specific adapters
-```
+## The GroupChatBroadcaster
 
-## Core Components
-
-### GroupChatOrchestrator
-
-Central coordinator for group chats:
-
-```rust
-// src/group_chat/orchestrator.rs
-pub struct GroupChatOrchestrator {
-    session: GroupChatSession,
-    personas: PersonaRegistry,
-    coordinator: TurnCoordinator,
-}
-
-impl GroupChatOrchestrator {
-    pub async fn add_persona(
-        &mut self,
-        persona: PersonaId,
-    ) -> Result<()>;
-    
-    pub async fn process_message(
-        &mut self,
-        msg: UserMessage,
-    ) -> Result<Vec<PersonaResponse>>;
-    
-    pub async fn run_round(
-        &mut self,
-    ) -> Result<RoundSummary>;
-}
-```
-
-### PersonaRegistry
-
-Manages available personas:
-
-```rust
-// src/group_chat/persona.rs
-pub struct PersonaRegistry {
-    personas: HashMap<PersonaId, Persona>,
-}
-
-pub struct Persona {
-    pub id: PersonaId,
-    pub name: String,
-    pub identity: String,
-    pub expertise: Vec<String>,
-    pub voice: VoiceStyle,
-}
-```
-
-### GroupChatSession
-
-Maintains shared state:
-
-```rust
-// src/group_chat/session.rs
-pub struct GroupChatSession {
-    id: SessionId,
-    messages: Vec<ChatMessage>,
-    participants: Vec<PersonaId>,
-}
-```
-
-### SharedSession
-
-Shared state across multiple group chats:
-
-```rust
-pub struct SharedSession {
-    context: Arc<RwLock<SessionContext>>,
-}
-```
-
-## Message Flow
+`GroupChatBroadcaster` (`src/teams/broadcast/`) is the engine. A single user message flows
+through it as a deterministic pipeline — the broadcaster does the **routing** (state to
+dispatch); the **cognition** stays in the leader's and members' prompts.
 
 ```
-User Message
+User message → team
      │
      ▼
-GroupChatOrchestrator
+GroupChatBroadcaster::dispatch_user
      │
-     ├──▶ Coordinator (determine turn order)
+     ├─① Strategy fire-once
+     │     If the team strategy slot is empty, the leader plans first
+     │     (plan_strategy minted once via atomic put_if_absent) and is
+     │     welded into every member's prompt for the team's lifetime.
      │
-     ├──▶ Persona A Response
+     ├─② Resolve @targets (resolve_targets)
+     │     @<id> → that member · @all → whole roster · tokens not in the
+     │     roster are dropped. While the strategy slot is empty, the hard
+     │     gate routes to the leader alone and surfaces the discarded @.
      │
-     ├──▶ Persona B Response
+     ├─③ Per-member runs (run_member, fan-out)
+     │     Each addressed member runs with the team strategy + live kanban
+     │     welded in. Bounded by MAX_CHAIN_DEPTH / MAX_FANOUT_WIDTH /
+     │     MAX_TOTAL_ACTIVATIONS.
      │
-     └──▶ Persona C Response
-              │
-              ▼
-         Merged Response to User
+     └─④ Event fan-out
+           Each member reply is emitted as team.<id>.message and persisted
+           to the team chat history (powers attribution-bubble replay).
 ```
 
-## Configuration
+### Leader review re-dispatch
 
-```toml
-[group_chat]
-enabled = true
-max_personas = 5
-default_personas = ["analyst", "creative", "critic"]
+When a member submits a deliverable, its Coord Task flips to `WaitingReview`. The
+broadcaster diffs the member's tasks against a pre-turn snapshot and, for any newly
+submitted task, issues a **synthetic re-dispatch** addressed back to the leader. The
+accept/reject judgment itself is the leader's `task_review` turn — the broadcaster only
+does the deterministic state-to-routing plumbing.
+
+## Two RPC layers
+
+Group chat spans two complementary RPC surfaces. They are **not** merged — each owns a
+distinct concern.
+
+| Layer | Methods | Owns |
+|-------|---------|------|
+| **Group-chat session primitive** | `group_chat.start`, `group_chat.continue`, `group_chat.end`, `group_chat.history`, `group_chat.list`, `group_chat.mention` | The live session lifecycle: open a session, push a turn, resolve mentions, list/replay sessions, close. |
+| **Team work-thread** | `teams.chat.send`, `teams.chat.thread`, `teams.chat.history` | The durable per-team group-chat thread. `teams.chat.history` returns the chat **bubbles** (each tagged with `agent_id`) that power attribution replay; `teams.chat.thread` returns the work-thread **deliverables / tasks**. |
+
+> `teams.chat.history` (bubbles) and `teams.chat.thread` (deliverables) are deliberately
+> separate: the panel hydrates the message flow from `history` and the workspace pane from
+> `thread`. For the full `teams.*` surface (create, tasks, snapshots, workflow), see
+> [Teams](/docs/en/architecture/teams).
+
+## Team event topics
+
+The panel subscribes to `team.<id>.*` (via `subscribe_team_events`) and renders each
+subtopic into a different surface:
+
+| Topic | Carries | Rendered as |
+|-------|---------|-------------|
+| `team.<id>.message` | A member reply emitted by the broadcaster fan-out | An attribution bubble in the message flow |
+| `team.<id>.activity` | Roster / run status changes | Status dots on the left roster |
+| `team.<id>.task` | Coord Task lifecycle updates | The right workspace (tasks / kanban) |
+
+## Panel rendering
+
+The group-chat window is a **three-panel** layout:
+
 ```
+┌──────────────┬───────────────────────────┬──────────────────┐
+│ Roster       │ Message flow              │ Workspace        │
+│ (left)       │ (middle)                  │ (right, collapsible)
+│              │                           │                  │
+│ • leader     │ 🐙 Atlas                  │ ┌ Artifacts ─┐   │
+│   badge      │   per-agent bubble        │ └────────────┘   │
+│ • status     │   (emoji + display_name + │ ┌ Tasks / ───┐   │
+│   dots       │    stable hash(agent_id)  │ │ Kanban     │   │
+│              │    color; consecutive     │ └────────────┘   │
+│              │    same-agent msgs merge) │                  │
+└──────────────┴───────────────────────────┴──────────────────┘
+```
+
+- **Left — roster.** Team members with a leader badge and live status dots fed by `team.<id>.activity`.
+- **Middle — message flow.** Attribution bubbles: each shows the author's emoji, `display_name`, and a stable color derived from `hash(agent_id)`; consecutive messages from the same agent merge into one bubble.
+- **Right — workspace (collapsible).** Artifacts and a tasks / kanban tab, fed by `team.<id>.task` and `teams.chat.thread`.
+
+### Sidebar and composer
+
+- **Group Chats history.** The sidebar gains a "Group Chats" section listing each team chat with a `members_preview` (member icons) and a last-message snippet. This summary comes from `agents.teams`, which augments the team list with `members_preview` + `last_message`.
+- **`@` auto-complete.** Typing `@` in the composer opens a roster auto-complete palette (`@<id>`, `@all`). Mentions resolve by `agent_id` — tokens not in the roster are dropped.
+- **Auto-naming.** A blank-named team is given an LLM-generated name on its first message.
 
 ## Code Location
 
-- `src/group_chat/mod.rs` — Module entry point
-- `src/group_chat/orchestrator.rs` — Main coordinator
-- `src/group_chat/coordinator.rs` — Turn management
-- `src/group_chat/session.rs` — Session state
-- `src/group_chat/persona.rs` — Persona definitions
-- `src/group_chat/executor.rs` — Response execution
-- `src/group_chat/protocol.rs` — Message protocol
-- `src/group_chat/channel.rs` — Channel adapters
+- `src/teams/broadcast/mod.rs` — `GroupChatBroadcaster` (`dispatch_user`, `run_member`)
+- `src/teams/broadcast/targets.rs` — `resolve_targets` (`@<id>` / `@all`, hard gate)
+- `src/teams/messages/mentions.rs` — mention parsing (`@<id>`, `@all` → `MENTION_ALL`)
+- `src/group_chat/` — group-chat session primitive (`group_chat.*`)
 
 ## See Also
 
-- [Teams](./teams) — Team management for multi-agent collaboration
-- [A2A](./a2a) — Agent-to-Agent protocol
-- [Gateway](../gateway/protocol) — Channel interfaces
+- [Teams](/docs/en/architecture/teams) — Teams, leader, Coord Tasks, Team Strata, and the full `teams.*` RPC surface
+- [A2A](/docs/en/architecture/a2a) — Agent-to-Agent protocol
+- [Gateway](/docs/en/gateway/protocol) — Channel interfaces

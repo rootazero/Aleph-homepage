@@ -120,6 +120,57 @@ description: "用于记忆操作的内置网关工具。"
 
 ---
 
+## 可观测性与治理（`memory.*` / `dreaming.*`）
+
+下列方法是 **RPC 方法**（而非内置聊天工具）。它们对记忆流水线暴露只读的
+可观测性，并提供梦境守护进程控制。写入仍由 LLM/工具驱动——这些方法
+呈现状态，不会变更事实。
+
+### memory.retrieve_with_trace
+
+运行真实的 `NoteFactRetrieval` 评分流水线，返回结果**以及**每个阶段的
+遥测数据，以便调试某条事实为何浮现或未浮现。
+
+**参数：**
+- `query`（必填）— 搜索查询
+- `limit`（可选）— 最大结果数
+- `agent_id`（可选）— 目标代理命名空间
+
+**返回：** 排名结果加上一个 `trace` 阶段数组，每项为
+`{ stage, count, elapsed_ms, scores }`。各阶段按流水线顺序排列：
+query → candidate pool → BM25 + vector scores → RRF fusion → cutoff → ranked。
+
+### memory.list_corrections
+
+列出纠正记录 → 蒸馏的生命周期（只读）。呈现用户纠正如何流入蒸馏记忆。
+
+**参数：**
+- `agent_id`（可选）— 目标代理命名空间
+- `limit`（可选）— 最大条目数
+
+**返回：** 纠正记录列表及其蒸馏状态。
+
+### dreaming.list_insights
+
+列出梦境守护进程产生的近期每日综合洞察，以及 dream 运行历史。
+
+**参数：**
+- `limit`（可选）— 返回的最大洞察/运行数
+
+**返回：** 近期综合笔记 + dream 运行历史条目。
+
+### dreaming.run_now
+
+立即触发一次梦境周期，而无需等待计划运行。
+
+**返回：** 带所触发 dream 运行标识符的确认。
+
+> 这四个方法位于 `memory.*` 和 `dreaming.*` RPC 命名空间中，与现有的
+> `memory.search` / `store` / `delete` / `clear` / `stats` / `compress`
+> 方法并列——区别于上文记录的内置聊天工具。
+
+---
+
 ## 方法比较
 
 | 方法 | 使用时机 | 返回 |

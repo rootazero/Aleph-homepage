@@ -5,11 +5,14 @@ description: "具有 SQLite 支持存储的代理团队管理，用于管理代�
 
 `teams` 模块提供类型和 SQLite 支持存储，用于管理代理团队。它处理团队创建、成员资格、每团队任务跟踪、生命周期管理和计划审批工作流。
 
+团队是 **队长主导** 的。在团队的第一条消息上，队长会先于任何成员行动进行规划 —— 这一战略规划称为 **团队战略协调（Team Strata）**。该计划会被焊接进每个成员的提示词中，因此成员从共享的战略出发工作，而非各自孤立地即兴发挥。随后成员在带有显式审查关卡的状态流下执行分配的 **协调任务（Coord Task）**，队长通过 `task_review` 工具接受或拒绝每个交付物。
+
 ## 设计理念
 
 1. **持久优先** — 所有团队状态都存储在 SQLite 中以实现持久性
 2. **生命周期感知** — 团队具有显式状态（活跃、解散、归档）
 3. **任务集成** — 团队可以具有带有每成员分配的共享任务
+4. **队长主导的战略** — 队长先行规划（团队战略协调）；计划焊接进成员提示词，队长在交付物算作完成之前先行审查
 
 ---
 
@@ -68,10 +71,21 @@ pub struct TeamTask {
 pub enum TeamTaskStatus {
     Pending,
     InProgress,
+    WaitingReview,
     Completed,
-    Blocked,
 }
 ```
+
+协调任务在 `Pending → InProgress → WaitingReview → Completed` 之间流转。成员不会将自己的任务标记为完成 —— 当它提交时，任务进入 `WaitingReview`，并由一次合成的重新派发将交付物路由回队长。队长随后接受或拒绝它：
+
+```text
+task_review { task_id, verdict: approve | reject, feedback? }
+```
+
+- **approve** → 任务推进到 `Completed`。
+- **reject**（带可选 `feedback`）→ 任务返回给成员进行修订。
+
+这使队长成为判定何为已完成工作的唯一关卡。
 
 ---
 
@@ -139,6 +153,24 @@ pub struct SqliteTeamStore {
 
 ---
 
+## 团队战略协调（Team Strata）
+
+在团队的**第一条消息**上，队长会先于任何成员运行进行规划：
+
+```text
+第一条消息  → 队长规划（团队战略协调）
+           → 计划焊接进每个成员的提示词
+           → 成员执行分配的协调任务
+           → 提交 → WaitingReview → 队长 task_review（approve/reject）
+           → Completed
+```
+
+队长的战略计划会被注入该团队中每个成员的提示词，因此每个成员都共享对目标、拆解和各自分工的同一幅图景。成员在协调任务下工作并提交交付物以供审查；队长用 `task_review` 把守完成关卡。名称为空的团队会在其第一条消息上由 LLM 自动命名。
+
+> 在桌面面板中，团队从位于**侧边栏顶部**的 **ModelPicker 风格胶囊 + 弹出框** 中选择 —— 切换活跃团队只需一次点击，与团队的[群聊](/docs/zh/concepts/group-chat)窗口并列。
+
+---
+
 ## 事件
 
 ```rust
@@ -193,5 +225,5 @@ pub struct TeamArtifact {
 ## 另请参阅
 
 - [代理运行时](/docs/zh/concepts/agent-runtime) — 代理如何生成和管理任务
-- [群聊](/docs/zh/concepts/group-chat) — 多人格讨论
+- [群聊](/docs/zh/concepts/group-chat) — 带归属气泡的三面板团队群聊
 - [竞技场](/docs/zh/concepts/arena) — 多代理协作工作区

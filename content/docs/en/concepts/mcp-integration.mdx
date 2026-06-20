@@ -5,6 +5,8 @@ description: "Model Context Protocol integration for external tool servers, supp
 
 The `mcp` module integrates Aleph with external MCP (Model Context Protocol) servers. It provides transport abstraction, tool discovery, resource management, and prompt templates from third-party MCP servers.
 
+> An MCP server is one of three **Extension** kinds (`Skill`, `Plugin`, `Mcp`). The Official MCP Registry is a **source** in the [Extensions Store](/docs/en/concepts/extensions-store), where MCP servers are browsed and installed by functional category alongside plugins and skills. This page describes the low-level MCP host; for the everyday install/discovery flow, see the Extensions Store.
+
 ## Design Philosophy
 
 1. **Transport abstraction** — All MCP transports implement the same `McpTransport` trait

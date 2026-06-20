@@ -1,0 +1,461 @@
+---
+title: "extensions.*"
+description: "Unified Extension façade RPC methods (Extensions Store)"
+---
+
+Extension methods are the unified façade over Aleph's three extension kinds — `Skill`, `Plugin`, and `Mcp`. For everyday users these are one user-facing concept: the **Extension**. The `extensions.*` namespace powers the **Extensions Store** panel (`/extensions`), which browses all three by functional category, surfaces trust tiers, and drives trust-gated installs. This is a thin federation: each method routes by kind to the existing `skills.*`, `plugins.*`, and `mcp.*` backends.
+
+> **See also:** [Concept: Extensions Store](/docs/en/concepts/extensions-store) explains the umbrella model, trust tiers, the Store Agent, and the pre-install disclosure flow. The per-kind backends remain available for low-level control: [skills.*](/docs/en/gateway/methods/skills), [plugins.*](/docs/en/gateway/methods/plugins), [mcp.*](/docs/en/gateway/methods/mcp).
+
+An `ExtensionEntry` (the row shape returned by `extensions.catalog` and `extensions.installed`) looks like:
+
+```json
+{
+  "id": "mcp:registry/exa-search",
+  "kind": "Mcp",
+  "name": "Exa Search",
+  "description": "Web and code search via the Exa API.",
+  "category": "Search",
+  "trust_tier": "Verified",
+  "installed": false,
+  "enabled": false,
+  "requires_config": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Stable extension identifier (kind-prefixed) |
+| `kind` | string | One of `"Skill"`, `"Plugin"`, `"Mcp"` |
+| `name` | string | Display name |
+| `description` | string | Short summary |
+| `category` | string | Functional category (Search, Developer, Data, Productivity, Writing, Communication, Knowledge, Files, Design, Automation, Finance, Utilities, Other) |
+| `trust_tier` | string | `"Official"`, `"Verified"`, `"Community"`, or `"Unverified"` |
+| `installed` | boolean | Whether the extension is currently installed |
+| `enabled` | boolean | Whether the extension is enabled (only meaningful when installed) |
+| `requires_config` | boolean | Whether config/secret values are required before it can run |
+
+## Methods
+
+### extensions.catalog
+
+Browse the cached catalog (offline-friendly; backed by SQLite). Results can be filtered by kind, functional category, source, or free-text query.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "extensions.catalog",
+  "params": {
+    "category": "Search",
+    "kind": "Mcp",
+    "query": "web"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "entries": [
+      {
+        "id": "mcp:registry/exa-search",
+        "kind": "Mcp",
+        "name": "Exa Search",
+        "description": "Web and code search via the Exa API.",
+        "category": "Search",
+        "trust_tier": "Verified",
+        "installed": false,
+        "enabled": false,
+        "requires_config": true
+      }
+    ]
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `kind` | string | No | Filter by `"Skill"`, `"Plugin"`, or `"Mcp"` |
+| `category` | string | No | Filter by functional category |
+| `source_id` | string | No | Filter by catalog source (see `extensions.sources.list`) |
+| `query` | string | No | Free-text search over name and description |
+
+### extensions.installed
+
+Return the reconciled list of installed extensions across all three kinds, including items installed manually outside the store.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "extensions.installed",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "entries": [
+      {
+        "id": "mcp:registry/exa-search",
+        "kind": "Mcp",
+        "name": "Exa Search",
+        "description": "Web and code search via the Exa API.",
+        "category": "Search",
+        "trust_tier": "Verified",
+        "installed": true,
+        "enabled": true,
+        "requires_config": true
+      },
+      {
+        "id": "skill:user/web_search",
+        "kind": "Skill",
+        "name": "Web Search",
+        "description": "Manually installed skill.",
+        "category": "Search",
+        "trust_tier": "Unverified",
+        "installed": true,
+        "enabled": true,
+        "requires_config": false
+      }
+    ]
+  }
+}
+```
+
+### extensions.disclosure
+
+Return the mandatory pre-install disclosure payload for a catalog entry: the exact command and args, declared secrets and their purpose, network/filesystem reach, pinned version + SHA256, trust tier, and any injection-hardening findings. The UI must show this before `extensions.install`.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "extensions.disclosure",
+  "params": {
+    "id": "mcp:registry/exa-search"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "kind": "Mcp",
+    "trust_tier": "Verified",
+    "risk_class": "mcp-remote",
+    "command": "npx",
+    "args": ["-y", "@exa/mcp-server"],
+    "version": "1.4.0",
+    "sha256": "sha256:9f2c...e1a4",
+    "secrets": [
+      { "key": "EXA_API_KEY", "purpose": "Authenticate to the Exa search API" }
+    ],
+    "network": ["api.exa.ai"],
+    "filesystem": [],
+    "injection_findings": [],
+    "requires_ack": false
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Catalog extension ID to disclose |
+
+> `risk_class` reflects what the extension can do: MCP-stdio entries (`"runs commands"`) are highest risk, skills and plugins (`"can instruct the agent"`) are medium, and remote MCP is softer. Community- or LLM-derived MCP entries set `requires_ack: true`, demanding an explicit "I understand the risk" acknowledgement at install time.
+
+### extensions.configure
+
+Write config and secret values for an extension. Secret values are stored in the OS keychain / vault — never in plaintext — and surfaced only by key reference.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "extensions.configure",
+  "params": {
+    "id": "mcp:registry/exa-search",
+    "config": { "max_results": 10 },
+    "secrets": { "EXA_API_KEY": "sk-exa-..." }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "requires_config": false
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Extension ID to configure |
+| `config` | object | No | Non-secret config key/value pairs |
+| `secrets` | object | No | Secret values; persisted to the OS keychain/vault |
+
+### extensions.install
+
+Install an extension. This is trust-gated: the server re-validates the spec, trust verdict, pinned version, and SHA256. The result may indicate the install completed, that an acknowledgement is required (`needs_ack`), that required config/secrets are missing (`missing`), or it may return a post-install verification result.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "extensions.install",
+  "params": {
+    "id": "mcp:registry/exa-search",
+    "ack": false
+  }
+}
+```
+
+**Response (needs acknowledgement):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "status": "needs_ack",
+    "id": "mcp:registry/exa-search",
+    "reason": "Community/LLM-derived MCP requires explicit risk acknowledgement."
+  }
+}
+```
+
+**Response (missing config):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "status": "missing",
+    "id": "mcp:registry/exa-search",
+    "missing_config": ["EXA_API_KEY"]
+  }
+}
+```
+
+**Response (installed + verified):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "status": "installed",
+    "id": "mcp:registry/exa-search",
+    "verify": { "ok": true, "sha256_matched": true }
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Catalog extension ID to install |
+| `ack` | boolean | No | Confirms "I understand the risk" for community/LLM-derived MCP |
+
+> OCI / Docker-image MCP entries are browsable in the catalog but are **not installable in v1**. Sandboxed execution is a fast-follow and is also not part of v1 — an install never bypasses the spec, trust verdict, SHA256 check, or secret handling.
+
+### extensions.toggle
+
+Enable or disable an installed extension without uninstalling it.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "extensions.toggle",
+  "params": {
+    "id": "mcp:registry/exa-search",
+    "enabled": false
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "enabled": false
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Installed extension ID |
+| `enabled` | boolean | Yes | Target enabled state |
+
+### extensions.uninstall
+
+Remove an installed extension and revoke its stored secrets.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "extensions.uninstall",
+  "params": {
+    "id": "mcp:registry/exa-search"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "uninstalled": true
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Installed extension ID to remove |
+
+### extensions.sources.list
+
+List the catalog sources, each with its trust tier and the kinds it contributes.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "extensions.sources.list",
+  "params": {}
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "sources": [
+      {
+        "id": "aleph-marketplace",
+        "name": "Aleph / Claude Plugin Marketplace",
+        "trust_tier": "Official",
+        "kinds": ["Plugin", "Skill"],
+        "last_synced": "2026-06-20T09:00:00Z"
+      },
+      {
+        "id": "mcp-registry",
+        "name": "Official MCP Registry (registry.modelcontextprotocol.io)",
+        "trust_tier": "Community",
+        "kinds": ["Mcp"],
+        "last_synced": "2026-06-20T09:00:00Z"
+      },
+      {
+        "id": "docker-mcp-catalog",
+        "name": "Docker MCP Catalog",
+        "trust_tier": "Verified",
+        "kinds": ["Mcp"],
+        "last_synced": "2026-06-20T09:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+### extensions.sources.refresh
+
+Trigger a background re-sync of one or all catalog sources. The cached SQLite catalog is updated so browsing stays offline-capable.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "extensions.sources.refresh",
+  "params": {
+    "source_id": "mcp-registry"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "refreshing": true,
+    "source_id": "mcp-registry"
+  }
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `source_id` | string | No | Source to refresh; omit to refresh all sources |
+
+## Store Agent tools
+
+The **Store Agent** is a built-in, protected (non-deletable) agent that owns the discover → curate → install → verify lifecycle. It curates the catalog and drives installs, but it cannot bypass the system rails (specs, trust verdicts, SHA256, secret handling) — the same gates apply as for any user-initiated `extensions.install`.
+
+These five tools form its private tool set. They are **internal / agent-only** and are not exposed to chat agents:
+
+| Tool | Purpose |
+|------|---------|
+| `store_catalog_sync` | Sync source catalogs into the cached store |
+| `store_fetch_docs` | Fetch an extension's docs (incl. long-tail URL/repo reads) |
+| `store_resolve_spec` | Resolve an install spec (command, args, version, SHA256) |
+| `store_install_run` | Execute the resolved install |
+| `store_install_verify` | Verify the installed extension (SHA256 + health) |
+
+## See Also
+
+- [Concept: Extensions Store](/docs/en/concepts/extensions-store) -- The unified Extension umbrella, trust tiers, and Store Agent
+- [skills.*](/docs/en/gateway/methods/skills) -- Skill backend (kind `Skill`)
+- [plugins.*](/docs/en/gateway/methods/plugins) -- Plugin host backend (kind `Plugin`)
+- [mcp.*](/docs/en/gateway/methods/mcp) -- MCP server backend (kind `Mcp`)
+- [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

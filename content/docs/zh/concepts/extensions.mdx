@@ -1,9 +1,11 @@
 ---
 title: "扩展"
-description: "Aleph 的插件架构支持 WASM 和 Node.js 运行时、清单驱动配置、钩子系统、后台服务和频道/提供商插件。"
+description: "Aleph 的插件运行时 —— 三种 Extension 类型之一 —— 支持 WASM 和 Node.js 运行时、清单驱动配置、钩子系统、后台服务和频道/提供商插件。"
 ---
 
-扩展系统是 Aleph 超越其内置能力的方式。通过清单驱动的插件架构，第三方开发人员（或您）可以添加新工具、拦截系统事件、定义自定义 AI 提供商、暴露 HTTP 端点，甚至创建全新的消息频道。扩展在沙箱运行时中运行 —— 要么是快速的 WebAssembly 模块，要么是功能齐全的 Node.js 进程 —— 具有声明式权限控制。
+本页文档介绍**插件运行时** —— Aleph 在统一的、面向用户的 **Extension（扩展）** 概念下整合的三种 Extension 类型（`Skill`、`Plugin`、`Mcp`）之一。插件是 Aleph 通过代码超越其内置能力的方式：清单驱动的架构让第三方开发人员（或您）可以添加新工具、拦截系统事件、定义自定义 AI 提供商、暴露 HTTP 端点，甚至创建全新的消息频道。插件在沙箱运行时中运行 —— 要么是快速的 WebAssembly 模块，要么是功能齐全的 Node.js 进程 —— 具有声明式权限控制。如需跨全部三种类型进行统一发现和一键安装，请参阅扩展商店。
+
+> 想了解如何按类别浏览和安装扩展？请参阅[扩展商店](/docs/zh/concepts/extensions-store) —— 用于发现、审核和安装技能、插件和 MCP 服务器的单一面板。本页介绍支撑 `Plugin` 类型的底层插件宿主。
 
 ## 架构概览
 
@@ -446,7 +448,8 @@ node_version = "20"
 
 ## 相关页面
 
-- [技能](/docs/en/concepts/skills) -- 技能如何与扩展系统集成
-- [模型提供商](/docs/en/concepts/model-providers) -- 自定义 AI 后端的提供商插件
-- [工作区](/docs/en/concepts/workspaces) -- 插件目录结构和发现路径
-- [架构概览](/docs/en/architecture/overview) -- 扩展层的系统级视图
+- [扩展商店](/docs/zh/concepts/extensions-store) -- 按类别统一发现和安装技能、插件和 MCP 服务器
+- [技能](/docs/zh/concepts/skills) -- 技能如何与扩展系统集成
+- [模型提供商](/docs/zh/concepts/model-providers) -- 自定义 AI 后端的提供商插件
+- [工作区](/docs/zh/concepts/workspaces) -- 插件目录结构和发现路径
+- [架构概览](/docs/zh/architecture/overview) -- 扩展层的系统级视图

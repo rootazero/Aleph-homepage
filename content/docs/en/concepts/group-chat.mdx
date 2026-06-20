@@ -1,180 +1,125 @@
 ---
 title: "Group Chat"
-description: "Multi-agent group chat with persona-based collaborative discussions across any messaging channel."
+description: "The panel group-chat window: a three-panel team chat surface with attribution bubbles, sidebar history, and @-mention auto-complete."
 ---
 
-The `group_chat` module provides channel-agnostic orchestration for multi-persona collaborative discussions. Multiple agents with different personas can participate in a shared conversation, each contributing their expertise to solve problems collaboratively.
+Group chat is the panel surface where a [team](/docs/en/concepts/teams) of agents converses in one shared, durable thread. It turns a team from "able to run" into "good to use, easy to revisit": speakers are visually distinct, history is resumable from the sidebar, and `@`-mentions are discoverable instead of hand-typed.
 
 ## Design Philosophy
 
-1. **Persona-driven** — Each participant has a distinct role, expertise, and communication style
-2. **Channel-agnostic** — Works over Discord, Telegram, CLI, or any connected interface
-3. **Shared session** — All participants see the full conversation context
+1. **Identity-first** — every message is attributed to a speaker by emoji avatar + display name, not buried in metadata.
+2. **Resumable** — a team chat enters the sidebar history like a single-agent chat; you return to it any time.
+3. **Discoverable mentions** — typing `@` opens a roster palette, so you never silently lose a misspelled `@<id>`.
 
 ---
 
-## Architecture
+## The Three-Panel Window
+
+Opening a team enters the group-chat window, which is laid out in three panels:
 
 ```
-┌─────────────────────────────────────────────┐
-│         GroupChatOrchestrator               │
-├─────────────────────────────────────────────┤
-│                                             │
-│  ┌──────────────┐      ┌─────────────────┐ │
-│  │ Coordinator  │◄────►│   Executor      │ │
-│  │ (turn logic) │      │ (LLM calls)     │ │
-│  └──────────────┘      └─────────────────┘ │
-│         │                                    │
-│         ▼                                    │
-│  ┌──────────────┐      ┌─────────────────┐ │
-│  │   Session    │      │   Persona       │ │
-│  │ (state)      │      │   Registry      │ │
-│  └──────────────┘      └─────────────────┘ │
-│                                             │
-└─────────────────────────────────────────────┘
+┌──────────────┬─────────────────────────────────┬──────────────────┐
+│   Roster     │        Message Flow             │   Workspace      │
+│  (left)      │        (middle)                 │   (right)        │
+├──────────────┼─────────────────────────────────┼──────────────────┤
+│ 👑 leader    │  🦊 Fox                          │  [Artifacts]     │
+│  ● online    │   ┌──────────────────────────┐  │  [Tasks/Kanban]  │
+│ 🦉 Owl       │   │ message text             │  │                  │
+│  ● working   │   └──────────────────────────┘  │  ┌────────────┐  │
+│ 🐢 Turtle    │   │ merged follow-up message │  │  │ artifact   │  │
+│  ○ idle      │   └──────────────────────────┘  │  │ task card  │  │
+│              │  🦉 Owl                          │  │ ...        │  │
+│              │   ┌──────────────────────────┐  │  └────────────┘  │
+│              │   │ message text             │  │   (collapsible)  │
+│              │   └──────────────────────────┘  │                  │
+└──────────────┴─────────────────────────────────┴──────────────────┘
 ```
+
+### Left — Roster
+
+The team roster, with a **leader badge** on the team leader and a **status dot** per member (online / working / idle). This is the live membership of the team for this thread.
+
+### Middle — Message Flow (attribution bubbles)
+
+The conversation, rendered as **attribution bubbles** in a classic-IM layout:
+
+- Each incoming message shows an **avatar** (the agent's `emoji`, falling back to a name-initial monogram) outside the bubble, the **display name** above the bubble, and plain text inside the bubble.
+- The avatar's background is a **stable color derived from `hash(agent_id)`** — so a member keeps the same color regardless of roster order or membership changes.
+- **Consecutive same-agent messages merge**: when a message has the same `agent_id` as the one above it, the avatar and name are hidden (the bubble is indented under the first), so a run of replies reads as one block.
+- Your own messages stay right-aligned with no avatar or name.
+
+> Avatar color is keyed on `agent_id`, not roster index — adding or removing a member never re-colors anyone else.
+
+### Right — Workspace
+
+A collapsible workspace with two tabs:
+
+- **Artifacts** — deliverables produced during the conversation.
+- **Tasks / Kanban** — the team's coordination tasks as a board.
 
 ---
 
-## Core Components
+## Sidebar — Group Chats history
 
-### GroupChatOrchestrator
+The chat sidebar gains a **Group Chats** section above the single-agent chats, sharing one scroll list:
 
-Manages the overall chat flow:
-
-```rust
-pub struct GroupChatOrchestrator {
-    session: GroupChatSession,
-    personas: Vec<Persona>,
-    coordinator: GroupChatCoordinator,
-}
-```
-
-### GroupChatCoordinator
-
-Determines whose turn it is and what they should do:
-
-```rust
-pub struct GroupChatCoordinator;
-
-impl GroupChatCoordinator {
-    pub fn next_speaker(
-        &self,
-        session: &GroupChatSession,
-    ) -> Option<&Persona> { /* ... */ }
-
-    pub fn build_persona_prompt(
-        &self,
-        persona: &Persona,
-        context: &ChatHistory,
-    ) -> String { /* ... */ }
-}
-```
-
-**System prompt handling:** The system prompt is passed via the proper `.with_system()` parameter, not embedded in user message text.
-
-### GroupChatExecutor
-
-Runs LLM calls for each participant:
-
-```rust
-pub struct GroupChatExecutor {
-    provider: Arc<dyn LlmProvider>,
-}
-```
-
-### Persona
-
-Defines a participant's identity:
-
-```rust
-pub struct Persona {
-    pub id: String,
-    pub name: String,
-    pub system_prompt: String,
-    pub expertise: Vec<String>,
-}
-```
-
-**Presets:** The `PersonaRegistry` includes predefined personas (e.g., "coder", "reviewer", "architect").
-
-### GroupChatSession
-
-Maintains conversation state:
-
-```rust
-pub struct GroupChatSession {
-    pub messages: Vec<ChatMessage>,
-    pub participants: Vec<String>,
-}
-```
+- Each row shows a **member-preview avatar cluster** (the team's members, colored via `hash(agent_id)`) and a **last-message snippet** as the subtitle.
+- The section is **collapsible**; if the selected agent is in no teams, it hides entirely.
+- Clicking a row re-enters the team: it loads the roster, replays the chat history into the message flow, and subscribes to live team events. The sidebar row is the durable entry point — you come back by clicking the list.
 
 ---
 
-## Protocol
+## @-Mentions
 
-Message types for group chat communication:
+Typing `@` in the composer (while in a team) opens a **roster auto-complete palette**:
 
-```rust
-pub enum GroupChatMessage {
-    Text { from: String, content: String },
-    Join { persona: String },
-    Leave { persona: String },
-    System { content: String },
-}
-```
+- Each entry renders the member's avatar + display name + a grey `id`, plus an **`@all`** special entry.
+- Filtering matches **name or id**, case-insensitively, against the text typed after `@`.
+- Selecting an entry inserts the canonical `@<id>` (or `@all`). Inside bubbles the literal `@<id>` token is kept and lightly highlighted — it is not rewritten to a name, so there is no ambiguity between same-named agents.
+
+Mentions are resolved against the roster's `agent_id`; a token that doesn't match a member is simply not delivered.
 
 ---
 
-## Intent Types
+## Auto-Naming
 
-The `intent` module provides lightweight type definitions retained from the old intent detection pipeline:
-
-```rust
-pub enum TaskCategory {
-    Code,
-    Search,
-    FileOperation,
-    // ... etc
-}
-
-pub enum DetectionLayer {
-    L2Heuristic,
-    L3Llm,
-}
-```
-
-**Note:** The detection/classification pipeline has been removed in favor of LLM-native tool selection. Only shared type definitions remain.
+A team created without a name (blank-named team) is **auto-named by the LLM on its first message**, so it shows a meaningful title in the Group Chats history instead of a placeholder.
 
 ---
 
-## Safety Properties
+## RPC Layers
 
-- **UTF-8 safe** — `char_indices()` for truncation, `.chars().count()` for length
-- **Deterministic ordering** — `list_presets()` returns sorted results
-- **No lock poisoning** — Uses `tokio::sync::Mutex`
-- **No SQL injection** — No database queries in this module
+Group chat sits on two distinct RPC layers — keep them separate:
+
+### Team work-thread
+
+The durable, per-team group-chat thread. Its history powers the attribution-bubble replay when you re-enter a team from the sidebar.
+
+| Method | Purpose |
+|--------|---------|
+| `teams.chat.send` | Send a message into the team's group-chat thread (fans out to members). |
+| `teams.chat.thread` | The team's work-thread (tasks / deliverables view). |
+| `teams.chat.history` | Replay the durable chat bubbles for a team, oldest-first. |
+
+`agents.teams` returns each team's summary augmented with a small `members_preview` (for the avatar cluster) and `last_message` (for the row subtitle), so the sidebar avoids an N+1 of per-team lookups.
+
+### Group-chat session primitive
+
+The lower-level session primitive that drives a live multi-agent conversation:
+
+| Method | Purpose |
+|--------|---------|
+| `group_chat.start` | Begin a group-chat session. |
+| `group_chat.continue` | Advance the session with the next turn. |
+| `group_chat.end` | End the session. |
+| `group_chat.history` | Read the session's message history. |
+| `group_chat.list` | List active / known sessions. |
+| `group_chat.mention` | Resolve / route an `@`-mention within the session. |
 
 ---
-
-## Code Location
-
-**Group Chat:**
-- `src/group_chat/mod.rs` — Module entry point
-- `src/group_chat/orchestrator.rs` — Chat flow management
-- `src/group_chat/coordinator.rs` — Turn logic and prompt building
-- `src/group_chat/executor.rs` — LLM execution
-- `src/group_chat/session.rs` — Conversation state
-- `src/group_chat/persona.rs` — Persona definitions
-- `src/group_chat/protocol.rs` — Message types
-- `src/group_chat/channel.rs` — Channel abstraction
-
-**Intent:**
-- `src/intent/mod.rs` — Type re-exports
-- `src/intent/types/` — TaskCategory, DetectionLayer, etc.
 
 ## See Also
 
-- [Agent Runtime](./agent-runtime) — How individual agents work
-- [Arena](./arena) — Multi-agent collaboration workspace
-- [Teams](./teams) — Agent team management
+- [Teams](/docs/en/concepts/teams) — leader, Team Strata planning, and Coord Tasks
+- [Agent Runtime](/docs/en/concepts/agent-runtime) — how individual agents work
+- [Arena](/docs/en/concepts/arena) — multi-agent collaboration workspace

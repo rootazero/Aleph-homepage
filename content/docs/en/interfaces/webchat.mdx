@@ -39,6 +39,27 @@ WebChat is Aleph's built-in web-based chat interface. It is served directly by t
 
 WebChat is served as a single-page application (SPA) from the Gateway's static file directory. The WebSocket connection to the Gateway provides real-time bidirectional communication using the same JSON-RPC protocol used by the macOS app, Tauri desktop app, and CLI.
 
+## Panel navigation
+
+The desktop panel (and the full WebChat SPA) exposes **seven top-level modes**, reached from the section switcher. They appear in this nav order:
+
+| Mode | Route | Purpose |
+|------|-------|---------|
+| Chat | `/chat` | Primary conversation surface |
+| Dashboard | `/dashboard` | Status, activity, and overview |
+| Memory | `/memory` | Memory Hub — Graph view and Table view in one host |
+| Agents | `/agents` | Browse and configure agents |
+| Teams | `/teams` | Multi-agent teams and group chat |
+| Extensions | `/extensions` | The unified Extensions Store |
+| Settings | `/settings` | Configuration |
+
+A few things changed with this topology:
+
+- **Extensions** (`/extensions`) is the unified **Extensions Store** — a single place to browse Skills, Plugins, and MCP servers by functional category. It **replaces the old ClawHub tab**, which has been removed. See [Extensions Store](/docs/en/concepts/extensions-store) for the full concept.
+- The legacy **MCP / Plugins / Skills** settings panels now live under **Settings > Advanced**, rather than as top-level tabs.
+
+> Switching modes only changes the panel surface; the underlying Gateway session and WebSocket connection are unchanged, so the same JSON-RPC protocol described below applies across all seven modes.
+
 ## Capabilities
 
 | Feature | Status |

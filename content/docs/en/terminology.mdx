@@ -7,6 +7,8 @@ description: "Standardized terminology and translations for Aleph concepts"
 
 This page establishes canonical names for Aleph concepts to ensure consistency across documentation, code, and UI.
 
+> **Panel top-level modes** (顶层模式): the desktop panel has seven, in nav order — Chat (`/chat`), Dashboard (`/dashboard`), Memory (`/memory`), Agents (`/agents`), Teams (`/teams`), Extensions (`/extensions`), Settings (`/settings`). Settings groups MCP / Plugins / Skills under an **Advanced** group; the ClawHub settings tab was removed.
+
 ## Core Concepts
 
 | English | Chinese | Definition |
@@ -27,6 +29,11 @@ This page establishes canonical names for Aleph concepts to ensure consistency a
 | English | Chinese | Definition |
 |---------|---------|------------|
 | **Memory** | 记忆系统 | Persistent knowledge storage (SQLite + sqlite-vec + markdown notes) |
+| **Memory Hub** | 记忆中心 | Unified memory panel hosting Graph view and Table view in one toggle (`/memory`); node identity == note path |
+| **Graph View** | 图谱视图 | Radial node-link canvas of memory notes (formerly the `/memory` canvas) |
+| **Table View** | 表格视图 | Faceted list of memory notes (formerly the `/dashboard/memory` vault) |
+| **Dream Insights** | 梦境洞察 | Read-only panel (Settings > Memory) backed by `dreaming.list_insights` — recent daily synthesis notes + dream-run history |
+| **Corrections** | 纠正记录 | Read-only panel (Settings > Memory) backed by `memory.list_corrections` — surfaces the correction → distillation lifecycle |
 | **Raw Memory (L0)** | 原始记忆 | Ephemeral session data before compression |
 | **Note (L1)** | 笔记 | Persistent markdown knowledge files |
 | **Wikilink** | 维基链接 | Obsidian-compatible `[[note-name]]` cross-references |
@@ -48,6 +55,18 @@ This page establishes canonical names for Aleph concepts to ensure consistency a
 | **Skill System** | 技能系统 | Framework for skill discovery, registration, and lifecycle |
 | **Dispatcher** | 调度器 | Tool registry, risk evaluation, and semantic retrieval |
 | **Hydration** |  hydrated tools | Semantic tool retrieval based on query context |
+
+## Extensions
+
+| English | Chinese | Definition |
+|---------|---------|------------|
+| **Extension** | 扩展 | User-facing umbrella for Skill + Plugin + MCP server — exactly one **kind** per Extension. See [Extensions Store](/docs/en/concepts/extensions-store) |
+| **Extensions Store** | 扩展商店 | Top-level panel mode (`/extensions`) for browsing/installing Extensions by functional category, with trust tiers and pre-install disclosure |
+| **ExtensionKind** | 扩展类型 | Store-facing kind enum `{Skill, Plugin, Mcp}` — distinct from the runtime `PluginKind {Wasm, Mcp, Static}` of the plugin host |
+| **Store Agent** | 商店智能体 | Built-in protected agent owning discover→curate→install→verify; cannot bypass system rails (specs, trust verdicts, SHA256, secrets) |
+| **Trust Tier** | 信任层级 | Source trust level: Official / Verified / Community / Unverified |
+| **Disclosure** | 披露 | Mandatory pre-install summary (command+args, secrets, network/fs reach, pinned version + SHA256, tier) |
+| **Source** | 源 | A catalog provider (plugin marketplaces, Official MCP Registry, Docker MCP Catalog) cached in SQLite for offline browse |
 
 ## Security
 
@@ -90,9 +109,11 @@ This page establishes canonical names for Aleph concepts to ensure consistency a
 |---------|---------|------------|
 | **A2A** | A2A | Agent-to-Agent protocol for inter-agent communication |
 | **ACP** | ACP | Agent Client Protocol for agent discovery and delegation |
-| **ClawHub** | ClawHub | Central hub for agent registration and service discovery |
-| **GroupChat** | 群聊 | Multi-agent group chat coordination |
-| **Team** | 团队 | Agent team management and role assignment |
+| **ClawHub** | ClawHub | Legacy registry — no longer a first-class Extensions source; settings tab removed, subsumed into the Extensions Store (long-tail only, read via the Store Agent) |
+| **Team** | 团队 | A leader + members group; on first message the leader plans first ("Team Strata") and the plan is welded into every member's prompt |
+| **Team Strata** | 团队战略协调 | Leader-first strategic planning that coordinates a team's members |
+| **Coord Task** | 协调任务 | A member's assigned task with status `Pending → InProgress → WaitingReview → Completed`, reviewed by the leader via `task_review` |
+| **Group Chat** | 群聊 | The three-panel team chat window (roster · attribution-bubble message flow · workspace), powered by the durable per-team thread (`teams.chat.*`) |
 | **WorldModel** | 世界模型 | Environmental state tracking for proactive behavior |
 | **Proactive Dispatcher** | 主动调度器 | Daemon that dispatches proactive tasks based on world state |
 | **Desktop Bridge** | 桌面桥 | UDS JSON-RPC protocol for desktop automation |
@@ -147,6 +168,9 @@ This page establishes canonical names for Aleph concepts to ensure consistency a
 | SolidificationDetector | EligibilityService | Part of old skill system |
 | SubagentTool | FlowRunTool | Architecture changed |
 | LoopToolRegistry | ToolService | Unified tool façade |
+| ClawHub settings tab | Extensions Store | ClawHub demoted to long-tail; settings tab removed |
+| `teams.run` | `teams.chat.send` / Coord Tasks | Method never existed — teams use the chat thread + tasks |
+| `coordination: sequential\|parallel\|hierarchical` | Team Strata (leader-first planning) | Coordination modes were fictional |
 
 ## See Also
 

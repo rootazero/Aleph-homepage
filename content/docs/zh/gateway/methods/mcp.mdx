@@ -5,6 +5,10 @@ description: "MCP 服务器管理 RPC 方法"
 
 MCP（模型上下文协议）方法管理外部 MCP 服务器——添加、更新、删除、启动、停止和查询通过 MCP 协议公开工具、资源和提示的服务器的能力。
 
+:::note
+`mcp.*` 是统一 `extensions.*` 门面背后的按类型后端之一。对于日常用户，MCP 服务器、插件和技能统一为一个概念——**扩展**（类型为 `Mcp`）。要按功能类别浏览和安装扩展，请参阅 [extensions.* 方法](/docs/zh/gateway/methods/extensions) 和 [扩展商店](/docs/zh/concepts/extensions-store)。下方的 `mcp.*` 方法仍是 MCP 插件宿主的底层控制面。
+:::
+
 ## 方法
 
 ### mcp.list
@@ -360,4 +364,6 @@ MCP（模型上下文协议）方法管理外部 MCP 服务器——添加、更
 ## 另请参阅
 
 - [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [extensions.* 方法](/docs/zh/gateway/methods/extensions)——统一扩展门面（`Skill` / `Plugin` / `Mcp`）
+- [扩展商店](/docs/zh/concepts/extensions-store)——按类别浏览和安装扩展
 - [架构：网关](/docs/zh/architecture/gateway)——网关架构

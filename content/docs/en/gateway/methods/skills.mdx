@@ -5,6 +5,8 @@ description: "Skill System v2 management RPC methods"
 
 Skill methods manage the Skill System v2 — a unified framework for skill discovery, registration, and lifecycle management. Skills add tools, prompts, and capabilities to agents.
 
+> **Note:** `skills.*` is one of the per-kind backends behind the unified `extensions.*` façade. For everyday users, Skills, Plugins, and MCP servers are unified under one **Extension** concept, browsed and installed via the [Extensions Store](/docs/en/concepts/extensions-store). The `skills.*` methods below remain the low-level skill backend; see [extensions.*](/docs/en/gateway/methods/extensions) for the umbrella RPC.
+
 ## Methods
 
 ### skills.status
@@ -219,4 +221,6 @@ Skills are loaded from the following directories (in order):
 ## See Also
 
 - [Concepts: Skills](/docs/en/concepts/skills) -- How the Skill System v2 works
+- [Concepts: Extensions Store](/docs/en/concepts/extensions-store) -- The unified Extension concept (Skill / Plugin / MCP)
+- [extensions.*](/docs/en/gateway/methods/extensions) -- Unified façade routing to the per-kind backends
 - [Methods Reference](/docs/en/gateway/methods) -- All method namespaces

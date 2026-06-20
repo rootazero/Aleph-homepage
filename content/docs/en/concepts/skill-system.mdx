@@ -5,6 +5,8 @@ description: "Domain-driven skill management with SKILL.md parsing, eligibility 
 
 The `skill` module implements Skill System v2, a domain-driven runtime for managing skills. It handles skill registration, eligibility evaluation, `SKILL.md` parsing, prompt injection, and lifecycle management.
 
+> For everyday users, Skills are surfaced for discovery and installation through the unified [Extensions Store](/docs/en/concepts/extensions-store), where a Skill is one of the three Extension kinds (`Skill`, `Plugin`, `Mcp`) browsed by functional category. This page describes the underlying Skill subsystem that the Store routes into.
+
 ## Design Philosophy
 
 1. **Domain-driven** — Skills are first-class domain objects with manifests, eligibility rules, and lifecycle states

@@ -3,21 +3,26 @@ title: "group_chat.*"
 description: "群聊和多方对话 RPC 方法"
 ---
 
-群聊方法管理多方对话——在共享聊天上下文中涉及多个 AI 代理和/或人类参与者的对话。
+群聊方法管理一个多智能体群聊**会话**——在共享对话中，多个智能体（以及用户）按归属轮流发言。
+
+> 面板三栏式群聊窗口中显示的持久化按团队聊天线程使用 `teams.chat.*` 方法（`teams.chat.send`、`teams.chat.thread`、`teams.chat.history`）——参见 [teams.*](/docs/zh/gateway/methods/teams)。下面的 `group_chat.*` 方法是那些团队线程所基于的更底层的多智能体群聊**会话原语**。
 
 ## 方法
 
-### group_chat.list
+### group_chat.start
 
-列出所有活动的群聊。
+在一组智能体之上启动一个新的群聊会话。
 
 **请求：**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "group_chat.list",
-  "params": {}
+  "method": "group_chat.start",
+  "params": {
+    "agents": ["planner", "coder", "reviewer"],
+    "topic": "Plan the v2 migration"
+  }
 }
 ```
 
@@ -27,73 +32,58 @@ description: "群聊和多方对话 RPC 方法"
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "chats": [
-      {
-        "id": "gc-1",
-        "name": "Project Planning",
-        "participants": ["user", "planner", "coder"],
-        "message_count": 42,
-        "created_at": "2024-01-15T10:30:00Z"
-      }
+    "session_id": "gc-1",
+    "agents": ["planner", "coder", "reviewer"],
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+### group_chat.continue
+
+用一条新消息推进会话，并让各智能体依次响应。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "group_chat.continue",
+  "params": {
+    "session_id": "gc-1",
+    "message": "What do you think about this approach?"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "messages": [
+      { "agent_id": "planner", "display_name": "Planner", "text": "This looks solid. I suggest..." },
+      { "agent_id": "coder", "display_name": "Coder", "text": "Implementation-wise, we could..." }
     ]
   }
 }
 ```
 
-### group_chat.create
+### group_chat.mention
 
-创建新的群聊。
-
-**请求：**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "group_chat.create",
-  "params": {
-    "name": "Code Review",
-    "participants": ["reviewer", "tester"]
-  }
-}
-```
-
-**响应：**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "chat": {
-      "id": "gc-2",
-      "name": "Code Review",
-      "participants": ["user", "reviewer", "tester"],
-      "created_at": "2024-01-15T10:30:00Z"
-    }
-  }
-}
-```
-
-**参数：**
-
-| 参数 | 类型 | 必填 | 说明 |
-|-----------|------|----------|-------------|
-| `name` | string | 是 | 聊天名称 |
-| `participants` | string[] | 是 | 要包含的代理角色（用户始终包含） |
-
-### group_chat.send
-
-向群聊发送消息。
+在会话中指名某个智能体（或所有人）——面板的 `@` 名册自动补全映射到此方法。使用 `@all` 来指名全部参与者。
 
 **请求：**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "group_chat.send",
+  "method": "group_chat.mention",
   "params": {
-    "chat_id": "gc-1",
-    "message": "What do you think about this approach?",
-    "sender": "user"
+    "session_id": "gc-1",
+    "mention": "coder",
+    "message": "Can you sketch the schema change?"
   }
 }
 ```
@@ -104,16 +94,8 @@ description: "群聊和多方对话 RPC 方法"
   "jsonrpc": "2.0",
   "id": 3,
   "result": {
-    "message_id": "msg-1",
-    "responses": [
-      {
-        "from": "planner",
-        "message": "This looks solid. I suggest..."
-      },
-      {
-        "from": "coder",
-        "message": "Implementation-wise, we could..."
-      }
+    "messages": [
+      { "agent_id": "coder", "display_name": "Coder", "text": "Here's the migration outline..." }
     ]
   }
 }
@@ -121,7 +103,7 @@ description: "群聊和多方对话 RPC 方法"
 
 ### group_chat.history
 
-获取群聊的消息历史。
+获取某个会话的消息历史（用于驱动归属气泡的回放）。
 
 **请求：**
 ```json
@@ -130,58 +112,52 @@ description: "群聊和多方对话 RPC 方法"
   "id": 4,
   "method": "group_chat.history",
   "params": {
-    "chat_id": "gc-1",
+    "session_id": "gc-1",
     "limit": 50
   }
 }
 ```
 
-### group_chat.add_participant
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "messages": [
+      { "agent_id": "user", "display_name": "You", "text": "Plan the v2 migration" },
+      { "agent_id": "planner", "display_name": "Planner", "text": "This looks solid. I suggest..." }
+    ]
+  }
+}
+```
 
-向群聊添加参与者。
+### group_chat.list
+
+列出活动的群聊会话。
 
 **请求：**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "group_chat.add_participant",
-  "params": {
-    "chat_id": "gc-1",
-    "participant": "documenter"
-  }
+  "method": "group_chat.list",
+  "params": {}
 }
 ```
 
-### group_chat.remove_participant
+### group_chat.end
 
-从群聊中移除参与者。
+结束一个群聊会话。
 
 **请求：**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 6,
-  "method": "group_chat.remove_participant",
+  "method": "group_chat.end",
   "params": {
-    "chat_id": "gc-1",
-    "participant": "tester"
-  }
-}
-```
-
-### group_chat.delete
-
-删除群聊。
-
-**请求：**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 7,
-  "method": "group_chat.delete",
-  "params": {
-    "chat_id": "gc-2"
+    "session_id": "gc-1"
   }
 }
 ```
@@ -189,4 +165,5 @@ description: "群聊和多方对话 RPC 方法"
 ## 另请参阅
 
 - [方法参考](/docs/zh/gateway/methods)——所有方法命名空间
+- [teams.*](/docs/zh/gateway/methods/teams)——持久化按团队聊天线程（`teams.chat.*`）与协调
 - [架构：群聊](/docs/zh/architecture/groupchat)——群聊架构

@@ -7,6 +7,8 @@ description: "Aleph 概念的标准化术语和翻译"
 
 本页为 Aleph 概念建立规范名称，以确保文档、代码和 UI 之间的一致性。
 
+> **面板顶层模式**（top-level modes）：桌面面板共有七个，按导航顺序排列——Chat (`/chat`)、Dashboard (`/dashboard`)、Memory (`/memory`)、Agents (`/agents`)、Teams (`/teams`)、Extensions (`/extensions`)、Settings (`/settings`)。Settings 将 MCP / Plugins / Skills 归入 **Advanced（高级）** 组；ClawHub 设置标签页已移除。
+
 ## 核心概念
 
 | English | 中文 | 定义 |
@@ -27,6 +29,11 @@ description: "Aleph 概念的标准化术语和翻译"
 | English | 中文 | 定义 |
 |---------|---------|------------|
 | **Memory** | 记忆系统 | 持久知识存储（SQLite + sqlite-vec + markdown 笔记） |
+| **Memory Hub** | 记忆中心 | 在单一切换中同时承载图谱视图与表格视图的统一记忆面板 (`/memory`)；节点身份 == 笔记路径 |
+| **Graph View** | 图谱视图 | 记忆笔记的放射状节点-连线画布（原 `/memory` 画布） |
+| **Table View** | 表格视图 | 记忆笔记的分面列表（原 `/dashboard/memory` 库） |
+| **Dream Insights** | 梦境洞察 | 只读面板（Settings > Memory），由 `dreaming.list_insights` 支撑——近期每日综合笔记 + dream-run 历史 |
+| **Corrections** | 纠正记录 | 只读面板（Settings > Memory），由 `memory.list_corrections` 支撑——呈现纠正 → 蒸馏的生命周期 |
 | **Raw Memory (L0)** | 原始记忆 | 压缩前的短暂会话数据 |
 | **Note (L1)** | 笔记 | 持久的 markdown 知识文件 |
 | **Wikilink** | 维基链接 | Obsidian 兼容的 `[[note-name]]` 交叉引用 |
@@ -48,6 +55,18 @@ description: "Aleph 概念的标准化术语和翻译"
 | **Skill System** | 技能系统 | 技能发现、注册和生命周期的框架 |
 | **Dispatcher** | 调度器 | 工具注册表、风险评估和语义检索 |
 | **Hydration** |  hydrated tools | 基于查询上下文的语义工具检索 |
+
+## 扩展
+
+| English | 中文 | 定义 |
+|---------|---------|------------|
+| **Extension** | 扩展 | 面向用户的 Skill + Plugin + MCP 服务器统称——每个 Extension 恰好属于一种**类型**。参见[扩展商店](/docs/zh/concepts/extensions-store) |
+| **Extensions Store** | 扩展商店 | 顶层面板模式 (`/extensions`)，按功能类别浏览/安装扩展，附带信任层级与安装前披露 |
+| **ExtensionKind** | 扩展类型 | 面向商店的类型枚举 `{Skill, Plugin, Mcp}`——与插件宿主运行时的 `PluginKind {Wasm, Mcp, Static}` 不同 |
+| **Store Agent** | 商店智能体 | 内置受保护智能体，负责 discover→curate→install→verify；无法绕过系统约束（specs、信任裁决、SHA256、密钥） |
+| **Trust Tier** | 信任层级 | 源的信任级别：Official / Verified / Community / Unverified |
+| **Disclosure** | 披露 | 强制的安装前摘要（command+args、密钥、网络/文件系统触达、固定版本 + SHA256、层级） |
+| **Source** | 源 | 目录提供方（插件市场、Official MCP Registry、Docker MCP Catalog），在 SQLite 中缓存以供离线浏览 |
 
 ## 安全
 
@@ -90,9 +109,11 @@ description: "Aleph 概念的标准化术语和翻译"
 |---------|---------|------------|
 | **A2A** | A2A | Agent-to-Agent 协议，用于 Agent 间通信 |
 | **ACP** | ACP | Agent Client Protocol，用于 Agent 发现和委托 |
-| **ClawHub** | ClawHub | Agent 注册和服务发现的中心枢纽 |
-| **GroupChat** | 群聊 | 多 Agent 群聊协调 |
-| **Team** | 团队 | Agent 团队管理和角色分配 |
+| **ClawHub** | ClawHub | 遗留注册表——不再是一级扩展源；设置标签页已移除，并入扩展商店（仅作长尾，由商店智能体读取） |
+| **Team** | 团队 | 队长 + 成员的群组；首条消息时队长先规划（"团队战略协调"），并将该规划焊入每个成员的提示词 |
+| **Team Strata** | 团队战略协调 | 由队长先行的战略规划，协调团队成员 |
+| **Coord Task** | 协调任务 | 成员被分配的任务，状态为 `Pending → InProgress → WaitingReview → Completed`，由队长通过 `task_review` 审核 |
+| **Group Chat** | 群聊 | 三栏团队群聊窗口（花名册 · 归属气泡消息流 · 工作区），由持久的每团队线程 (`teams.chat.*`) 驱动 |
 | **WorldModel** | 世界模型 | 用于主动行为的环境状态跟踪 |
 | **Proactive Dispatcher** | 主动调度器 | 基于世界状态调度主动任务的守护进程 |
 | **Desktop Bridge** | 桌面桥 | 用于桌面自动化的 UDS JSON-RPC 协议 |
@@ -147,6 +168,9 @@ description: "Aleph 概念的标准化术语和翻译"
 | SolidificationDetector | EligibilityService | 旧技能系统的一部分 |
 | SubagentTool | FlowRunTool | 架构更改 |
 | LoopToolRegistry | ToolService | 统一工具外观 |
+| ClawHub 设置标签页 | 扩展商店 | ClawHub 降级为长尾；设置标签页已移除 |
+| `teams.run` | `teams.chat.send` / 协调任务 | 该方法从不存在——团队使用聊天线程 + 任务 |
+| `coordination: sequential\|parallel\|hierarchical` | 团队战略协调（队长先行规划） | 协调模式纯属虚构 |
 
 ## 另请参阅
 

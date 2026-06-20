@@ -13,6 +13,7 @@
     "workspaces",
     "skills",
     "extensions",
+    "extensions-store",
     "prompt-system",
     "protocol-adapters",
     "mcp-integration",

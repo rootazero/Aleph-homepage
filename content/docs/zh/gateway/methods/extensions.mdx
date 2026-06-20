@@ -1,0 +1,461 @@
+---
+title: "extensions.*"
+description: "统一扩展门面 RPC 方法（扩展商店）"
+---
+
+扩展方法是 Aleph 三种扩展类型——`Skill`、`Plugin` 和 `Mcp`——之上的统一门面。对于日常用户，这些是同一个面向用户的概念：**扩展**。`extensions.*` 命名空间驱动**扩展商店**面板（`/extensions`），它按功能类别浏览三者、呈现信任层级，并驱动受信任门控的安装。这是一层薄联邦：每个方法按类型路由到现有的 `skills.*`、`plugins.*` 和 `mcp.*` 后端。
+
+> **另见：** [概念：扩展商店](/docs/zh/concepts/extensions-store) 解释了伞形模型、信任层级、商店智能体以及安装前的披露流程。各类型后端仍可用于底层控制：[skills.*](/docs/zh/gateway/methods/skills)、[plugins.*](/docs/zh/gateway/methods/plugins)、[mcp.*](/docs/zh/gateway/methods/mcp)。
+
+一个 `ExtensionEntry`（`extensions.catalog` 和 `extensions.installed` 返回的行结构）形如：
+
+```json
+{
+  "id": "mcp:registry/exa-search",
+  "kind": "Mcp",
+  "name": "Exa Search",
+  "description": "Web and code search via the Exa API.",
+  "category": "Search",
+  "trust_tier": "Verified",
+  "installed": false,
+  "enabled": false,
+  "requires_config": true
+}
+```
+
+| 字段 | 类型 | 说明 |
+|-------|------|-------------|
+| `id` | string | 稳定的扩展标识符（带类型前缀） |
+| `kind` | string | `"Skill"`、`"Plugin"`、`"Mcp"` 之一 |
+| `name` | string | 显示名称 |
+| `description` | string | 简短摘要 |
+| `category` | string | 功能类别（Search、Developer、Data、Productivity、Writing、Communication、Knowledge、Files、Design、Automation、Finance、Utilities、Other） |
+| `trust_tier` | string | `"Official"`、`"Verified"`、`"Community"` 或 `"Unverified"` |
+| `installed` | boolean | 扩展当前是否已安装 |
+| `enabled` | boolean | 扩展是否已启用（仅在已安装时有意义） |
+| `requires_config` | boolean | 运行前是否需要配置/密钥值 |
+
+## 方法
+
+### extensions.catalog
+
+浏览已缓存的目录（支持离线；由 SQLite 支撑）。结果可按类型、功能类别、源或自由文本查询过滤。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "extensions.catalog",
+  "params": {
+    "category": "Search",
+    "kind": "Mcp",
+    "query": "web"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "entries": [
+      {
+        "id": "mcp:registry/exa-search",
+        "kind": "Mcp",
+        "name": "Exa Search",
+        "description": "Web and code search via the Exa API.",
+        "category": "Search",
+        "trust_tier": "Verified",
+        "installed": false,
+        "enabled": false,
+        "requires_config": true
+      }
+    ]
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必需 | 说明 |
+|-----------|------|----------|-------------|
+| `kind` | string | 否 | 按 `"Skill"`、`"Plugin"` 或 `"Mcp"` 过滤 |
+| `category` | string | 否 | 按功能类别过滤 |
+| `source_id` | string | 否 | 按目录源过滤（参见 `extensions.sources.list`） |
+| `query` | string | 否 | 在名称和描述上进行自由文本搜索 |
+
+### extensions.installed
+
+返回跨全部三种类型的已安装扩展的对账列表，包括在商店之外手动安装的项目。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "extensions.installed",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "entries": [
+      {
+        "id": "mcp:registry/exa-search",
+        "kind": "Mcp",
+        "name": "Exa Search",
+        "description": "Web and code search via the Exa API.",
+        "category": "Search",
+        "trust_tier": "Verified",
+        "installed": true,
+        "enabled": true,
+        "requires_config": true
+      },
+      {
+        "id": "skill:user/web_search",
+        "kind": "Skill",
+        "name": "Web Search",
+        "description": "Manually installed skill.",
+        "category": "Search",
+        "trust_tier": "Unverified",
+        "installed": true,
+        "enabled": true,
+        "requires_config": false
+      }
+    ]
+  }
+}
+```
+
+### extensions.disclosure
+
+返回某个目录条目强制性的安装前披露载荷：确切的命令和参数、声明的密钥及其用途、网络/文件系统可达范围、固定版本 + SHA256、信任层级，以及任何注入加固发现项。UI 必须在 `extensions.install` 之前展示此内容。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "extensions.disclosure",
+  "params": {
+    "id": "mcp:registry/exa-search"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "kind": "Mcp",
+    "trust_tier": "Verified",
+    "risk_class": "mcp-remote",
+    "command": "npx",
+    "args": ["-y", "@exa/mcp-server"],
+    "version": "1.4.0",
+    "sha256": "sha256:9f2c...e1a4",
+    "secrets": [
+      { "key": "EXA_API_KEY", "purpose": "Authenticate to the Exa search API" }
+    ],
+    "network": ["api.exa.ai"],
+    "filesystem": [],
+    "injection_findings": [],
+    "requires_ack": false
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必需 | 说明 |
+|-----------|------|----------|-------------|
+| `id` | string | 是 | 要披露的目录扩展 ID |
+
+> `risk_class` 反映扩展能做什么：MCP-stdio 条目（`"runs commands"`）风险最高，技能和插件（`"can instruct the agent"`）为中等，远程 MCP 较缓和。来自社区或 LLM 派生的 MCP 条目会设置 `requires_ack: true`，要求在安装时明确进行"我了解此风险"的确认。
+
+### extensions.configure
+
+为扩展写入配置和密钥值。密钥值存储在操作系统钥匙串/保管库中——绝不以明文形式——并仅通过键引用呈现。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "extensions.configure",
+  "params": {
+    "id": "mcp:registry/exa-search",
+    "config": { "max_results": 10 },
+    "secrets": { "EXA_API_KEY": "sk-exa-..." }
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "requires_config": false
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必需 | 说明 |
+|-----------|------|----------|-------------|
+| `id` | string | 是 | 要配置的扩展 ID |
+| `config` | object | 否 | 非密钥配置键/值对 |
+| `secrets` | object | 否 | 密钥值；持久化到操作系统钥匙串/保管库 |
+
+### extensions.install
+
+安装扩展。此操作受信任门控：服务端会重新校验规约、信任判定、固定版本和 SHA256。结果可能表明安装已完成、需要确认（`needs_ack`）、缺少必需的配置/密钥（`missing`），或返回安装后的验证结果。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "extensions.install",
+  "params": {
+    "id": "mcp:registry/exa-search",
+    "ack": false
+  }
+}
+```
+
+**响应（需要确认）：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "status": "needs_ack",
+    "id": "mcp:registry/exa-search",
+    "reason": "Community/LLM-derived MCP requires explicit risk acknowledgement."
+  }
+}
+```
+
+**响应（缺少配置）：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "status": "missing",
+    "id": "mcp:registry/exa-search",
+    "missing_config": ["EXA_API_KEY"]
+  }
+}
+```
+
+**响应（已安装 + 已验证）：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "result": {
+    "status": "installed",
+    "id": "mcp:registry/exa-search",
+    "verify": { "ok": true, "sha256_matched": true }
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必需 | 说明 |
+|-----------|------|----------|-------------|
+| `id` | string | 是 | 要安装的目录扩展 ID |
+| `ack` | boolean | 否 | 为社区/LLM 派生的 MCP 确认"我了解此风险" |
+
+> OCI / Docker 镜像 MCP 条目可在目录中浏览，但在 v1 中**不可安装**。沙箱化执行是快速跟进项，同样不在 v1 范围内——安装绝不会绕过规约、信任判定、SHA256 校验或密钥处理。
+
+### extensions.toggle
+
+在不卸载的情况下启用或禁用一个已安装的扩展。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "extensions.toggle",
+  "params": {
+    "id": "mcp:registry/exa-search",
+    "enabled": false
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "enabled": false
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必需 | 说明 |
+|-----------|------|----------|-------------|
+| `id` | string | 是 | 已安装的扩展 ID |
+| `enabled` | boolean | 是 | 目标启用状态 |
+
+### extensions.uninstall
+
+移除一个已安装的扩展并撤销其存储的密钥。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "extensions.uninstall",
+  "params": {
+    "id": "mcp:registry/exa-search"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "id": "mcp:registry/exa-search",
+    "uninstalled": true
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必需 | 说明 |
+|-----------|------|----------|-------------|
+| `id` | string | 是 | 要移除的已安装扩展 ID |
+
+### extensions.sources.list
+
+列出目录源，每个源带有其信任层级以及它贡献的类型。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "extensions.sources.list",
+  "params": {}
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "result": {
+    "sources": [
+      {
+        "id": "aleph-marketplace",
+        "name": "Aleph / Claude Plugin Marketplace",
+        "trust_tier": "Official",
+        "kinds": ["Plugin", "Skill"],
+        "last_synced": "2026-06-20T09:00:00Z"
+      },
+      {
+        "id": "mcp-registry",
+        "name": "Official MCP Registry (registry.modelcontextprotocol.io)",
+        "trust_tier": "Community",
+        "kinds": ["Mcp"],
+        "last_synced": "2026-06-20T09:00:00Z"
+      },
+      {
+        "id": "docker-mcp-catalog",
+        "name": "Docker MCP Catalog",
+        "trust_tier": "Verified",
+        "kinds": ["Mcp"],
+        "last_synced": "2026-06-20T09:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+### extensions.sources.refresh
+
+触发对一个或全部目录源的后台重新同步。已缓存的 SQLite 目录会被更新，以保持浏览的离线能力。
+
+**请求：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "extensions.sources.refresh",
+  "params": {
+    "source_id": "mcp-registry"
+  }
+}
+```
+
+**响应：**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "result": {
+    "refreshing": true,
+    "source_id": "mcp-registry"
+  }
+}
+```
+
+**参数：**
+
+| 参数 | 类型 | 必需 | 说明 |
+|-----------|------|----------|-------------|
+| `source_id` | string | 否 | 要刷新的源；省略则刷新全部源 |
+
+## 商店智能体工具
+
+**商店智能体**是一个内置的、受保护（不可删除）的智能体，负责 discover → curate → install → verify 生命周期。它策展目录并驱动安装，但无法绕过系统护栏（规约、信任判定、SHA256、密钥处理）——与任何用户发起的 `extensions.install` 受到相同的门控。
+
+这五个工具构成它的私有工具集。它们是**内部/仅限智能体**的，不向聊天智能体暴露：
+
+| 工具 | 用途 |
+|------|---------|
+| `store_catalog_sync` | 将源目录同步到缓存的商店中 |
+| `store_fetch_docs` | 获取扩展的文档（含长尾 URL/repo 读取） |
+| `store_resolve_spec` | 解析安装规约（命令、参数、版本、SHA256） |
+| `store_install_run` | 执行已解析的安装 |
+| `store_install_verify` | 验证已安装的扩展（SHA256 + 健康检查） |
+
+## 另见
+
+- [概念：扩展商店](/docs/zh/concepts/extensions-store) —— 统一的扩展伞形概念、信任层级与商店智能体
+- [skills.*](/docs/zh/gateway/methods/skills) —— 技能后端（类型 `Skill`）
+- [plugins.*](/docs/zh/gateway/methods/plugins) —— 插件宿主后端（类型 `Plugin`）
+- [mcp.*](/docs/zh/gateway/methods/mcp) —— MCP 服务器后端（类型 `Mcp`）
+- [方法参考](/docs/zh/gateway/methods) —— 所有方法命名空间

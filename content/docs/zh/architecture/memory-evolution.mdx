@@ -80,6 +80,8 @@ pub trait MemoryExtension: Send + Sync {
 
 扩展在启动时注册，并接收所有记忆事件的回调。
 
+> `MemoryExtension` trait 此后已收敛到五个钩子点：`on_capture`、`on_retrieve`、`on_delegation`、`on_pre_compress` 和 `on_session_switch`。
+
 ---
 
 ## Spec A：策划的热记忆
@@ -138,6 +140,32 @@ pub trait MemoryExtension: Send + Sync {
 
 ---
 
+## 记忆中心统一
+
+**状态：** 已发布（2026-06-20）  
+**重点：** 将两个原有的记忆界面折叠到一个宿主中。
+
+放射状的图谱画布（原 `/memory`）和分面式的表格库（原 `/dashboard/memory`）现在合并为单一的**记忆中心**，配备共享工具栏 —— 图谱视图 ↔ 表格视图切换、统一搜索和共享的智能体选择器。
+
+- 节点身份即笔记路径；同一篇笔记在两个视图中是同一个实体。
+- 双向导航：表格行的**在图谱中查看**会高亮对应节点，图谱节点的**在列表中查看**会将表格跳转到该笔记的分面/页面并打开其抽屉。
+- 旧的 `/dashboard/memory` 路由现在重定向到 `/memory?view=table`。
+
+---
+
+## 治理呈现
+
+**状态：** 已发布（2026-06-20）  
+**重点：** 记忆治理生命周期的只读可观察性。
+
+写入仍由 LLM/工具驱动；这些界面仅作观察。两者都位于 **设置 → 记忆** 下。
+
+- **梦境洞察**面板 —— 来自梦境守护进程的近期每日综合笔记以及 dream-run 历史，由 `dreaming.list_insights` 支撑（并通过 `dreaming.run_now` 按需触发一次综合）。
+- **纠正记录**面板 —— 呈现纠正 → 蒸馏的生命周期，由 `memory.list_corrections` 支撑。
+- **检索追踪** —— `memory.retrieve_with_trace` 接入真实的 `NoteFactRetrieval` 评分流水线，返回各阶段的遥测数据（查询 → 候选池 → BM25 + 向量评分 → RRF 融合 → 截断 → 排名），用于调试某个事实为何浮现或未浮现。
+
+---
+
 ## 时间线
 
 | 日期 | 里程碑 |
@@ -150,6 +178,8 @@ pub trait MemoryExtension: Send + Sync {
 | 2025-09 | Spec B：会话搜索摘要 |
 | 2025-10 | Spec C：跨进程安全 |
 | 2026-04 | 记忆主权清理（删除 ValueEstimator、MemoryTier 等） |
+| 2026-06 | 记忆中心统一（图谱 + 表格） |
+| 2026-06 | 治理呈现（梦境洞察 + 纠正记录） |
 
 ---
 

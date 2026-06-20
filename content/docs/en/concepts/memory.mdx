@@ -166,6 +166,52 @@ Scoring stages (6 stages):
 
 ---
 
+## Memory Hub
+
+The desktop **Memory** top-level mode (`/memory`) is the **Memory Hub** — one host that unifies what were
+previously two separate surfaces:
+
+| View | Was | Shows |
+|---|---|---|
+| **Graph view** | the radial "canvas" at `/memory` | Notes as nodes, wikilinks as edges, graph traversal of connected concepts |
+| **Table view** | the faceted "vault" at `/dashboard/memory` | Notes as rows, filtered/paged by category facet |
+
+Both live behind a single shared toolbar:
+
+- **Graph ↔ Table toggle** — switch view without losing context
+- **Unified search** — one query box drives both views
+- **Shared agent selector** — scope both views to the same agent's memory
+
+**Node identity is the note path.** The same note path identifies a graph node and a table row, which makes
+navigation bidirectional:
+
+- A table row's **"View in graph"** highlights the matching node in the Graph view.
+- A graph node's **"View in list"** jumps the Table view to that note's facet/page and opens its drawer.
+
+> The old `/dashboard/memory` route now redirects to `/memory?view=table`.
+
+---
+
+## Governance Visibility
+
+Memory **writes stay LLM- and tool-driven** — the Dream Daemon and correction lifecycle mutate notes on their
+own. The Memory Hub adds **read-only observability** panels under **Settings → Memory** so you can see *what*
+the system has been doing without taking the pen out of the LLM's hand:
+
+| Panel | Backed by | Surfaces |
+|---|---|---|
+| **Dream Insights** | `dreaming.list_insights` | Recent daily synthesis notes from the dream daemon + dream-run history |
+| **Corrections** | `memory.list_corrections` | The correction → distillation lifecycle |
+
+Both panels are strictly read-only — they observe, they do not write. To trigger a synthesis pass on demand
+(rather than waiting for idle), the daemon exposes `dreaming.run_now`.
+
+For debugging *why* a fact did or didn't surface, `memory.retrieve_with_trace` runs the real
+`NoteFactRetrieval` scoring pipeline and returns per-stage telemetry (query → candidate pool → BM25 + vector
+scores → RRF fusion → cutoff → ranked).
+
+---
+
 ## Memory Evolution Specs
 
 Aleph's memory system has evolved through a series of specs:

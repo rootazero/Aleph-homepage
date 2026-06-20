@@ -225,6 +225,7 @@ These namespaces provide access to extended functionality. Methods marked with `
 | Namespace | Methods | Description |
 |-----------|---------|-------------|
 | `skills.*` | `status`, `update`, `install_dep`, `remove`, `install` | Skill System v2 management |
+| `extensions.*` | `catalog`, `installed`, `disclosure`, `configure`, `install`, `toggle`, `uninstall`, `sources.list`, `sources.refresh` | Unified [Extensions Store](/docs/en/concepts/extensions-store) façade over skill/plugin/MCP |
 | `plugin.*` | `list`, `install`, `installFromZip`, `uninstall`, `enable`, `disable`, `load`, `unload`, `reload`, `callTool`, `executeCommand` | Plugin lifecycle (canonical) |
 | `plugins.*` | `list`, `install`, `installFromZip`, `uninstall`, `enable`, `disable`, `load`, `unload`, `callTool`, `executeCommand` | Plugin lifecycle (legacy) |
 | `plugin.marketplace.*` | `list`, `add`, `update`, `remove`, `install` | Plugin marketplace |
@@ -243,10 +244,10 @@ These namespaces provide access to extended functionality. Methods marked with `
 
 | Namespace | Methods | Description |
 |-----------|---------|-------------|
-| `group_chat.*` | `start`, `continue`, `mention`, `end`, `list`, `history` | Multi-agent group chat |
-| `teams.*` | `list`, `get`, `disband`, `delete` | Team management |
+| `group_chat.*` | `start`, `continue`, `mention`, `end`, `list`, `history` | Multi-agent group chat session primitive |
+| `teams.*` | `create`, `get`, `list`, `rename`, `disband`, `delete`, `chat.send`, `chat.thread`, `chat.history`, `create_task`, `update_task`, `list_tasks`, `task.*`, `snapshot.*`, `workflow.*`, `acp_member.*`, `usage` | Team management, group-chat thread, kanban tasks, snapshots & workflow |
 | `arena.*` | `create`, `query`, `settle` | Multi-agent arena |
-| `clawhub.*` | `search`, `browse`, `detail`, `install` | ClawHub agent registry |
+| `clawhub.*` | `search`, `browse`, `detail`, `install` | ClawHub skill registry (no longer a first-class store source; reachable as Store Agent long-tail) |
 
 ### Scheduling & Services
 

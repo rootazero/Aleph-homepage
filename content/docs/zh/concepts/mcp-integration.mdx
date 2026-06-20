@@ -5,6 +5,8 @@ description: "用于外部工具服务器的模型上下文协议集成，支持
 
 `mcp` 模块将 Aleph 与外部 MCP（模型上下文协议）服务器集成。它提供传输抽象、工具发现、资源管理和来自第三方 MCP 服务器的提示模板。
 
+> MCP 服务器是三种**扩展**类型（`Skill`、`Plugin`、`Mcp`）之一。Official MCP Registry 是[扩展商店](/docs/zh/concepts/extensions-store)中的一个**源**，在那里 MCP 服务器与插件、技能一起按功能类别浏览和安装。本页描述的是底层 MCP 宿主；关于日常的安装/发现流程，请参阅扩展商店。
+
 ## 设计理念
 
 1. **传输抽象** — 所有 MCP 传输实现相同的 `McpTransport` trait

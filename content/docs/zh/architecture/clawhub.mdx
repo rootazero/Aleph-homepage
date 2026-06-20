@@ -3,6 +3,8 @@ title: "ClawHub"
 description: "用于 ClawHub 技能注册表集成的 HTTP 客户端和类型。"
 ---
 
+> **已弃用 —— 历史参考。** ClawHub 不再是一等源。它的专属设置标签页已被移除，其发现职责被纳入[扩展商店](/docs/zh/concepts/extensions-store)，该商店以**扩展**为统一概念，按功能类别浏览技能、插件和 MCP 服务器。如今的一等源是 Claude/Aleph 插件市场、Official MCP Registry 和 Docker MCP Catalog。ClawHub 仅可通过商店智能体的长尾路径访问（智能体读取某个 URL/仓库，以安装任何已编排源都未覆盖的扩展）。以下架构作为 `clawhub` 模块的历史参考予以保留。
+
 `clawhub` 模块提供与 [ClawHub](https://clawhub.ai) 的 HTTP 客户端集成，ClawHub 是一个用于发现和安装社区贡献技能技能注册表。
 
 ## 概览
@@ -113,5 +115,6 @@ api_token = "${CLAWHUB_TOKEN}"
 
 ## 另请参阅
 
-- [技能](../concepts/skills) —— 技能系统概览
-- [技能安装器](../concepts/skills#installation) —— 从 ClawHub 安装技能
+- [扩展商店](/docs/zh/concepts/extensions-store) —— 当前用于发现和安装技能、插件及 MCP 服务器的统一入口（取代 ClawHub）
+- [技能](/docs/zh/concepts/skills) —— 技能系统概览
+- [技能安装器](/docs/zh/concepts/skills#installation) —— 安装技能

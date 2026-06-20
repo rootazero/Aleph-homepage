@@ -8,10 +8,11 @@ The `teams` module provides team management for multi-agent collaboration, enabl
 ## Overview
 
 Teams enables:
-- **Team creation** — Define teams of agents with specific roles
+- **Team creation** — Define teams of agents with a designated **leader** and members
+- **Strategic coordination** ("Team Strata") — The leader plans first; the plan is welded into every member's prompt
+- **Coord Tasks** — Per-member task assignment with a `Pending → InProgress → WaitingReview → Completed` lifecycle
+- **Verification loop** — The leader accepts or rejects member deliverables before they are considered done
 - **Lifecycle management** — Track team state from formation to completion
-- **Plan approval** — Multi-stage approval for team plans
-- **Task tracking** — Per-team task assignment and progress
 - **SQLite persistence** — Durable storage for team data
 
 ## Architecture
@@ -125,6 +126,62 @@ pub enum ApprovalState {
 }
 ```
 
+## Strategic Coordination ("Team Strata")
+
+Teams have a **leader** and members. On a team's **first message**, the leader plans
+first — before any member begins work. This planning pass fires **once per team** (a
+fire-once strategy keyed by the team), and the resulting plan is **welded into every
+member's prompt** so that all members share the same strategic context.
+
+```
+First message to a team
+        │
+        ▼
+  Leader plans first  ──►  Strategy (fire-once, keyed by team)
+        │
+        ▼
+  Plan welded into every member's prompt
+        │
+        ▼
+  Members work under assigned Coord Tasks
+```
+
+Members do not act independently of the plan: each member operates against an assigned
+**Coord Task**, and the welded plan keeps their work aligned with the leader's strategy.
+
+## Coord Tasks & the Verification Loop
+
+Each member works under a **Coord Task** whose status moves through a fixed lifecycle:
+
+```
+Pending → InProgress → WaitingReview → Completed
+```
+
+When a member submits a deliverable, the task enters `WaitingReview` and a **synthetic
+re-dispatch** deterministically routes the submission back to the **leader** for review.
+The leader accepts or rejects the deliverable using the `task_review` tool:
+
+```jsonc
+// task_review tool call
+{
+  "task_id": "<coord-task-id>",
+  "verdict": "approve",   // or "reject"
+  "feedback": "..."        // optional
+}
+```
+
+An `approve` verdict advances the task to `Completed`; a `reject` verdict sends it back
+for rework. This loop keeps deliverables under the leader's control rather than being
+auto-accepted on submission.
+
+### Coord Tasks & the group-chat broadcaster
+
+`CoordTaskStore` is threaded into the group-chat broadcaster, so task state and the team
+work-thread stay in sync. A member task submit is the trigger for the deterministic
+re-dispatch described above: the broadcaster routes the submission to the leader, who
+reviews it via `task_review`. The durable team work-thread is what later powers the
+attribution-bubble replay in the [group chat](./groupchat) window.
+
 ## Configuration
 
 ```toml
@@ -133,6 +190,30 @@ enabled = true
 max_team_size = 10
 require_plan_approval = true
 ```
+
+## JSON-RPC Surface
+
+Teams are driven over JSON-RPC. The confirmed `teams.*` methods:
+
+| Group | Methods |
+|-------|---------|
+| Lifecycle | `teams.create` (leader + members + optional `auto_name`), `teams.get`, `teams.list`, `teams.rename`, `teams.disband`, `teams.delete` |
+| Work-thread | `teams.chat.send`, `teams.chat.thread`, `teams.chat.history` |
+| Coord Tasks | `teams.create_task`, `teams.update_task`, `teams.list_tasks`, `teams.add_task_comment`, `teams.list_task_comments`, `teams.list_task_events`, `teams.list_task_runs` |
+| Task control | `teams.task.pause`, `teams.task.resume`, `teams.task.retry`, `teams.task.skip`, `teams.task.trace`, `teams.task.journal.get`, `teams.task.journal.list` |
+| Snapshots | `teams.snapshot.create`, `teams.snapshot.get`, `teams.snapshot.list`, `teams.snapshot.restore`, `teams.snapshot.delete` |
+| Workflow | `teams.workflow.export_canvas`, `teams.workflow.import_canvas`, `teams.workflow.approve_step`, `teams.workflow.reject_step`, `teams.workflow.retry_step` |
+| ACP members | `teams.acp_member.add`, `teams.acp_member.list`, `teams.acp_member.remove` |
+| Misc | `teams.list_templates`, `teams.usage` |
+
+The durable per-team group-chat thread is exposed through `teams.chat.send` /
+`teams.chat.thread` / `teams.chat.history`; this history powers the attribution-bubble
+replay in the [group chat](./groupchat) window. The `agents.teams` method returns a team
+list augmented with a small `members_preview` and `last_message`.
+
+> The leader's accept/reject decision is taken via the `task_review` tool (not a JSON-RPC
+> method). Members work under Coord Tasks created/updated through `teams.create_task` /
+> `teams.update_task`.
 
 ## Code Location
 

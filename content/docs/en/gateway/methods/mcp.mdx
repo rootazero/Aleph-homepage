@@ -5,6 +5,10 @@ description: "MCP server management RPC methods"
 
 MCP (Model Context Protocol) methods manage external MCP servers — add, update, delete, start, stop, and query capabilities from servers that expose tools, resources, and prompts via the MCP protocol.
 
+:::note
+`mcp.*` is one of the per-kind backends behind the unified `extensions.*` façade. For everyday users, MCP servers, plugins, and skills are unified under one concept — the **Extension** (kind `Mcp`). To browse and install Extensions by functional category, see [extensions.* Methods](/docs/en/gateway/methods/extensions) and [Extensions Store](/docs/en/concepts/extensions-store). The `mcp.*` methods below remain the low-level control surface for the MCP plugin host.
+:::
+
 ## Methods
 
 ### mcp.list
@@ -360,4 +364,6 @@ Cancel a pending MCP approval request.
 ## See Also
 
 - [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [extensions.* Methods](/docs/en/gateway/methods/extensions) -- Unified Extension façade (`Skill` / `Plugin` / `Mcp`)
+- [Extensions Store](/docs/en/concepts/extensions-store) -- Browse and install Extensions by category
 - [Architecture: Gateway](/docs/en/architecture/gateway) -- Gateway architecture

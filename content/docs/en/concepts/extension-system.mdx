@@ -5,6 +5,8 @@ description: "Plugin and skill management with WASM and Node.js runtimes, manife
 
 The `extension` module provides a unified extension system for Aleph. It supports both plugins (WASM and Node.js runtimes) and skills, with manifest-driven registration, a unified registry, and hook-based integration.
 
+> **Disambiguation.** In the codebase, `extension` (the `src/extension/` module documented on this page) is the **plugin host** — the backend that loads, registers, and runs WASM/Node.js plugins. This is distinct from the user-facing umbrella concept "Extension", which unifies skills, plugins, and MCP servers under one idea and is browsed through the **Extensions Store**. That umbrella and its store live in a separate `src/store/` module; see [Extensions Store](/docs/en/concepts/extensions-store).
+
 ## Design Philosophy
 
 1. **Unified registry** — Everything a plugin can provide (tools, channels, HTTP routes) is registered in a single `PluginRegistry`
@@ -218,4 +220,4 @@ The `PluginWatcher` monitors these directories for changes and triggers hot relo
 
 - [Capability System](./capability-system) — Plugin capability declarations
 - [Skill System](./skill-system) — Skill management
-- [Extensions](./extensions) — Conceptual overview (if exists)
+- [Extensions Store](/docs/en/concepts/extensions-store) — The user-facing umbrella concept (skill + plugin + MCP) and its store

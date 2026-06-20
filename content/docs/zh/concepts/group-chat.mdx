@@ -1,180 +1,125 @@
 ---
 title: "群聊"
-description: "具有基于人格的协作讨论的多代理群聊，跨越任何消息通道。"
+description: "面板群聊窗口：一个三面板团队聊天界面，配备归属气泡、侧边栏历史和 @ 提及自动补全。"
 ---
 
-`group_chat` 模块为多人格协作讨论提供通道无关的编排。多个具有不同人格的代理可以参与共享对话，每个代理贡献其专业知识以协作解决问题。
+群聊是一个面板界面，[团队](/docs/zh/concepts/teams)中的多个代理在一个共享、持久的线程中对话。它把团队从"能运行"提升为"好用、易回访"：发言者在视觉上彼此区分，历史可从侧边栏恢复，`@` 提及是可被发现的，而不必手敲。
 
 ## 设计理念
 
-1. **人格驱动** — 每个参与者具有不同的角色、专业知识和通信风格
-2. **通道无关** — 通过 Discord、Telegram、CLI 或任何连接的接口工作
-3. **共享会话** — 所有参与者看到完整的对话上下文
+1. **身份优先** — 每条消息都通过 emoji 头像 + 显示名归属到某个发言者，而不是埋在元数据里。
+2. **可恢复** — 团队聊天像单代理聊天一样进入侧边栏历史；你随时可以回到它。
+3. **可发现的提及** — 输入 `@` 会打开一个花名册面板，因此你绝不会因为拼错 `@<id>` 而悄悄丢失它。
 
 ---
 
-## 架构
+## 三面板窗口
+
+打开一个团队即进入群聊窗口，它分为三个面板布局：
 
 ```
-┌─────────────────────────────────────────────┐
-│         GroupChatOrchestrator               │
-├─────────────────────────────────────────────┤
-│                                             │
-│  ┌──────────────┐      ┌─────────────────┐ │
-│  │ Coordinator  │◄────►│   Executor      │ │
-│  │ (回合逻辑)   │      │ (LLM 调用)      │ │
-│  └──────────────┘      └─────────────────┘ │
-│         │                                    │
-│         ▼                                    │
-│  ┌──────────────┐      ┌─────────────────┐ │
-│  │   Session    │      │   Persona       │ │
-│  │ (状态)       │      │   Registry      │ │
-│  └──────────────┘      └─────────────────┘ │
-│                                             │
-└─────────────────────────────────────────────┘
+┌──────────────┬─────────────────────────────────┬──────────────────┐
+│   Roster     │        Message Flow             │   Workspace      │
+│  (left)      │        (middle)                 │   (right)        │
+├──────────────┼─────────────────────────────────┼──────────────────┤
+│ 👑 leader    │  🦊 Fox                          │  [Artifacts]     │
+│  ● online    │   ┌──────────────────────────┐  │  [Tasks/Kanban]  │
+│ 🦉 Owl       │   │ message text             │  │                  │
+│  ● working   │   └──────────────────────────┘  │  ┌────────────┐  │
+│ 🐢 Turtle    │   │ merged follow-up message │  │  │ artifact   │  │
+│  ○ idle      │   └──────────────────────────┘  │  │ task card  │  │
+│              │  🦉 Owl                          │  │ ...        │  │
+│              │   ┌──────────────────────────┐  │  └────────────┘  │
+│              │   │ message text             │  │   (collapsible)  │
+│              │   └──────────────────────────┘  │                  │
+└──────────────┴─────────────────────────────────┴──────────────────┘
 ```
+
+### 左侧 — 花名册（Roster）
+
+团队花名册，在团队队长上带有 **队长徽章**，每个成员带有 **状态点**（online / working / idle）。这是本线程中团队的实时成员构成。
+
+### 中间 — 消息流（归属气泡）
+
+对话以经典即时通讯（IM）布局渲染为 **归属气泡**：
+
+- 每条收到的消息在气泡外显示一个 **头像**（代理的 `emoji`，回退为名字首字母字母组合），气泡上方显示 **显示名**，气泡内是纯文本。
+- 头像的背景是一个 **由 `hash(agent_id)` 派生的稳定颜色** — 因此无论花名册顺序或成员变化如何，成员都保持同一种颜色。
+- **连续的同一代理消息会合并**：当某条消息与其上方消息的 `agent_id` 相同时，头像和名字会被隐藏（气泡缩进于第一条之下），因此一连串回复会读起来像一个整块。
+- 你自己的消息保持右对齐，没有头像或名字。
+
+> 头像颜色以 `agent_id` 为键，而非花名册索引 — 添加或移除某个成员绝不会让其他任何人重新着色。
+
+### 右侧 — 工作区（Workspace）
+
+一个可折叠的工作区，含两个标签页：
+
+- **Artifacts（产物）** — 对话过程中产出的交付物。
+- **Tasks / Kanban（任务 / 看板）** — 团队的协调任务以看板形式呈现。
 
 ---
 
-## 核心组件
+## 侧边栏 — 群聊历史
 
-### GroupChatOrchestrator
+聊天侧边栏在单代理聊天之上新增一个 **Group Chats（群聊）** 区段，共享同一个滚动列表：
 
-管理整体聊天流程：
-
-```rust
-pub struct GroupChatOrchestrator {
-    session: GroupChatSession,
-    personas: Vec<Persona>,
-    coordinator: GroupChatCoordinator,
-}
-```
-
-### GroupChatCoordinator
-
-确定轮到谁以及他们应该做什么：
-
-```rust
-pub struct GroupChatCoordinator;
-
-impl GroupChatCoordinator {
-    pub fn next_speaker(
-        &self,
-        session: &GroupChatSession,
-    ) -> Option<&Persona> { /* ... */ }
-
-    pub fn build_persona_prompt(
-        &self,
-        persona: &Persona,
-        context: &ChatHistory,
-    ) -> String { /* ... */ }
-}
-```
-
-**系统提示词处理：** 系统提示词通过适当的 `.with_system()` 参数传递，而非嵌入在用户消息文本中。
-
-### GroupChatExecutor
-
-为每个参与者运行 LLM 调用：
-
-```rust
-pub struct GroupChatExecutor {
-    provider: Arc<dyn LlmProvider>,
-}
-```
-
-### Persona
-
-定义参与者的身份：
-
-```rust
-pub struct Persona {
-    pub id: String,
-    pub name: String,
-    pub system_prompt: String,
-    pub expertise: Vec<String>,
-}
-```
-
-**预设：** `PersonaRegistry` 包括预定义的人格（例如，"coder", "reviewer", "architect"）。
-
-### GroupChatSession
-
-维护对话状态：
-
-```rust
-pub struct GroupChatSession {
-    pub messages: Vec<ChatMessage>,
-    pub participants: Vec<String>,
-}
-```
+- 每一行显示一个 **成员预览头像簇**（团队成员，通过 `hash(agent_id)` 着色），并以 **最后一条消息片段** 作为副标题。
+- 该区段 **可折叠**；如果所选代理不在任何团队中，它会完全隐藏。
+- 点击某一行会重新进入该团队：加载花名册、将聊天历史重放到消息流中，并订阅实时团队事件。侧边栏行是持久的入口点 — 你通过点击列表来回到对话。
 
 ---
 
-## 协议
+## @ 提及
 
-群聊通信的消息类型：
+在编排框中（处于某个团队时）输入 `@` 会打开一个 **花名册自动补全面板**：
 
-```rust
-pub enum GroupChatMessage {
-    Text { from: String, content: String },
-    Join { persona: String },
-    Leave { persona: String },
-    System { content: String },
-}
-```
+- 每一项渲染成员的头像 + 显示名 + 一个灰色 `id`，外加一个 **`@all`** 特殊项。
+- 过滤会针对 `@` 之后输入的文本，不区分大小写地匹配 **名字或 id**。
+- 选中一项会插入规范的 `@<id>`（或 `@all`）。气泡内部会保留字面的 `@<id>` 令牌并轻微高亮 — 它不会被改写成名字，因此同名代理之间不存在歧义。
+
+提及会针对花名册的 `agent_id` 进行解析；不匹配任何成员的令牌将不会被投递。
 
 ---
 
-## 意图类型
+## 自动命名
 
-`intent` 模块提供从旧意图检测管道保留的轻量级类型定义：
-
-```rust
-pub enum TaskCategory {
-    Code,
-    Search,
-    FileOperation,
-    // ... 等
-}
-
-pub enum DetectionLayer {
-    L2Heuristic,
-    L3Llm,
-}
-```
-
-**注意：** 检测/分类管道已被移除，转而支持 LLM 原生工具选择。仅保留共享类型定义。
+一个创建时未命名（空名团队）的团队会 **在其第一条消息时由 LLM 自动命名**，因此它在群聊历史中显示一个有意义的标题，而不是占位符。
 
 ---
 
-## 安全属性
+## RPC 层
 
-- **UTF-8 安全** — `char_indices()` 用于截断，`.chars().count()` 用于长度
-- **确定性排序** — `list_presets()` 返回排序结果
-- **无锁中毒** — 使用 `tokio::sync::Mutex`
-- **无 SQL 注入** — 此模块中无数据库查询
+群聊建立在两个不同的 RPC 层之上 — 务必将它们分开：
+
+### 团队工作线程
+
+持久的、按团队划分的群聊线程。当你从侧边栏重新进入某个团队时，它的历史会驱动归属气泡的重放。
+
+| 方法 | 用途 |
+|--------|---------|
+| `teams.chat.send` | 向团队的群聊线程发送一条消息（扇出到各成员）。 |
+| `teams.chat.thread` | 团队的工作线程（任务 / 交付物视图）。 |
+| `teams.chat.history` | 按从旧到新的顺序重放某个团队的持久聊天气泡。 |
+
+`agents.teams` 返回每个团队的摘要，并增补了一个小的 `members_preview`（用于头像簇）和 `last_message`（用于行副标题），因此侧边栏避免了按团队逐一查询的 N+1 问题。
+
+### 群聊会话原语
+
+驱动一场实时多代理对话的更底层会话原语：
+
+| 方法 | 用途 |
+|--------|---------|
+| `group_chat.start` | 开始一个群聊会话。 |
+| `group_chat.continue` | 以下一回合推进会话。 |
+| `group_chat.end` | 结束会话。 |
+| `group_chat.history` | 读取会话的消息历史。 |
+| `group_chat.list` | 列出活跃 / 已知的会话。 |
+| `group_chat.mention` | 在会话内解析 / 路由某个 `@` 提及。 |
 
 ---
-
-## 代码位置
-
-**群聊：**
-- `src/group_chat/mod.rs` — 模块入口点
-- `src/group_chat/orchestrator.rs` — 聊天流程管理
-- `src/group_chat/coordinator.rs` — 回合逻辑和提示词构建
-- `src/group_chat/executor.rs` — LLM 执行
-- `src/group_chat/session.rs` — 对话状态
-- `src/group_chat/persona.rs` — 人格定义
-- `src/group_chat/protocol.rs` — 消息类型
-- `src/group_chat/channel.rs` — 通道抽象
-
-**意图：**
-- `src/intent/mod.rs` — 类型重新导出
-- `src/intent/types/` — TaskCategory, DetectionLayer 等
 
 ## 另请参阅
 
+- [团队](/docs/zh/concepts/teams) — 队长、团队战略协调（Team Strata）规划与协调任务（Coord Task）
 - [代理运行时](/docs/zh/concepts/agent-runtime) — 单个代理如何工作
 - [竞技场](/docs/zh/concepts/arena) — 多代理协作工作区
-- [团队](/docs/zh/concepts/teams) — 代理团队管理

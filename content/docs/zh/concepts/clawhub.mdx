@@ -3,6 +3,8 @@ title: "ClawHub"
 description: "用于 ClawHub 技能注册表（clawhub.ai）的 HTTP 客户端和类型。"
 ---
 
+> **状态（2026-06）：ClawHub 不再是一等源。** 它的设置标签页已被移除，并已被并入[扩展商店](/docs/zh/concepts/extensions-store)。ClawHub 不再在主界面中可浏览；扩展商店从 Claude/Aleph 插件市场、Official MCP Registry 和 Docker MCP Catalog 浏览 Skill、Plugin 和 MCP 服务器。下文所述的 ClawHub HTTP API 仍可访问，但仅通过商店智能体的长尾安装路径（其 `store_fetch_docs` 工具读取某个 URL/仓库）——而非主浏览界面。本页作为历史参考保留。
+
 `clawhub` 模块提供用于与 ClawHub 技能注册表交互的 HTTP 客户端和类型定义。ClawHub 是一个公共仓库，用户可以在其中浏览、搜索和下载用于 Aleph 和兼容代理的技能。
 
 ## 设计理念
@@ -149,5 +151,6 @@ pub fn unix_ms_to_rfc3339(ts: i64) -> String
 
 ## 另请参阅
 
+- [扩展商店](/docs/zh/concepts/extensions-store) —— 取代 ClawHub、用于浏览和安装扩展的统一面板
 - [技能](./skills) —— 技能在 Aleph 中的工作原理
 - [扩展](./extensions) —— 用于添加能力的插件架构

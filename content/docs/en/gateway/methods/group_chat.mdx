@@ -3,21 +3,26 @@ title: "group_chat.*"
 description: "Group chat and multi-party conversation RPC methods"
 ---
 
-Group chat methods manage multi-party conversations involving multiple AI agents and/or human participants in a shared chat context.
+Group chat methods manage a multi-agent group-chat **session** — a shared conversation in which several agents (and the user) take turns under per-agent attribution.
+
+> The durable per-team chat thread shown in the panel's three-panel group-chat window uses the `teams.chat.*` methods (`teams.chat.send`, `teams.chat.thread`, `teams.chat.history`) — see [teams.*](/docs/en/gateway/methods/teams). The `group_chat.*` methods below are the lower-level multi-agent group-chat **session primitive** that those team threads build on.
 
 ## Methods
 
-### group_chat.list
+### group_chat.start
 
-List all active group chats.
+Start a new group-chat session over a set of agents.
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "method": "group_chat.list",
-  "params": {}
+  "method": "group_chat.start",
+  "params": {
+    "agents": ["planner", "coder", "reviewer"],
+    "topic": "Plan the v2 migration"
+  }
 }
 ```
 
@@ -27,73 +32,58 @@ List all active group chats.
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "chats": [
-      {
-        "id": "gc-1",
-        "name": "Project Planning",
-        "participants": ["user", "planner", "coder"],
-        "message_count": 42,
-        "created_at": "2024-01-15T10:30:00Z"
-      }
+    "session_id": "gc-1",
+    "agents": ["planner", "coder", "reviewer"],
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+### group_chat.continue
+
+Advance the session with a new message and let the agents respond in turn.
+
+**Request:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "group_chat.continue",
+  "params": {
+    "session_id": "gc-1",
+    "message": "What do you think about this approach?"
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "messages": [
+      { "agent_id": "planner", "display_name": "Planner", "text": "This looks solid. I suggest..." },
+      { "agent_id": "coder", "display_name": "Coder", "text": "Implementation-wise, we could..." }
     ]
   }
 }
 ```
 
-### group_chat.create
+### group_chat.mention
 
-Create a new group chat.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "group_chat.create",
-  "params": {
-    "name": "Code Review",
-    "participants": ["reviewer", "tester"]
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "chat": {
-      "id": "gc-2",
-      "name": "Code Review",
-      "participants": ["user", "reviewer", "tester"],
-      "created_at": "2024-01-15T10:30:00Z"
-    }
-  }
-}
-```
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Chat name |
-| `participants` | string[] | Yes | Agent roles to include (user is always included) |
-
-### group_chat.send
-
-Send a message to a group chat.
+Address a specific agent (or everyone) in the session — the panel's `@` roster auto-complete maps to this. Use `@all` to address all participants.
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 3,
-  "method": "group_chat.send",
+  "method": "group_chat.mention",
   "params": {
-    "chat_id": "gc-1",
-    "message": "What do you think about this approach?",
-    "sender": "user"
+    "session_id": "gc-1",
+    "mention": "coder",
+    "message": "Can you sketch the schema change?"
   }
 }
 ```
@@ -104,16 +94,8 @@ Send a message to a group chat.
   "jsonrpc": "2.0",
   "id": 3,
   "result": {
-    "message_id": "msg-1",
-    "responses": [
-      {
-        "from": "planner",
-        "message": "This looks solid. I suggest..."
-      },
-      {
-        "from": "coder",
-        "message": "Implementation-wise, we could..."
-      }
+    "messages": [
+      { "agent_id": "coder", "display_name": "Coder", "text": "Here's the migration outline..." }
     ]
   }
 }
@@ -121,7 +103,7 @@ Send a message to a group chat.
 
 ### group_chat.history
 
-Get message history for a group chat.
+Get the message history for a session (powers the attribution-bubble replay).
 
 **Request:**
 ```json
@@ -130,58 +112,52 @@ Get message history for a group chat.
   "id": 4,
   "method": "group_chat.history",
   "params": {
-    "chat_id": "gc-1",
+    "session_id": "gc-1",
     "limit": 50
   }
 }
 ```
 
-### group_chat.add_participant
+**Response:**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "result": {
+    "messages": [
+      { "agent_id": "user", "display_name": "You", "text": "Plan the v2 migration" },
+      { "agent_id": "planner", "display_name": "Planner", "text": "This looks solid. I suggest..." }
+    ]
+  }
+}
+```
 
-Add a participant to a group chat.
+### group_chat.list
+
+List active group-chat sessions.
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 5,
-  "method": "group_chat.add_participant",
-  "params": {
-    "chat_id": "gc-1",
-    "participant": "documenter"
-  }
+  "method": "group_chat.list",
+  "params": {}
 }
 ```
 
-### group_chat.remove_participant
+### group_chat.end
 
-Remove a participant from a group chat.
+End a group-chat session.
 
 **Request:**
 ```json
 {
   "jsonrpc": "2.0",
   "id": 6,
-  "method": "group_chat.remove_participant",
+  "method": "group_chat.end",
   "params": {
-    "chat_id": "gc-1",
-    "participant": "tester"
-  }
-}
-```
-
-### group_chat.delete
-
-Delete a group chat.
-
-**Request:**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 7,
-  "method": "group_chat.delete",
-  "params": {
-    "chat_id": "gc-2"
+    "session_id": "gc-1"
   }
 }
 ```
@@ -189,4 +165,5 @@ Delete a group chat.
 ## See Also
 
 - [Methods Reference](/docs/en/gateway/methods) -- All method namespaces
+- [teams.*](/docs/en/gateway/methods/teams) -- Durable per-team chat threads (`teams.chat.*`) and coordination
 - [Architecture: Group Chat](/docs/en/architecture/groupchat) -- Group chat architecture
