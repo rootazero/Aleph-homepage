@@ -154,23 +154,63 @@
       { "name": "concierge", "tag": "logistics", "d": "从头到尾处理出行、下单与跑腿——你只需确认。" }
     ]
   },
+  "differentiators": {
+    "eyebrow": "不止于聊天框 — 06",
+    "heading_html": "三样东西，单个 <span class=\"serif-it coral\">聊天机器人</span> 给不了 <span class=\"serif-it\">你</span>。",
+    "lede": "大多数 Agent 只是一个聊天窗口加一套固定工具。Aleph 多给了三样：一个让 Agent 像团队一样协作的房间、一份你真能读懂的记忆，以及一个把技能、插件与 MCP 服务器当作同一类东西来安装的商店。",
+    "more": "查看文档",
+    "teams": {
+      "tag": "团队 · 群聊",
+      "title": "让 Agent 像团队一样协作的房间",
+      "desc": "组建一支有队长和成员的团队。他们先制定计划，把工作拆成可审阅的任务，并在一条共享线程里讨论，每条消息都标明出自谁。",
+      "roster": [
+        { "emoji": "👑", "name": "nova", "status": "队长" },
+        { "emoji": "🦊", "name": "fox", "status": "工作中" },
+        { "emoji": "🦉", "name": "owl", "status": "审阅中" },
+        { "emoji": "🐢", "name": "ada", "status": "空闲" }
+      ],
+      "msgs": [
+        { "who": "fox", "emoji": "🦊", "text": "拉取了三个候选 API，正在起草对比。" },
+        { "who": "owl", "emoji": "🦉", "text": "看过 fox 的草稿。鉴权有一处边界情况，已记为任务。" }
+      ],
+      "task": "任务 · 鉴权边界情况 · 待审阅"
+    },
+    "memory": {
+      "tag": "记忆中心",
+      "title": "可读、可纠正的记忆",
+      "desc": "图谱与表格合于一处。浏览互联的事实，跟随一次检索追踪，审阅 Aleph 在你离开时学到的东西，再决定留下还是丢弃。",
+      "nodes": ["里斯本之行", "靠走道座位", "Mira · 研究者", "Q3 备忘录"],
+      "trace": "检索追踪 · 4 跳"
+    },
+    "store": {
+      "tag": "扩展商店",
+      "title": "一个商店，三类扩展",
+      "desc": "技能、插件与 MCP 服务器，统一在同一个“扩展”概念之下。按用途浏览，安装前先看信任等级，密钥留在你的钥匙串里。",
+      "items": [
+        { "name": "atlas-research", "kind": "技能", "trust": "官方", "tier": "official" },
+        { "name": "notion", "kind": "MCP", "trust": "已验证", "tier": "verified" },
+        { "name": "pdf-tools", "kind": "插件", "trust": "社区", "tier": "community" }
+      ],
+      "foot": "1 个概念 · 3 类 · 分级信任"
+    }
+  },
   "testimonial": {
-    "notes_label": "[ 现场笔记 — 06 ]",
+    "notes_label": "[ 现场笔记 — 07 ]",
     "access_label": "来自抢先体验",
     "quote_html": "“Aleph 把我模糊的 AI 愿望清单变成了一套 <span class=\"serif-it coral\">锐利</span>、可靠、且真正 <span class=\"serif-it\">属于我</span> 的系统。”",
     "name": "Mira Adelstein",
     "role": "独立研究者",
     "logos": ["Helix", "Northbeam", "Kerná", "BYVÖK", "Atlas&Co"],
-    "fig_caption": "图 6 — 伙伴，而非工具"
+    "fig_caption": "图 7 — 伙伴，而非工具"
   },
   "models": {
-    "eyebrow": "引擎室 — 07",
+    "eyebrow": "引擎室 — 08",
     "heading_html": "由全球 <span class=\"serif-it coral\">最佳</span> 的 Agent 与模型驱动 — 你来选。",
     "lede": "Aleph 与模型无关。把任何任务路由给你信任的引擎——或让 Aleph 为每一步动态路由到最合适的模型。随时更换提供商，不丢失记忆与技能。",
     "chips": ["Claude", "GPT", "Gemini", "Llama (local)", "Mistral", "Qwen", "DeepSeek", "Your own"]
   },
   "faq": {
-    "eyebrow": "问题 — 08",
+    "eyebrow": "问题 — 09",
     "title_html": "关于 <span class=\"coral\">Aleph</span>、Agent、记忆，以及本地优先。",
     "talk": "联系我们",
     "items": [

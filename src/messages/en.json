@@ -154,23 +154,63 @@
       { "name": "concierge", "tag": "logistics", "d": "Handles travel, orders, and errands end to end — you just confirm." }
     ]
   },
+  "differentiators": {
+    "eyebrow": "Beyond one chat — 06",
+    "heading_html": "Three things a single <span class=\"serif-it coral\">chatbot</span> can't give <span class=\"serif-it\">you</span>.",
+    "lede": "Most agents are one chat window and a fixed toolbox. Aleph adds a room where agents work as a team, a memory you can actually read, and a store where skills, plugins, and MCP servers install as one kind of thing.",
+    "more": "Read the docs",
+    "teams": {
+      "tag": "Teams · Group chat",
+      "title": "A room where agents work as a team",
+      "desc": "Build a team with a leader and members. They plan first, split the work into reviewable tasks, and talk it through in one shared thread where every message is attributed to who said it.",
+      "roster": [
+        { "emoji": "👑", "name": "nova", "status": "lead" },
+        { "emoji": "🦊", "name": "fox", "status": "working" },
+        { "emoji": "🦉", "name": "owl", "status": "review" },
+        { "emoji": "🐢", "name": "ada", "status": "idle" }
+      ],
+      "msgs": [
+        { "who": "fox", "emoji": "🦊", "text": "Pulled the three candidate APIs. Drafting the comparison now." },
+        { "who": "owl", "emoji": "🦉", "text": "Reviewed fox's draft. One edge case on auth, flagged it as a task." }
+      ],
+      "task": "task · auth edge case · waiting review"
+    },
+    "memory": {
+      "tag": "Memory Hub",
+      "title": "A memory you can read and correct",
+      "desc": "Graph and table in one hub. Browse linked facts, follow a retrieval trace, and review what Aleph learned while you were away, then keep it or throw it out.",
+      "nodes": ["Lisbon trip", "aisle seat", "Mira · researcher", "Q3 memo"],
+      "trace": "retrieval trace · 4 hops"
+    },
+    "store": {
+      "tag": "Extensions Store",
+      "title": "One store, three kinds of extension",
+      "desc": "Skills, plugins, and MCP servers live under one Extension concept. Browse by what they do, check a trust tier before you install, and keep secrets in your keychain.",
+      "items": [
+        { "name": "atlas-research", "kind": "Skill", "trust": "Official", "tier": "official" },
+        { "name": "notion", "kind": "MCP", "trust": "Verified", "tier": "verified" },
+        { "name": "pdf-tools", "kind": "Plugin", "trust": "Community", "tier": "community" }
+      ],
+      "foot": "1 concept · 3 kinds · trust-tiered"
+    }
+  },
   "testimonial": {
-    "notes_label": "[ Field notes — 06 ]",
+    "notes_label": "[ Field notes — 07 ]",
     "access_label": "From early access",
     "quote_html": "“Aleph turned my fuzzy AI wishlist into a system that’s <span class=\"serif-it coral\">sharp</span>, trustworthy, and genuinely <span class=\"serif-it\">mine</span>.”",
     "name": "Mira Adelstein",
     "role": "Independent researcher",
     "logos": ["Helix", "Northbeam", "Kerná", "BYVÖK", "Atlas&Co"],
-    "fig_caption": "Fig. 6 — partner, not tool"
+    "fig_caption": "Fig. 7 — partner, not tool"
   },
   "models": {
-    "eyebrow": "Engine room — 07",
+    "eyebrow": "Engine room — 08",
     "heading_html": "Powered by the world’s <span class=\"serif-it coral\">best</span> agents & models — pick yours.",
     "lede": "Aleph is model-agnostic. Route any task to the engine you trust — or let Aleph route each step dynamically to the right model. Swap providers anytime without losing your memory or your skills.",
     "chips": ["Claude", "GPT", "Gemini", "Llama (local)", "Mistral", "Qwen", "DeepSeek", "Your own"]
   },
   "faq": {
-    "eyebrow": "Questions — 08",
+    "eyebrow": "Questions — 09",
     "title_html": "On <span class=\"coral\">Aleph</span>, agents, memory & the local-first question.",
     "talk": "Talk to us",
     "items": [

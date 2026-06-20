@@ -6,6 +6,7 @@ import { Capabilities } from "@/components/home/Capabilities";
 import { Archive } from "@/components/home/Archive";
 import { Process } from "@/components/home/Process";
 import { AgentsShowcase } from "@/components/home/AgentsShowcase";
+import { Differentiators } from "@/components/home/Differentiators";
 import { Testimonial } from "@/components/home/Testimonial";
 import { Models } from "@/components/home/Models";
 import { Faq } from "@/components/home/Faq";
@@ -29,6 +30,7 @@ export default async function HomePage() {
         <div className="wrap"><hr className="hr-soft" /></div>
         <Process />
         <AgentsShowcase />
+        <Differentiators />
         <Testimonial />
         <Models />
         <div className="wrap"><hr className="hr-soft" /></div>
