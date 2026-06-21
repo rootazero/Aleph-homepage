@@ -22,7 +22,8 @@ export function Topbar({ stars }: TopbarProps) {
   };
 
   // Nav links shared by the desktop bar and the mobile menu. `internal` items
-  // are locale-aware routes (next-intl Link); the rest are in-page anchors.
+  // are locale-aware routes (next-intl Link); `external` items open in a new
+  // tab; the rest are in-page anchors.
   const navLinks = [
     { href: "#manifesto", label: t("philosophy") },
     { href: "#capabilities", label: t("capabilities") },
@@ -30,6 +31,7 @@ export function Topbar({ stars }: TopbarProps) {
     { href: "#process", label: t("how") },
     { href: "#models", label: t("models") },
     { href: "/docs", label: t("docs"), internal: true },
+    { href: "https://hub.heyaleph.com", label: t("hub"), external: true },
     { href: "#faq", label: t("faq") },
   ];
 
@@ -44,6 +46,8 @@ export function Topbar({ stars }: TopbarProps) {
           {navLinks.map((l) =>
             l.internal ? (
               <Link key={l.href} href={l.href}>{l.label}</Link>
+            ) : l.external ? (
+              <a key={l.href} href={l.href} target="_blank" rel="noopener">{l.label}</a>
             ) : (
               <a key={l.href} href={l.href}>{l.label}</a>
             ),
@@ -107,6 +111,8 @@ export function Topbar({ stars }: TopbarProps) {
         {navLinks.map((l) =>
           l.internal ? (
             <Link key={l.href} href={l.href} onClick={() => setNavOpen(false)}>{l.label}</Link>
+          ) : l.external ? (
+            <a key={l.href} href={l.href} target="_blank" rel="noopener" onClick={() => setNavOpen(false)}>{l.label}</a>
           ) : (
             <a key={l.href} href={l.href} onClick={() => setNavOpen(false)}>{l.label}</a>
           ),
