@@ -20,11 +20,14 @@ const REDIRECT_PERMANENT = false;
 const nextConfig: NextConfig = {
   async redirects() {
     return [
-      // zh entry: keep the locale prefix, insert /docs after it.
+      // Index pages: map to the docs index with NO trailing slash, so they
+      // resolve in a single hop. A trailing slash (from an empty :path*) would
+      // trigger an extra normalization redirect on www. Order matters: these
+      // exact matches must precede the :path* catch-alls below.
       {
-        source: "/zh/:path*",
+        source: "/",
         has: onDocsHost,
-        destination: `${CANONICAL}/zh/docs/:path*`,
+        destination: `${CANONICAL}/docs`,
         permanent: REDIRECT_PERMANENT,
       },
       {
@@ -33,7 +36,13 @@ const nextConfig: NextConfig = {
         destination: `${CANONICAL}/zh/docs`,
         permanent: REDIRECT_PERMANENT,
       },
-      // Everything else on the docs subdomain -> en docs.
+      // Sub-pages: keep the locale prefix (zh) and insert /docs.
+      {
+        source: "/zh/:path*",
+        has: onDocsHost,
+        destination: `${CANONICAL}/zh/docs/:path*`,
+        permanent: REDIRECT_PERMANENT,
+      },
       {
         source: "/:path*",
         has: onDocsHost,
