@@ -29,7 +29,11 @@ export function Topbar({ stars }: TopbarProps) {
     { href: "#archive", label: t("skills") },
     { href: "#process", label: t("how") },
     { href: "#models", label: t("models") },
-    { href: "https://docs.heyaleph.com", label: t("docs"), external: true },
+    {
+      href: locale === "en" ? "https://docs.heyaleph.com" : `https://docs.heyaleph.com/${locale}`,
+      label: t("docs"),
+      external: true,
+    },
     { href: "https://hub.heyaleph.com", label: t("hub"), external: true },
     { href: "#faq", label: t("faq") },
   ];
