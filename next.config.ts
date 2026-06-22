@@ -7,9 +7,9 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 // bundled /docs URLs there so existing links and SEO carry over. redirects()
 // runs before middleware, so it doesn't entangle with next-intl's routing.
 const DOCS_SITE = "https://docs.heyaleph.com";
-// 307 while verifying — browsers cache 308s aggressively. Flip to true (308)
-// once confirmed.
-const REDIRECT_PERMANENT = false;
+// Verified single-hop to docs.heyaleph.com with all targets returning 200, so
+// the redirect is permanent (308). Set back to false (307) to re-test changes.
+const REDIRECT_PERMANENT = true;
 
 const nextConfig: NextConfig = {
   async redirects() {
