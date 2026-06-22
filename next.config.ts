@@ -6,10 +6,13 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 const withMDX = createMDX();
 
 // docs.heyaleph.com is an alias that redirects to the canonical /docs path on
-// the main domain. redirects() runs before middleware, so it doesn't entangle
+// the main site. redirects() runs before middleware, so it doesn't entangle
 // with next-intl's locale routing.
 const DOCS_HOST = "docs.heyaleph.com";
 const onDocsHost = [{ type: "host" as const, value: DOCS_HOST }];
+// The apex (heyaleph.com) 308-redirects to www, so target www directly to keep
+// docs.* a single hop instead of docs.* -> apex -> www.
+const CANONICAL = "https://www.heyaleph.com";
 // Keep this false (307) while verifying — browsers cache 301s aggressively and
 // they're painful to undo. Flip to true (308) once the redirect is confirmed.
 const REDIRECT_PERMANENT = false;
@@ -21,20 +24,20 @@ const nextConfig: NextConfig = {
       {
         source: "/zh/:path*",
         has: onDocsHost,
-        destination: "https://heyaleph.com/zh/docs/:path*",
+        destination: `${CANONICAL}/zh/docs/:path*`,
         permanent: REDIRECT_PERMANENT,
       },
       {
         source: "/zh",
         has: onDocsHost,
-        destination: "https://heyaleph.com/zh/docs",
+        destination: `${CANONICAL}/zh/docs`,
         permanent: REDIRECT_PERMANENT,
       },
       // Everything else on the docs subdomain -> en docs.
       {
         source: "/:path*",
         has: onDocsHost,
-        destination: "https://heyaleph.com/docs/:path*",
+        destination: `${CANONICAL}/docs/:path*`,
         permanent: REDIRECT_PERMANENT,
       },
     ];
