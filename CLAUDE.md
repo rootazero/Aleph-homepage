@@ -6,26 +6,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Aleph-homepage** is the official website for the [Aleph (ℵ)](https://github.com/rootazero/Aleph) project — a self-hosted polymorphic personal AI assistant built in Rust.
+**Aleph-homepage** is the official marketing website for the [Aleph (ℵ)](https://github.com/rootazero/Aleph) project — a self-hosted polymorphic personal AI assistant built in Rust.
 
-The site combines **two surfaces in a single Next.js app**:
-
-| Surface | URL | Engine |
-|---------|-----|--------|
-| **Homepage** | `https://heyaleph.com` (`/`) | Custom React sections (Topbar, Hero, Marquee, Manifesto, Capabilities, Archive, Process, AgentsShowcase, Testimonial, Models, Faq, Footer) |
-| **Documentation** | `https://heyaleph.com/docs` (`/docs`) | Fumadocs (MDX) |
-
-Both share one domain, one theme, and one i18n scheme:
+This repo is the **homepage only**. It is a Next.js App Router app of custom React sections
+(Topbar, Hero, Marquee, Manifesto, Capabilities, Archive, Process, AgentsShowcase, Testimonial,
+Models, Faq, Footer).
 
 ```
-/                → Homepage (en)        /zh           → Homepage (zh)
-/docs            → Docs index (en)      /zh/docs      → Docs index (zh)
-/docs/<slug>     → Doc page (en)        /zh/docs/<slug> → Doc page (zh)
+/        → Homepage (en)
+/zh      → Homepage (zh)
 ```
 
-Documentation content is sourced from the main Aleph repository's `/docs` directory (`/Volumes/TBU4/Workspace/Aleph`) and lives here under `content/docs/`.
+### Documentation lives in a separate project
 
-> History: the docs previously lived in a standalone `Aleph-docs` project (Next 15 + Fumadocs i18n middleware). It was merged into this app — content copied into `content/docs/`, Fumadocs upgraded to v16, and its routing folded under next-intl's `[locale]` segment.
+The docs were split out into a standalone site:
+
+- **Repo**: [`Aleph-docs`](https://github.com/rootazero/Aleph-docs) (sibling dir `/Volumes/TBU4/Workspace/Aleph-docs`)
+- **URL**: `https://docs.heyaleph.com` (en at root, zh at `/zh`) — a dedicated Vercel project running Fumadocs with native i18n.
+- The homepage's **Docs** nav link points there (locale-aware: en → `docs.heyaleph.com`, zh → `docs.heyaleph.com/zh`).
+- The old bundled URLs (`/docs`, `/zh/docs`, …) **redirect** to the docs site via `next.config.ts` `redirects()` (for existing links / SEO).
+
+> History: docs originally lived in a standalone `Aleph-docs` project, were merged into this app for a while (under `[locale]/docs/` with Fumadocs), then split back out into the dedicated `Aleph-docs` site so `docs.heyaleph.com` is a real, clean URL instead of a redirect alias.
 
 ---
 
@@ -34,77 +35,68 @@ Documentation content is sourced from the main Aleph repository's `/docs` direct
 | Layer | Technology | Version |
 |-------|------------|---------|
 | **Framework** | Next.js (App Router, Turbopack) | 16+ |
-| **Docs Engine** | Fumadocs (core + mdx + ui) | 16+ |
 | **Styling** | Tailwind CSS | 4.2+ (CSS-first config via `@theme`) |
-| **i18n** | next-intl (site) + Fumadocs i18n (docs content) | 4+ / 16+ |
+| **i18n** | next-intl | 4+ |
 | **Language** | TypeScript | 5+ |
 | **Package Manager** | pnpm | 9+ |
 | **Animations** | CSS `animation-timeline: view()` + IntersectionObserver fallback | — |
 | **Testing** | Playwright | Latest |
 | **Deployment** | Vercel | — |
 
+No Fumadocs/MDX in this repo anymore — that all moved to `Aleph-docs`.
+
 ---
 
 ## Architecture
 
-### Routing & i18n (single source of truth)
+### Routing & i18n
 
-There is exactly **one** middleware: `next-intl`. It drives all locale routing for both the
-homepage and the docs. Fumadocs does **not** run its own i18n middleware — it only consumes the
-resolved `locale` param to look up content.
+One middleware (`next-intl`, in `src/proxy.ts`) drives all locale routing.
 
-- **next-intl** `routing.ts`: `localePrefix: "as-needed"` → default locale `en` has no prefix.
-- **Fumadocs** `docs-i18n.ts`: `hideLocale: "default-locale"` → keeps Fumadocs' generated URLs
-  aligned with next-intl (no `/en` prefix).
-
-Both must agree: `en` unprefixed, `zh` prefixed.
+- `routing.ts`: `localePrefix: "as-needed"` → default locale `en` has no prefix, `zh` is prefixed.
+- The canonical host is **`www.heyaleph.com`**; the apex `heyaleph.com` 308-redirects to www.
+  Any absolute/cross-host redirect should target www directly, with no trailing slash.
 
 ```
 src/
 ├── app/
-│   ├── layout.tsx                       # Root layout (four editorial fonts via next/font, globals.css)
-│   ├── globals.css                      # Tailwind v4 entry + Fumadocs CSS + light editorial tokens
-│   ├── api/
-│   │   └── search/route.ts              # Fumadocs Orama search endpoint
+│   ├── layout.tsx                # Root layout (four editorial fonts via next/font, globals.css)
+│   ├── globals.css               # Tailwind v4 entry + light editorial tokens
+│   ├── home.css                  # Homepage section styles
 │   └── [locale]/
-│       ├── layout.tsx                   # NextIntlClientProvider (wraps homepage + docs)
-│       ├── page.tsx                     # Homepage — all marketing sections
-│       └── docs/
-│           ├── layout.tsx               # Fumadocs RootProvider + DocsLayout (theme disabled)
-│           └── [[...slug]]/page.tsx     # Fumadocs MDX page renderer
+│       ├── layout.tsx            # NextIntlClientProvider
+│       └── page.tsx              # Homepage — all marketing sections
 ├── components/
-│   └── home/                            # Topbar, Hero, Marquee, Manifesto, Capabilities, Archive, Process,
-│                                        # AgentsShowcase, Testimonial, Models, Faq, Footer, RevealRunner,
-│                                        # RichText, figures.tsx, hooks.ts, data.ts
-├── i18n/                                # next-intl config: routing.ts, request.ts, navigation.ts
+│   └── home/                     # Topbar, Hero, Marquee, Manifesto, Capabilities, Archive, Process,
+│                                 # AgentsShowcase, Testimonial, Models, Faq, Footer, RevealRunner,
+│                                 # RichText, figures.tsx, hooks.ts, data.ts
+├── i18n/                         # next-intl config: routing.ts, request.ts, navigation.ts
 ├── lib/
-│   ├── utils.ts                         # cn helper (clsx + tailwind-merge)
-│   ├── source.ts                        # Fumadocs loader (baseUrl "/docs", i18n)
-│   ├── docs-i18n.ts                     # Fumadocs I18nConfig (defineI18n, hideLocale)
-│   └── layout.shared.tsx                # Fumadocs baseOptions + UI translations (defineI18nUI)
-├── messages/                            # next-intl JSON (en.json, zh.json) — homepage strings
-└── proxy.ts                             # next-intl locale detection (Next.js 16 renamed middleware.ts → proxy.ts)
+│   ├── utils.ts                  # cn helper (clsx + tailwind-merge)
+│   └── github.ts                 # GitHub stars fetch
+├── messages/                     # next-intl JSON (en.json, zh.json) — homepage strings
+└── proxy.ts                      # next-intl middleware (Next.js 16 renamed middleware.ts → proxy.ts)
 
-content/docs/                            # Fumadocs MDX content (en/ + zh/)
-source.config.ts                         # Fumadocs MDX config (defineDocs dir: content/docs)
-.source/                                 # GENERATED by fumadocs-mdx (gitignored) — import via @/.source/server
+next.config.ts                    # next-intl plugin + redirects() for old /docs URLs → docs.heyaleph.com
 ```
 
 ### Key Design Decisions
 
-- **Single app, not multi-zone**: docs are folded under `[locale]/docs/` rather than a separate deployment.
-- **One middleware**: next-intl owns routing; Fumadocs only resolves content for the given locale.
-- **Tailwind CSS v4 CSS-first config**: no `tailwind.config.js`. Tokens + Fumadocs `--color-fd-*`
-  mapping live in `globals.css`. Includes `@source` so Tailwind scans `fumadocs-ui` classes.
-- **Light editorial design**: paper background `#f0ead9`, ink text `#1b1712`, coral accent `#df4f26` (with mustard/sage/stone supporting tones and dark `#15120d` showcase sections). No light/dark toggle; Fumadocs theme is disabled (`RootProvider theme={{ enabled: false }}` + `baseOptions.themeSwitch.enabled = false`).
-- **Editorial collage + CSS scroll animations**: paper-grain overlay, halftone, classical figure SVGs; scroll-driven entrances via `animation-timeline: view()` with an IntersectionObserver fallback.
+- **Homepage-only app**: docs are a separate deployment (`Aleph-docs` → `docs.heyaleph.com`).
+- **Old /docs URLs redirect out**: `next.config.ts` maps `/docs`, `/zh/docs`, and their sub-paths
+  to the docs site (single hop, zh keeps its prefix). `REDIRECT_PERMANENT` toggles 307↔308.
+- **Tailwind CSS v4 CSS-first config**: no `tailwind.config.js`. Tokens live in `globals.css` `@theme` + `:root`.
+- **Light editorial design**: paper background `#f0ead9`, ink text `#1b1712`, coral accent `#df4f26`
+  (with mustard/sage/stone supporting tones and dark `#15120d` showcase sections). No light/dark toggle.
+- **Editorial collage + CSS scroll animations**: paper-grain overlay, halftone, classical figure SVGs;
+  scroll-driven entrances via `animation-timeline: view()` with an IntersectionObserver fallback.
 
 ---
 
 ## Development Commands
 
 ```bash
-pnpm install          # Install deps; postinstall runs `fumadocs-mdx` to generate .source/
+pnpm install          # Install deps
 pnpm dev              # Dev server at http://localhost:3000
 pnpm build            # Production build
 pnpm start            # Start production server
@@ -112,25 +104,17 @@ pnpm lint             # ESLint
 pnpm typecheck        # tsc --noEmit
 ```
 
-`.source/` is generated from `content/docs/` (by the `fumadocs-mdx` postinstall and by `next build`/`next dev`).
-If `@/.source/server` imports fail, run `pnpm install` (or `npx fumadocs-mdx`) to regenerate it.
-
 ---
 
 ## Tailwind CSS v4.2 Conventions
 
-`src/app/globals.css` imports Tailwind + Fumadocs presets + `home.css` + `docs.css`, then defines
-a light editorial palette and maps the Aleph tokens onto Fumadocs' `--color-fd-*` variables.
+`src/app/globals.css` imports Tailwind + `home.css`, then defines the light editorial palette.
 Fonts (Instrument Serif, Space Grotesk, Archivo, Space Mono) are loaded via `next/font/google`
 in `layout.tsx` and bridged into CSS via `--serif / --display / --sans / --mono` aliases:
 
 ```css
 @import "tailwindcss";
-@import "fumadocs-ui/css/neutral.css";
-@import "fumadocs-ui/css/preset.css";
 @import "./home.css";
-@import "./docs.css";
-@source "../../node_modules/fumadocs-ui/dist/**/*.js";
 
 @theme {
   --color-paper: var(--paper);
@@ -142,7 +126,7 @@ in `layout.tsx` and bridged into CSS via `--serif / --display / --sans / --mono`
   --paper: #f0ead9;
   --ink: #1b1712;
   --coral: #df4f26;
-  /* ...palette + --color-fd-* mapping for Fumadocs UI (light)... */
+  /* ...palette... */
 }
 ```
 
@@ -150,20 +134,9 @@ Do NOT create a `tailwind.config.js` or `tailwind.config.ts` — all configurati
 
 ---
 
-## Documentation Content
-
-All documentation lives in `content/docs/`. English content in `en/`, Chinese in `zh/`.
-
-- Each directory has a `meta.json` controlling sidebar navigation order.
-- Each `.mdx` file needs `title` and `description` frontmatter.
-- The docs index for a locale is `content/docs/<lang>/index.mdx` (served at `/docs` and `/zh/docs`).
-- Fumadocs search (`/api/search`) falls back to the English tokenizer for `zh` (Orama has no Chinese tokenizer).
-
----
-
 ## Language Conventions
 
-- **UI text**: English (with zh translations — homepage in `messages/`, docs UI in `lib/layout.shared.tsx`)
+- **UI text**: English (with zh translations in `messages/`)
 - **Code comments**: English
 - **Conversation with developer**: 中文
-- **Commit messages**: English, format `<scope>: <description>` (e.g., `home: add hero section`, `docs: add gateway page`)
+- **Commit messages**: English, format `<scope>: <description>` (e.g., `home: add hero section`, `chore: redirect old docs URLs`)

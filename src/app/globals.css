@@ -1,11 +1,5 @@
 @import "tailwindcss";
-@import "fumadocs-ui/css/neutral.css";
-@import "fumadocs-ui/css/preset.css";
 @import "./home.css";
-@import "./docs.css";
-
-/* Let Tailwind scan Fumadocs UI for class names (path relative to this file). */
-@source "../../node_modules/fumadocs-ui/dist/**/*.js";
 
 @theme {
   /* Brand tokens exposed as utilities (bg-paper, text-ink, text-coral, ...) */
@@ -24,7 +18,6 @@
 /*
  * Light editorial palette (single source of truth). Aliases for home.css
  * (--serif/--display/--sans/--mono) bridge to the next/font variables.
- * Fumadocs UI reads the mapped --color-fd-* tokens (light).
  */
 :root {
   /* paper + ink */
@@ -54,24 +47,6 @@
 
   --maxw: 1320px;
   --gutter: clamp(20px, 4vw, 64px);
-
-  /* Map Aleph tokens -> Fumadocs UI variables (light) */
-  --color-fd-background: var(--paper);
-  --color-fd-foreground: var(--ink);
-  --color-fd-muted: var(--paper-deep);
-  --color-fd-muted-foreground: var(--ink-3);
-  --color-fd-popover: var(--panel);
-  --color-fd-popover-foreground: var(--ink);
-  --color-fd-card: var(--panel);
-  --color-fd-card-foreground: var(--ink);
-  --color-fd-border: var(--line);
-  --color-fd-primary: var(--coral);
-  --color-fd-primary-foreground: #ffffff;
-  --color-fd-secondary: var(--paper-deep);
-  --color-fd-secondary-foreground: var(--ink);
-  --color-fd-accent: var(--paper-deep);
-  --color-fd-accent-foreground: var(--ink);
-  --color-fd-ring: var(--coral);
 }
 
 :root {
@@ -82,7 +57,7 @@
 body {
   margin: 0;
   /*
-   * Font aliases used throughout home.css and docs.css. Declared on body (not
+   * Font aliases used throughout home.css. Declared on body (not
    * :root) so they resolve the next/font variables, which next/font injects via
    * the body className. home.css reads these as var(--serif/--display/...).
    */
