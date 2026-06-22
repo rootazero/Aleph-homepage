@@ -13,9 +13,9 @@ const onDocsHost = [{ type: "host" as const, value: DOCS_HOST }];
 // The apex (heyaleph.com) 308-redirects to www, so target www directly to keep
 // docs.* a single hop instead of docs.* -> apex -> www.
 const CANONICAL = "https://www.heyaleph.com";
-// Keep this false (307) while verifying — browsers cache 301s aggressively and
-// they're painful to undo. Flip to true (308) once the redirect is confirmed.
-const REDIRECT_PERMANENT = false;
+// Verified single-hop to www with every target returning 200, so the redirect
+// is permanent (308). Set back to false (307) if you need to re-test changes.
+const REDIRECT_PERMANENT = true;
 
 const nextConfig: NextConfig = {
   async redirects() {
